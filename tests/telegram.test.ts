@@ -104,7 +104,7 @@ test('Mission notification is emitted only for new terminal events',async()=>{
   }finally{f.cleanup();}
 });
 
-test('Telegram reports last eight browser reply lines and real turn count without full output',async()=>{
+test('Telegram reports a compact browser reply tail and real turn count without full output',async()=>{
   const f=fixture();try {
     await f.bridge.pollOnce(0); // Establish cursor before the synthetic new observation.
     const url='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
@@ -123,12 +123,41 @@ test('Telegram reports last eight browser reply lines and real turn count withou
     assert.ok(message.includes('[MISSION_RELAY:NEXT]'));
     assert.ok(!message.includes('Top of a longer model response'));
     assert.ok(!message.includes('Final action item 1\n'));
-    assert.ok(message.split('\n').length<=11);
+    assert.ok(message.split('\n').length<=10);
     await f.bridge.pollOnce(0);
     const pushed=f.transport.sent.find(x=>x.includes('Final action item 12'));
     assert.equal(pushed,message);
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.filter(x=>x.includes('Final action item 12')).length,1);
+  }finally{f.cleanup();}
+});
+
+test('Telegram preferentially extracts the explicit decision summary, redacts private links and sends at most ten lines',()=>{
+  const f=fixture();try {
+    const linked=f.store.linkChat(f.m.id,'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',f.m.version).mission;
+    const verbose=[
+      'Earlier background discussion',
+      ...Array.from({length:15},(_,i)=>`Technical detail ${i}`),
+      '## **Telegram-ready summary:**',
+      'Progress: reviewed the authorized single-tab workflow',
+      'Evidence: local SQLite receipt and page hash matched',
+      'Blocker: waiting for operator approval',
+      'Next: check status then decide whether to resume',
+      'Private: https://example.net/remote-control#secret-tunnel-token',
+      '[MISSION_RELAY:BLOCKED]',
+    ].join('\n');
+    const ev={id:999,missionId:linked.id,type:'chatgpt.browser_observed',
+      createdAt:'2026-11-04',payload:{round:2,excerpt:verbose}};
+    const message=formatBrowserResultNotification(linked,ev);
+    assert.match(message,/turn 2\/3/);
+    assert.match(message,/Progress: reviewed/);
+    assert.match(message,/Evidence: local SQLite/);
+    assert.match(message,/Blocker: waiting/);
+    assert.match(message,/Next: check status/);
+    assert.match(message,/\[MISSION_RELAY:BLOCKED\]/);
+    assert.doesNotMatch(message,/Earlier background|Technical detail|secret-tunnel-token/);
+    assert.match(message,/\[PRIVATE LINK\]/);
+    assert.ok(message.split('\n').length<=10);
   }finally{f.cleanup();}
 });
 

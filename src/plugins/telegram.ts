@@ -80,17 +80,31 @@ export function formatBrowserResultNotification(m:Mission,event:MissionEvent):st
       'Inspect the Chrome conversation before manual reconciliation.',
       `Use /status ${m.id} for details.`].join('\n');
   const excerpt=typeof data.excerpt==='string'?data.excerpt:(m.lastSummary??'');
-  const lines=excerpt.replace(/\r/g,'').split('\n').map(x=>x.trim())
-    .filter(Boolean).slice(-8).map(x=>x.length>190?'…'+x.slice(-189):x);
+  const allLines=excerpt.replace(/\r/g,'').split('\n').map(x=>x.trim()).filter(Boolean);
+  // Prefer the deliberate compact handoff to the arbitrary tail of a 5–30min
+  // response. The model's claims are unverified, so label them accordingly.
+  // Keep the flow marker outside the summary, so it cannot consume a useful line.
+  const marker=/^\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]$/;
+  const finalMarker=marker.test(allLines.at(-1)??'')?allLines.pop():undefined;
+  let headerIndex=-1;
+  for(let i=allLines.length-1;i>=0;i--) {
+    const heading=allLines[i]!.replace(/^#{1,6}\s*/,'').replace(/\*\*/g,'').trim();
+    if(/^Telegram[- ]ready summary\s*:?$/i.test(heading)){headerIndex=i;break;}
+  }
+  const selected=headerIndex>=0?allLines.slice(headerIndex+1):allLines.slice(-6);
+  const lines=selected.filter(x=>!/^[-=]{3,}$/.test(x)).slice(0,6)
+    .map(x=>x.length>190?'…'+x.slice(-189):x);
   // Redact recognizable credential formats if a model accidentally quotes one.
   const redact=(s:string)=>s.replace(/\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{22,}/g,'[REDACTED]')
     .replace(/\b(?:ghp_|gho_|ghu_|ghs_|github_pat_)[A-Za-z0-9_]{18,}/g,'[REDACTED]')
-    .replace(/\b\d{7,11}:[A-Za-z0-9_-]{30,}\b/g,'[REDACTED]');
+    .replace(/\b\d{7,11}:[A-Za-z0-9_-]{30,}\b/g,'[REDACTED]')
+    .replace(/https?:\/\/[^\s]*[#?][^\s]*/gi,'[PRIVATE LINK]');
   const round=typeof data.round==='number'?data.round:m.turnCount;
   const text=[`Mission ${m.id} — turn ${round}/${m.maxTurns}`,
-    'ChatGPT reply tail (observed, not independently verified):',
+    'ChatGPT result (model-provided; not independently verified):',
     ...lines.map(redact),
-    `Next: /status ${m.id}`];
+    ...(finalMarker?[finalMarker]:[]),
+    `Status: /status ${m.id}`];
   return text.join('\n').slice(0,2900);
 }
 
