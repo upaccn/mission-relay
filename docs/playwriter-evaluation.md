@@ -131,7 +131,7 @@ This acceptance gate cannot be substituted with a relay restart or a wrong-URL t
 | Durable request reservation, crash/restart and no duplicate sends | Tested |
 | Single writer across different Missions targeting the same chat | Tested |
 | Loop marker stop/continue behavior | Tested |
-| GMK3 Windows and VPS Linux builds / isolated smoke | **109 tests pass both hosts** for the stale-error fix; prior 105-test baseline passed three-OS CI for 48b9304 (run 41820817862); new CI confirmation pending |
+| GMK3 Windows and VPS Linux builds / isolated smoke | **109 tests pass both hosts and GitHub Actions Ubuntu/Windows/macOS** for b174c8d (run 41839783004) |
 | Existing GMK3 Chrome Playwriter extension handshake | **Passed, target Chrome profile selected** |
 | Read-only probe of exact target ChatGPT conversation | **Passed, real messages and ready composer observed** |
 | One actual ChatGPT prompt and observed reply | **Passed once via Telegram; original early receipt defect found and fixed in new source** |
