@@ -9,6 +9,7 @@ import {Engine} from '../src/core/engine.js';
 import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUrl,
   tolerateRolloverNavigation,rolloverUrlClass,newChatBootstrapDelayMs,
   shouldReloadBlankNewChat,reloadBlankDirectNewChat,isFreshResponseLoadFailure,
+  canonicalVisibleUserPrompt,
   ACTIVE_REPLY_OBSERVATION_INTERVAL_MS,
   submitNewChatTurn,
   DEFAULT_BROWSER_TURN_TIMEOUT_MS,MAX_BROWSER_TURN_TIMEOUT_MS,type BrowserSession} from '../src/plugins/chatgpt-browser.js';
@@ -17,6 +18,17 @@ import type {AgentAdapter} from '../src/core/types.js';
 import type {Page} from 'playwriter';
 
 const SHA=createHash('sha256').update('test browser prompt').digest('hex');
+
+test('ChatGPT accessible user transcript decorations are excluded from prompt identity hashing',()=>{
+  const submitted='Complete this read-only task.\nInclude two separate phases.';
+  const decorated=`You said:\n${submitted}\n…\nShow more`;
+  assert.equal(canonicalVisibleUserPrompt(decorated,true),submitted);
+  assert.equal(createHash('sha256').update(canonicalVisibleUserPrompt(decorated,true)).digest('hex'),
+    createHash('sha256').update(submitted).digest('hex'));
+  assert.equal(canonicalVisibleUserPrompt(`${submitted}\n…\nShow more`,false),submitted);
+  assert.notEqual(canonicalVisibleUserPrompt(`You said:\n${submitted}\nAdditional human edit\n…\nShow more`,true),submitted);
+  assert.notEqual(canonicalVisibleUserPrompt(`You said:\n${submitted}\nShow something else`,true),submitted);
+});
 const URL='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
 const never:AgentAdapter={
   async execute(){throw new Error('Codex must not run');},

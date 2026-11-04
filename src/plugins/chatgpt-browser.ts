@@ -33,19 +33,29 @@ export async function lastVisibleUserContainsPrompt(page:Page,prompt:string):Pro
   return (await headings.last().locator('xpath=..').innerText({timeout:5000})).includes(prompt);
 }
 
+/** Accessible ChatGPT transcript wrappers can put You said: and Show more
+ * controls into the parent heading's innerText. They are NOT user-authored
+ * prompt bytes. Strip only these exact observed UI decorations; other text
+ * differences must remain a hash mismatch and fail closed. */
+export function canonicalVisibleUserPrompt(text:string,headingWrapper:boolean):string {
+  const withoutHeader=headingWrapper?text.replace(/^You said:\s*/,''):text;
+  return withoutHeader.replace(/\n(?:…|\.\.\.)\s*\nShow more\s*$/u,'').trim();
+}
+
 /** Read-only recovery guard: match the last submitted prompt hash, never
  * assume that an unchanged assistant message means no human intervened. */
 export async function lastVisibleUserPromptSha256(page:Page):Promise<string|null> {
   const legacy=page.locator(USER_SELECTOR);
   let last:string;
+  let headingWrapper=false;
   if(await legacy.count())last=await legacy.last().innerText({timeout:5000});
   else {
     const headings=userHeadings(page);
     if(!await headings.count())return null;
-    last=(await headings.last().locator('xpath=..').innerText({timeout:5000}))
-      .replace(/^You said:\s*/,'');
+    last=await headings.last().locator('xpath=..').innerText({timeout:5000});
+    headingWrapper=true;
   }
-  return createHash('sha256').update(last.trim()).digest('hex');
+  return createHash('sha256').update(canonicalVisibleUserPrompt(last,headingWrapper)).digest('hex');
 }
 
 export interface ChatPageSnapshot {
