@@ -197,6 +197,19 @@ function visibleChatResponseFailed(answer:string):boolean {
   return /(?:This response couldn.t load|Unable to load response|Something went wrong while generating)/i.test(answer);
 }
 
+/** A pre-existing ChatGPT reply-load error belongs to the *previous* turn.
+ * It must not mark the newly submitted request uncertain while ChatGPT is
+ * still rendering its next assistant message. DOM counts can be virtualized,
+ * so an unchanged previous error is never evidence of a new failed reply. */
+export function isFreshResponseLoadFailure(before:ChatPageSnapshot,
+  current:ChatPageSnapshot,newestUserMatchesPrompt:boolean):boolean {
+  return newestUserMatchesPrompt&&!current.generating&&
+    visibleChatResponseFailed(current.lastAssistant)&&
+    current.lastAssistant!==before.lastAssistant&&
+    (!visibleChatResponseFailed(before.lastAssistant)||
+      current.assistantCount>before.assistantCount);
+}
+
 /** Never retry the send click after an ambiguous exception. Caller owns durable reservation. */
 export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
   timeoutMs=DEFAULT_BROWSER_TURN_TIMEOUT_MS,requireFinalMarker=false):Promise<BrowserReceipt> {
@@ -223,7 +236,9 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
   let failureSince:number|null=null;
   while(Date.now()<deadline) {
     const current=await inspectChatPage(page,targetUrl);
-    if(!current.generating&&visibleChatResponseFailed(current.lastAssistant)) {
+    const newestUserMatchesPrompt=current.userCount>0 &&
+      await lastVisibleUserContainsPrompt(page,prompt.trim());
+    if(isFreshResponseLoadFailure(before,current,newestUserMatchesPrompt)) {
       failureSince??=Date.now();
       if(Date.now()-failureSince>=5000)
         throw new Error('ChatGPT displayed a response-load failure; submission outcome is ambiguous');
@@ -231,7 +246,7 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
     let finalCandidate=false;
     if(current.userCount>0 && current.assistantCount>0 && current.lastAssistant &&
        current.lastAssistant!==before.lastAssistant &&
-       await lastVisibleUserContainsPrompt(page,prompt.trim())) {
+       newestUserMatchesPrompt) {
       if(current.lastAssistant!==last){last=current.lastAssistant;stableSince=Date.now();}
       finalCandidate=!current.generating && (!requireFinalMarker||finalMarker.test(current.lastAssistant.trim()));
       if(finalCandidate && Date.now()-stableSince>=2500) {

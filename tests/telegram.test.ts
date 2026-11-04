@@ -302,6 +302,32 @@ test('Telegram browser notification redacts recognizable tokens and refuses unce
   }finally{f.cleanup();}
 });
 
+test('Recovered complete reply produces a bounded correction notification while preserving the initial uncertainty event',async()=>{
+  const f=fixture();try{
+    await f.bridge.pollOnce(0);
+    const m=f.store.linkChat(f.m.id,
+      'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',f.m.version).mission;
+    f.store.reserveChatBrowserTurn(m.id,m.version,'recovery-telegram', 'a'.repeat(64));
+    const uncertain=f.store.finishChatBrowserTurn(m.id,'recovery-telegram',{
+      kind:'uncertain',error:'Old stale ChatGPT error',
+    });
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,1);
+    assert.match(f.transport.sent[0]!,/NEEDS_RECONCILIATION/);
+    f.store.recoverObservedBrowserTurn(m.id,uncertain.version,{
+      requestPromptSha256:'a'.repeat(64),assistantSha256:'b'.repeat(64),
+      summary:'Telegram-ready summary\nProgress: original request completed\nEvidence: final reply verified\n[MISSION_RELAY:DONE]',
+    });
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,2);
+    assert.match(f.transport.sent[1]!,/original request completed/);
+    assert.match(f.transport.sent[1]!,/\[MISSION_RELAY:DONE\]/);
+    assert.equal(f.store.events(m.id).filter(x=>x.type==='chatgpt.browser_reserved').length,1);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,2);
+  }finally{f.cleanup();}
+});
+
 test('Channel poller lease rejects duplicates and is recoverable on clean release',()=>{
   const f=fixture();try{
     const lease=f.store.acquireChannelLease('telegram');

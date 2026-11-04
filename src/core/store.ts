@@ -360,6 +360,43 @@ export class Store {
       return this.get(id);
     });
   }
+  /** Recover an *already submitted* existing-tab reply after a false timeout
+   * or obsolete load-error observation. The CLI must independently re-read
+   * the exact sent prompt and stable complete answer; no Send is permitted.
+   * Preserve the uncertain history while granting only one observed turn. */
+  recoverObservedBrowserTurn(id:string,revision:number,input:{
+    requestPromptSha256:string;assistantSha256:string;summary:string;
+  }):Mission {
+    if(!/^[0-9a-f]{64}$/.test(input.requestPromptSha256)||
+      !/^[0-9a-f]{64}$/.test(input.assistantSha256)||!input.summary.trim())
+      throw new Error('Existing-chat recovery requires validated prompt/assistant hashes and a nonempty reply');
+    return this.transaction(()=>{
+      const m=this.get(id),record=this.chatBrowserTurn(id),url=this.chatLink(id);
+      if(m.version!==revision)throw new Error(`State conflict: expected v${revision}, current v${m.version}`);
+      if(m.state!=='NEEDS_RECONCILIATION'||record?.status!=='uncertain'||!url)
+        throw new Error('Only an uncertain existing-chat browser turn can be recovered');
+      if(m.ownerPid!==null&&this.isOwnerAlive(m))throw new Error('Browser owner may still be active');
+      if(m.turnCount>=m.maxTurns)throw new Error('Recovery exceeds the authorized turn budget');
+      if(record.promptSha256!==input.requestPromptSha256||
+        record.urlHash!==createHash('sha256').update(url).digest('hex'))
+        throw new Error('Observed reply cannot be linked to the exact original reserved prompt and chat');
+      const now=new Date().toISOString();
+      this.setMeta(this.browserTurnKey(id),JSON.stringify({...record,status:'reconciled',
+        assistantSha256:input.assistantSha256,observedAt:now}));
+      this.db.prepare('DELETE FROM meta WHERE key=?').run(this.browserUrlLockKey(record.urlHash));
+      this.db.prepare(`UPDATE missions SET state='PAUSED',owner_pid=NULL,owner_host=NULL,
+        turn_count=turn_count+1,last_summary=?,last_error=NULL,stop_requested=0,
+        version=version+1,updated_at=? WHERE id=? AND version=?`)
+        .run(input.summary.slice(-1000),now,id,m.version);
+      this.event(id,'mission.reconciled',{acknowledged:true,kind:'observed-browser-turn'});
+      this.event(id,'chatgpt.browser_turn_recovered',{
+        requestKey:record.requestKey,round:m.turnCount+1,
+        assistantSha256:input.assistantSha256,excerpt:input.summary.slice(-1000),
+        independentlyInspected:true,originalUncertainEventPreserved:true,
+      });
+      return this.get(id);
+    });
+  }
   setMeta(key:string,value:string):void {
     this.db.prepare('INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,value);
   }

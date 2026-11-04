@@ -11,7 +11,7 @@ import { stateHome, initializeCodexHome } from './core/paths.js';
 import { codexPreflight } from './core/preflight.js';
 import { renderChatGPTHandoff, normalizeChatGPTUrl } from './core/chatgpt-handoff.js';
 import { connectChatPage, inspectChatPage, lastVisibleUserContainsPrompt, withBrowserSession } from './plugins/chatgpt-browser.js';
-import { executeBrowserTurn, driveChatConversation, browserDecision, browserNewChatPrompt } from './core/browser-controller.js';
+import { executeBrowserTurn, driveChatConversation, browserDecision, browserNewChatPrompt, browserContinuationPrompt } from './core/browser-controller.js';
 import { listBrowsers } from 'playwriter';
 import type { AgentAdapter, CreateMission, Sandbox } from './core/types.js';
 import type { VerificationCheck } from './core/types.js';
@@ -67,6 +67,8 @@ Commands:
   browser-drive <id> --revision <n> --request-prefix <key> [--turns 3]
          [--browser-id <id>] [--timeout-ms 2100000]  Bounded ChatGPT multi-turn loop
   browser-reconcile <id> --acknowledge-side-effects  Manual ambiguous-turn recovery
+  browser-recover-turn <id> --revision <n> --acknowledge-side-effects
+         Verify a complete reply in the original chat without resending, then credit its observed turn
   browser-recover-rollover <id> --revision <n> --new-url <exact new chat URL>
          --acknowledge-side-effects  Read-only inspect old/new chats, then atomic observed recovery
   instruct <id> --text <instruction>
@@ -241,6 +243,43 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
         throw new Error('No interrupted browser turn to reconcile');
       const m=store.reconcileChatBrowserTurn(id);
       result={...m,note:'Original browser request will never be replayed; inspect the chat before issuing a NEW request key.'};
+    }
+    else if (command === 'browser-recover-turn' && id) {
+      const f=flags(rest);
+      if(!f['--acknowledge-side-effects'])
+        throw new Error('Explicit --acknowledge-side-effects is required after inspecting the real ChatGPT conversation');
+      const revision=Number(option(f,'revision'));
+      const m=store.get(id),url=store.chatLink(id),record=store.chatBrowserTurn(id);
+      const bound=store.chatBrowserBinding(id);
+      if(!url||!bound||m.version!==revision||m.state!=='NEEDS_RECONCILIATION'||
+        record?.status!=='uncertain')
+        throw new Error('No eligible uncertain, bound existing ChatGPT conversation turn at this revision');
+      // Reconstruction must match the *original reserved* request hash. A
+      // concurrent instruction or different browser prompt fails closed.
+      const candidates=[true,false].map(first=>
+        browserContinuationPrompt(m.goal,m.acceptance,first,m.nextInstruction));
+      const prompt=candidates.find(value=>createHash('sha256').update(value.trim()).digest('hex')===record.promptSha256);
+      if(!prompt)throw new Error('Cannot reconstruct the original reserved continuation prompt exactly');
+      const session=await connectChatPage(url,{browserId:bound});
+      const answer=await withBrowserSession(session,async page=>{
+        const first=await inspectChatPage(page,url);
+        if(first.generating||!first.lastAssistant.trim()||
+          !['DONE','NEXT','BLOCKED','HANDOFF'].includes(browserDecision(first.lastAssistant))||
+          !await lastVisibleUserContainsPrompt(page,prompt.trim()))
+          throw new Error('Original chat does not show the exact reserved user request and a complete marked assistant reply');
+        await new Promise(resolve=>setTimeout(resolve,3000));
+        const second=await inspectChatPage(page,url);
+        if(second.generating||second.lastAssistant!==first.lastAssistant||
+          !await lastVisibleUserContainsPrompt(page,prompt.trim()))
+          throw new Error('Original ChatGPT reply was unstable or no longer corresponds to the reserved request');
+        return second.lastAssistant;
+      });
+      const assistantSha256=createHash('sha256').update(answer).digest('hex');
+      const recovered=store.recoverObservedBrowserTurn(id,revision,{
+        requestPromptSha256:record.promptSha256,assistantSha256,summary:answer,
+      });
+      result={...recovered,assistantSha256,verifiedDecision:browserDecision(answer),
+        note:'Recovered the observed original-chat reply with no new Send. Historical uncertain event preserved; model DONE is not independent verification.'};
     }
     else if (command === 'browser-recover-rollover' && id) {
       const f=flags(rest);

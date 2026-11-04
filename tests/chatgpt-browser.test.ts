@@ -8,7 +8,8 @@ import {Store} from '../src/core/store.js';
 import {Engine} from '../src/core/engine.js';
 import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUrl,
   tolerateRolloverNavigation,rolloverUrlClass,newChatBootstrapDelayMs,
-  shouldReloadBlankNewChat,reloadBlankDirectNewChat,ACTIVE_REPLY_OBSERVATION_INTERVAL_MS,
+  shouldReloadBlankNewChat,reloadBlankDirectNewChat,isFreshResponseLoadFailure,
+  ACTIVE_REPLY_OBSERVATION_INTERVAL_MS,
   submitNewChatTurn,
   DEFAULT_BROWSER_TURN_TIMEOUT_MS,MAX_BROWSER_TURN_TIMEOUT_MS,type BrowserSession} from '../src/plugins/chatgpt-browser.js';
 import {executeBrowserTurn,driveChatConversation,browserDecision,browserContinuationPrompt} from '../src/core/browser-controller.js';
@@ -55,6 +56,86 @@ test('Long tasks use 60-second normal DOM polls and a separate quick final-stabi
   assert.equal(newChatBootstrapDelayMs(25000,false,false),60000);
   assert.equal(newChatBootstrapDelayMs(120000,false,true),3000);
   assert.ok(35*60*1000/60000<40,'A 35-minute task must need fewer than 40 steady-state snapshots');
+});
+
+test('A pre-existing ChatGPT response-load error is not mistaken for the newly submitted turn',()=>{
+  const before={url:URL,userCount:1,assistantCount:1,composerReady:true,generating:false,
+    lastAssistant:'This response couldn’t load\nReload response'};
+  const stale={...before,userCount:2};
+  assert.equal(isFreshResponseLoadFailure(before,stale,true),false,
+    'The old assistant error must not fail a newly submitted research prompt');
+  assert.equal(isFreshResponseLoadFailure(before,
+    {...stale,lastAssistant:'This response couldn’t load'},true),false,
+    'A re-rendered old error without a new assistant turn is still stale');
+  assert.equal(isFreshResponseLoadFailure(before,
+    {...stale,lastAssistant:'This response couldn’t load',assistantCount:2},true),true,
+    'A distinct, newly visible assistant reply-load error can fail after confirmation');
+  assert.equal(isFreshResponseLoadFailure(before,
+    {...stale,lastAssistant:'This response couldn’t load',assistantCount:2},false),false,
+    'A changed reply unrelated to the reserved request cannot fail this request');
+  assert.equal(isFreshResponseLoadFailure(before,
+    {...stale,lastAssistant:'Five NetBox field workflows\n[MISSION_RELAY:DONE]',assistantCount:2},true),false);
+  assert.equal(isFreshResponseLoadFailure({...before,lastAssistant:'Prior successful answer'},
+    {...stale,lastAssistant:'Unable to load response'},true),true);
+});
+
+test('Recover a confirmed complete existing-chat reply atomically with no duplicate browser send',()=>{
+  const f=fixture();try{
+    const competitor=f.store.create({goal:'Other mission',acceptance:['Single writer'],
+      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:2,requestKey:'existing-recovery-other'});
+    const second=f.store.linkChat(competitor.id,URL,competitor.version).mission;
+    f.store.reserveChatBrowserTurn(f.linked.id,f.linked.version,'recover-existing',SHA);
+    const uncertain=f.store.finishChatBrowserTurn(f.linked.id,'recover-existing',
+      {kind:'uncertain',error:'Old ChatGPT reply-load error persisted during new Send'});
+    assert.throws(()=>f.store.reserveChatBrowserTurn(second.id,second.version,'competing',SHA),
+      /Another Mission owns/);
+    assert.throws(()=>f.store.recoverObservedBrowserTurn(f.linked.id,uncertain.version,{
+      requestPromptSha256:'f'.repeat(64),assistantSha256:'a'.repeat(64),summary:'Done'}),
+      /cannot be linked/);
+    const recovered=f.store.recoverObservedBrowserTurn(f.linked.id,uncertain.version,{
+      requestPromptSha256:SHA,assistantSha256:'a'.repeat(64),
+      summary:'Five verified findings\n[MISSION_RELAY:DONE]'});
+    assert.equal(recovered.state,'PAUSED');
+    assert.equal(recovered.turnCount,1);
+    assert.equal(recovered.lastError,null);
+    assert.equal(recovered.lastSummary,'Five verified findings\n[MISSION_RELAY:DONE]');
+    assert.equal(f.store.chatBrowserTurn(f.linked.id)?.status,'reconciled');
+    assert.equal(f.store.chatBrowserTurn(f.linked.id)?.assistantSha256,'a'.repeat(64));
+    assert.equal(f.store.events(f.linked.id).filter(e=>e.type==='chatgpt.browser_uncertain').length,1);
+    assert.equal(f.store.events(f.linked.id).filter(e=>e.type==='chatgpt.browser_turn_recovered').length,1);
+    assert.throws(()=>f.store.recoverObservedBrowserTurn(f.linked.id,recovered.version,{
+      requestPromptSha256:SHA,assistantSha256:'a'.repeat(64),summary:'Done'}),
+      /Only an uncertain/);
+    assert.throws(()=>f.store.reserveChatBrowserTurn(f.linked.id,recovered.version,'recover-existing',SHA),
+      /already used/);
+    assert.equal(f.store.reserveChatBrowserTurn(second.id,second.version,'competing',SHA).state,'RUNNING');
+  }finally{f.cleanup();}
+});
+
+test('Failed recovered-response audit insert rolls back turn credit, lock and SHA',()=>{
+  const f=fixture();try{
+    f.store.reserveChatBrowserTurn(f.linked.id,f.linked.version,'recover-rollback',SHA);
+    const m=f.store.finishChatBrowserTurn(f.linked.id,'recover-rollback',
+      {kind:'uncertain',error:'Observer error'});
+    f.store.db.exec(`CREATE TRIGGER reject_recovered_turn BEFORE INSERT ON events
+      WHEN NEW.type='chatgpt.browser_turn_recovered'
+      BEGIN SELECT RAISE(ABORT,'injected recovered receipt failure'); END`);
+    assert.throws(()=>f.store.recoverObservedBrowserTurn(f.linked.id,m.version,{
+      requestPromptSha256:SHA,assistantSha256:'a'.repeat(64),summary:'Done\n[MISSION_RELAY:DONE]'}),
+      /injected recovered receipt failure/);
+    assert.equal(f.store.get(f.linked.id).state,'NEEDS_RECONCILIATION');
+    assert.equal(f.store.get(f.linked.id).turnCount,0);
+    assert.equal(f.store.get(f.linked.id).version,m.version);
+    assert.equal(f.store.chatBrowserTurn(f.linked.id)?.status,'uncertain');
+    assert.equal(f.store.chatBrowserTurn(f.linked.id)?.assistantSha256,undefined);
+    assert.equal(f.store.events(f.linked.id).filter(e=>e.type==='mission.reconciled').length,0);
+    assert.equal(f.store.events(f.linked.id).filter(e=>e.type==='chatgpt.browser_turn_recovered').length,0);
+    const competitor=f.store.create({goal:'Other',acceptance:['Single writer'],
+      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:2,requestKey:'existing-recovery-blocked'});
+    const linked=f.store.linkChat(competitor.id,URL,competitor.version).mission;
+    assert.throws(()=>f.store.reserveChatBrowserTurn(linked.id,linked.version,'cannot-send',SHA),
+      /Another Mission owns/);
+  }finally{f.cleanup();}
 });
 
 test('Observed browser response pauses the mission, never declares completion',()=>{

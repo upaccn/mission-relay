@@ -56,6 +56,7 @@ const TERMINAL_EVENTS=new Set([
   'verification.accepted','verification.checks_required',
   'chatgpt.browser_observed','chatgpt.browser_uncertain',
   'chatgpt.browser_rollover_recovered',
+  'chatgpt.browser_turn_recovered',
   'chatgpt.browser_run_finished',
 ]);
 const STATUS_BY_EVENT:Record<string,string>={
@@ -67,6 +68,7 @@ const STATUS_BY_EVENT:Record<string,string>={
   'chatgpt.browser_observed':'PAUSED (ChatGPT browser response observed)',
   'chatgpt.browser_uncertain':'NEEDS_RECONCILIATION (browser side effect ambiguous)',
   'chatgpt.browser_rollover_recovered':'PAUSED (operator-confirmed new ChatGPT conversation)',
+  'chatgpt.browser_turn_recovered':'PAUSED (original ChatGPT reply independently re-observed)',
   'chatgpt.browser_run_finished':'PAUSED (final ChatGPT browser batch result observed)',
 };
 
@@ -206,7 +208,7 @@ export class TelegramBridge {
         }
         const body=event.type==='chatgpt.browser_observed'||event.type==='chatgpt.browser_uncertain'||
           event.type==='chatgpt.browser_run_finished'||
-          event.type==='chatgpt.browser_rollover_recovered'
+          event.type==='chatgpt.browser_rollover_recovered'||event.type==='chatgpt.browser_turn_recovered'
           ?formatBrowserResultNotification(this.store.get(event.missionId),event)
           :`Mission ${event.missionId}: ${STATUS_BY_EVENT[event.type]}\nEvent #${event.id}: ${event.type}\nUse /status ${event.missionId} for details.`;
         await this.transport.sendMessage(this.chatId,body);
