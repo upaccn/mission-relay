@@ -48,7 +48,7 @@ The early broad GitHub issue #3 mentioned mobile click/type/scroll and browser-w
    node .\dist\cli.js browser-bind <mission-id> --browser-id <listed-id> --revision <current-version>
    ```
 
-   `browser-list` only reports browser ID, brand, active tab count, and extension version; it never prints profile emails. `browser-bind` requires the selected ID to be connected, records a revisioned audit event, and refuses rebinding during an interrupted browser send. **Unpinned local browser-probe/send/drive and Telegram /continue now fail closed before accessing Chrome.** Bound operations remain pinned after extension reconnects.
+   `browser-list` only reports browser ID, brand, active tab count, and extension version; it never prints profile emails. If `activeTabs` is **0**, the local relay can still be healthy but no browser turn can execute: the operator must enable the extension on the exact intended ChatGPT tab again. Do not auto-enable another window, change the profile binding, start a second relay or re-send an earlier uncertain request. `browser-bind` requires the selected ID to be connected, records a revisioned audit event, and refuses rebinding during an interrupted browser send. **Unpinned local browser-probe/send/drive and Telegram /continue now fail closed before accessing Chrome.** Bound operations remain pinned after extension reconnects.
 
 ## Configure one existing ChatGPT conversation
 
