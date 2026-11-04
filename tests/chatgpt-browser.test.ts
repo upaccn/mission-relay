@@ -7,7 +7,8 @@ import {createHash} from 'node:crypto';
 import {Store} from '../src/core/store.js';
 import {Engine} from '../src/core/engine.js';
 import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUrl,
-  tolerateRolloverNavigation,
+  tolerateRolloverNavigation,rolloverUrlClass,newChatBootstrapDelayMs,
+  shouldReloadBlankNewChat,reloadBlankDirectNewChat,ACTIVE_REPLY_OBSERVATION_INTERVAL_MS,
   submitNewChatTurn,
   DEFAULT_BROWSER_TURN_TIMEOUT_MS,MAX_BROWSER_TURN_TIMEOUT_MS,type BrowserSession} from '../src/plugins/chatgpt-browser.js';
 import {executeBrowserTurn,driveChatConversation,browserDecision,browserContinuationPrompt} from '../src/core/browser-controller.js';
@@ -42,17 +43,18 @@ test('Browser turn is durably reserved before any external interaction',()=>{
   }finally{f.cleanup();}
 });
 
-test('Adaptive observer backs off for 5–30 minute ChatGPT turns without model API calls',()=>{
+test('Long tasks use 60-second normal DOM polls and a separate quick final-stability check',()=>{
   assert.equal(DEFAULT_BROWSER_TURN_TIMEOUT_MS,35*60*1000);
   assert.equal(MAX_BROWSER_TURN_TIMEOUT_MS,45*60*1000);
-  assert.equal(observationDelayMs(0,false),1000);
-  assert.equal(observationDelayMs(15000,false),2500);
-  assert.equal(observationDelayMs(120000,false),5000);
-  assert.equal(observationDelayMs(600000,false),10000);
-  assert.equal(observationDelayMs(1800000,false),15000);
-  assert.equal(observationDelayMs(1800000,true),650);
-  const roughPolls=10/1+50/2.5+240/5+600/10+1200/15;
-  assert.ok(roughPolls<230,'A 35-minute task must not run thousands of DOM snapshots');
+  assert.equal(ACTIVE_REPLY_OBSERVATION_INTERVAL_MS,60000);
+  for(const elapsed of [0,15000,120000,600000,1800000])
+    assert.equal(observationDelayMs(elapsed,false),60000);
+  assert.equal(observationDelayMs(1800000,true),3000);
+  assert.equal(newChatBootstrapDelayMs(0,true,false),2000);
+  assert.equal(newChatBootstrapDelayMs(15000,true,false),2000);
+  assert.equal(newChatBootstrapDelayMs(25000,false,false),60000);
+  assert.equal(newChatBootstrapDelayMs(120000,false,true),3000);
+  assert.ok(35*60*1000/60000<40,'A 35-minute task must need fewer than 40 steady-state snapshots');
 });
 
 test('Observed browser response pauses the mission, never declares completion',()=>{
@@ -315,6 +317,7 @@ class SyntheticNewChatPage extends SyntheticChatPage {
   currentUrl='about:blank';
   override url(){return this.currentUrl;}
   async goto(url:string){this.currentUrl=url;}
+  async waitForLoadState(_state:string,_options:unknown){return;}
   override locator(selector:string):any {
     const locator=super.locator(selector);
     if(selector.includes('send-button')) {
@@ -393,15 +396,51 @@ test('New ChatGPT first Send tolerates same-origin transitional URLs but refuses
 
 test('Realistic about:blank transition after new-chat Send is observed without duplicate dispatch',async()=>{
   assert.equal(tolerateRolloverNavigation('about:blank',5000),true);
+  assert.equal(tolerateRolloverNavigation('',5000),true);
+  assert.equal(tolerateRolloverNavigation('data:,',5000),true);
+  assert.equal(tolerateRolloverNavigation('chrome-error://chromewebdata/',5000),true);
+  assert.equal(tolerateRolloverNavigation('chrome-extension://synthetic-id/boot.html',5000),true);
   assert.equal(tolerateRolloverNavigation('https://chatgpt.com/?temporary=1',5000),true);
   assert.equal(tolerateRolloverNavigation('about:blank',20000),false);
+  assert.equal(tolerateRolloverNavigation('chrome-error://chromewebdata/',20000),false);
   assert.equal(tolerateRolloverNavigation('https://untrusted.example/other',5000),false);
+  assert.equal(tolerateRolloverNavigation('file:///sensitive',5000),false);
+  assert.equal(rolloverUrlClass('chrome-extension://secret-extension/boot.html'),'browser-internal');
+  assert.equal(rolloverUrlClass('https://untrusted.example/private?a=b'),'other-origin');
+  assert.equal(rolloverUrlClass(''),'empty');
   const page=new AlternateTransitNewChatPage();
   page.reply='Accepted after browser navigation settles.\n[MISSION_RELAY:DONE]';
   const result=await submitNewChatTurn(page as unknown as Page,'Authorized rollover prompt',12000);
   assert.equal(result.url,NEXT_CHAT_URL);
   assert.equal(page.sends,1);
   assert.ok(page.transientReads>3);
+});
+
+test('Read-only blank new-chat recovery is restricted to a single direct-URL refresh after two minutes',()=>{
+  const snapshot={url:NEXT_CHAT_URL,assistantCount:0,userCount:1,
+    composerReady:true,generating:false,lastAssistant:''};
+  assert.equal(shouldReloadBlankNewChat(119999,snapshot,false),false);
+  assert.equal(shouldReloadBlankNewChat(120000,snapshot,false),true);
+  assert.equal(shouldReloadBlankNewChat(150000,snapshot,true),false);
+  assert.equal(shouldReloadBlankNewChat(120000,{...snapshot,generating:true},false),false);
+  assert.equal(shouldReloadBlankNewChat(120000,{...snapshot,lastAssistant:'partial result'},false),false);
+  assert.equal(shouldReloadBlankNewChat(120000,{...snapshot,assistantCount:1},false),true);
+});
+
+test('A blank first new-chat viewport can refresh its exact URL without any repeated Send',async()=>{
+  const page=new SyntheticNewChatPage();
+  page.currentUrl=NEXT_CHAT_URL;
+  page.sends=1;
+  let reloads=0;
+  (page as any).reload=async()=>{reloads++;};
+  await reloadBlankDirectNewChat(page as unknown as Page,NEXT_CHAT_URL);
+  assert.equal(reloads,1);
+  assert.equal(page.sends,1);
+  page.currentUrl='https://other.example/unapproved';
+  await assert.rejects(()=>reloadBlankDirectNewChat(page as unknown as Page,NEXT_CHAT_URL),
+    /direct https|refused|Provide a direct/);
+  assert.equal(reloads,1);
+  assert.equal(page.sends,1);
 });
 
 test('New ChatGPT reply-load error is surfaced as ambiguous without repeat Send',async()=>{
@@ -696,19 +735,19 @@ test('A changed assistant reply without the submitted latest user prompt cannot 
   }finally{f.cleanup();}
 });
 
-test('A streaming pause before the final marker must not create an early browser receipt',async()=>{
+test('With a 60-second poll, a 12-second deadline during an incomplete stream fails closed without early receipt',async()=>{
   const f=fixture();try {
     const fake=new AccessibleChatPage(),page=fake as unknown as Page;
     fake.reply='Early partial response without a status marker';
     const started=Date.now();
     const markerArrival=setTimeout(()=>{fake.reply='Complete response after a long streaming pause.\n[MISSION_RELAY:DONE]';},4300);
     try {
-      const result=await driveChatConversation({store:f.store,missionId:f.linked.id,
-        revision:f.linked.version,requestPrefix:'streaming',turns:1,page,url:URL,timeoutMs:12000});
+      await assert.rejects(()=>driveChatConversation({store:f.store,missionId:f.linked.id,
+        revision:f.linked.version,requestPrefix:'streaming',turns:1,page,url:URL,timeoutMs:12000}),
+        /manual reconciliation/);
       assert.ok(Date.now()-started>=4300,'The controller must wait past the partial response');
-      assert.equal(result.turnsObserved[0]?.flowSignal,'DONE');
-      assert.equal(result.turnsObserved[0]?.responseSha256,
-        createHash('sha256').update(fake.reply).digest('hex'));
+      assert.equal(f.store.get(f.linked.id).state,'NEEDS_RECONCILIATION');
+      assert.equal(f.store.events(f.linked.id).filter(x=>x.type==='chatgpt.browser_observed').length,0);
       assert.equal(fake.sends,1);
     } finally {clearTimeout(markerArrival);}
   }finally{f.cleanup();}

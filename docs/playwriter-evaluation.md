@@ -130,7 +130,7 @@ This acceptance gate cannot be substituted with a relay restart or a wrong-URL t
 | Durable request reservation, crash/restart and no duplicate sends | Tested |
 | Single writer across different Missions targeting the same chat | Tested |
 | Loop marker stop/continue behavior | Tested |
-| GMK3 Windows and VPS Linux builds / isolated smoke | **82 tests passed on both hosts; three-OS CI passed for c1181f4 and 0fb8e6d** |
+| GMK3 Windows and VPS Linux builds / isolated smoke | **97 tests pass both hosts; current three-OS CI pending** |
 | Existing GMK3 Chrome Playwriter extension handshake | **Passed, target Chrome profile selected** |
 | Read-only probe of exact target ChatGPT conversation | **Passed, real messages and ready composer observed** |
 | One actual ChatGPT prompt and observed reply | **Passed once via Telegram; original early receipt defect found and fixed in new source** |
@@ -152,10 +152,10 @@ This acceptance gate cannot be substituted with a relay restart or a wrong-URL t
 | Pinned profile required for all browser reads/sends and Telegram browser continuation | **Synthetic/CLI tests pass on Windows/Linux; requires next foreground Telegram reload for live enforcement** |
 | One-shot owner instruction and concurrent-new-instruction preservation | **Synthetic regressions and live owner-triggered Telegram→Chrome single-turn test passed; exact reply SHA matched and instruction cleared once** |
 | Full-length reply SHA-256; bounded stored excerpt and hash-only readback | **Long-answer regression passes Windows/Linux and three-OS CI; read-only live probe hash matches historical receipt** |
-| Adaptive observation and 35–45-minute single-turn timeout | New deterministic interval tests; full multi-minute real browser task not yet completed |
+| 60-second normal observation and 35–45-minute single-turn timeout | Deterministic interval tests plus a fresh live two-turn HANDOFF/first-new-tab acceptance; a single 30-minute continuous real task remains untested |
 | Telegram reply-tail notifications | New fake-channel tests for last-eight-line text, no repeat, and obvious credential redaction; live foreground Telegram reload still required |
 | HANDOFF → new tab → new ChatGPT reply → atomic Mission link migration | **Synthetic success/failure/budget/rollback and fully automatic real two-turn test passed** |
-| Bounded transitional new-tab URLs and reply-load failure | Synthetic tests passed; first two live attempts exposed transient failures and conservative no-replay recovery |
+| Bounded transitional new-tab URLs and reply-load failure | Prior two live transient failures preserved as evidence; new source has bounded browser-internal bootstrap allowance, privacy-safe URL class, a one-time same-tab no-resend blank refresh and synthetic tests; a fresh real new-tab test passed without needing the blank refresh |
 | Independent completed new-chat receipt recovery | Passed live: original request SHA, exact new user prompt, stable final reply, atomic URL update, two rounds, no replay |
 | Fully automatic old-chat HANDOFF → new ChatGPT conversation DONE | **Passed live:** two reservations, two observations, one migrated URL, final SHA matches read-only new tab, no manual recovery |
 | Generic Telegram-driven arbitrary click/type/scroll and browser-wide permission-scope tests | Not implemented or verified as general capabilities; outside the validated ChatGPT continuation path |

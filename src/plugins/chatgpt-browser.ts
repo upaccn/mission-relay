@@ -119,16 +119,21 @@ function delay(ms:number):Promise<void> {return new Promise(resolve=>setTimeout(
 export const DEFAULT_BROWSER_TURN_TIMEOUT_MS=35*60*1000;
 export const MAX_BROWSER_TURN_TIMEOUT_MS=45*60*1000;
 
-/** Local Playwriter DOM reads have no model-token charge, but thousands of
- * 650ms reads over a 30-minute task waste relay/Chrome CPU. Observe promptly
- * at first, back off during long execution, then verify final stability quickly. */
-export function observationDelayMs(elapsedMs:number,finalCandidate:boolean):number {
-  if(finalCandidate)return 650;
-  if(elapsedMs<10000)return 1000;
-  if(elapsedMs<60000)return 2500;
-  if(elapsedMs<300000)return 5000;
-  if(elapsedMs<900000)return 10000;
-  return 15000;
+/** A 5–30-minute model turn only needs one DOM snapshot per minute. The one
+ * exception is a response with an apparent final marker: confirm its stable
+ * text on a second read after three seconds before committing a receipt. */
+export const ACTIVE_REPLY_OBSERVATION_INTERVAL_MS=60_000;
+export function observationDelayMs(_elapsedMs:number,finalCandidate:boolean):number {
+  return finalCandidate?3_000:ACTIVE_REPLY_OBSERVATION_INTERVAL_MS;
+}
+
+/** A newly opened tab has a separate short Chrome/SPA bootstrap phase before
+ * the stable direct ChatGPT conversation URL exists. This is not a model poll. */
+export function newChatBootstrapDelayMs(elapsedMs:number,settling:boolean,
+  finalCandidate:boolean):number {
+  if(finalCandidate)return observationDelayMs(elapsedMs,true);
+  if(settling && elapsedMs<20_000)return 2_000;
+  return observationDelayMs(elapsedMs,false);
 }
 
 /** During the first Send on a fresh tab, ChatGPT may briefly use same-origin
@@ -148,12 +153,44 @@ export function isPendingNewChatUrl(value:string):boolean {
  * closed if the exact direct ChatGPT conversation URL never appears. */
 export function tolerateRolloverNavigation(value:string,elapsedMs:number):boolean {
   if(!Number.isFinite(elapsedMs)||elapsedMs<0||elapsedMs>=20000)return false;
+  if(value===''||value==='data:,'||value==='data:text/html,')return true;
   if(isPendingNewChatUrl(value))return true;
   try {
     const url=new URL(value);
     return url.protocol==='about:'||url.protocol==='chrome:'||
+      url.protocol==='chrome-error:'||url.protocol==='chrome-extension:'||
       (url.origin==='https://chatgpt.com'&&!url.username&&!url.password);
   } catch {return false;}
+}
+
+/** Coarse diagnostics only: do not write the full address, account ID or
+ * extension URL to SQLite, Telegram or public logs. */
+export function rolloverUrlClass(value:string):string {
+  if(!value)return 'empty';
+  try {
+    const url=new URL(value);
+    if(url.origin==='https://chatgpt.com')return 'chatgpt-transitional';
+    if(['about:','chrome:','chrome-error:','chrome-extension:','data:'].includes(url.protocol))
+      return 'browser-internal';
+    return 'other-origin';
+  }catch{return 'invalid';}
+}
+
+/** Only one same-URL page refresh may be performed, never a second Send.
+ * The full direct URL must be known and no generation visible. */
+export function shouldReloadBlankNewChat(elapsedMs:number,
+  snapshot:ChatPageSnapshot,alreadyReloaded:boolean):boolean {
+  return !alreadyReloaded && elapsedMs>=120_000 && !snapshot.generating &&
+    !snapshot.lastAssistant.trim();
+}
+
+/** Refresh is a read-only recovery of an already submitted *new* chat, never
+ * a Send or a navigation to an unverified URL. */
+export async function reloadBlankDirectNewChat(page:Page,expectedUrl:string):Promise<void> {
+  const exact=normalizeChatGPTUrl(expectedUrl);
+  if(normalizeChatGPTUrl(page.url())!==exact)
+    throw new Error('New-chat refresh refused: browser no longer at the expected direct conversation');
+  await page.reload({waitUntil:'domcontentloaded',timeout:30000});
 }
 
 function visibleChatResponseFailed(answer:string):boolean {
@@ -201,7 +238,11 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
         return {...current,submitted:true,observedAt:new Date().toISOString()};
       }
     }
-    await delay(Math.max(0,Math.min(observationDelayMs(Date.now()-startedAt,finalCandidate),deadline-Date.now())));
+    // A visible reply-load error is checked once more after five seconds; it
+    // must not be hidden until the next normal 60-second model poll.
+    const retryDelay=failureSince===null?Infinity:Math.max(0,5_000-(Date.now()-failureSince));
+    await delay(Math.max(0,Math.min(observationDelayMs(Date.now()-startedAt,finalCandidate),
+      retryDelay,deadline-Date.now())));
   }
   throw new Error('ChatGPT response observation timed out; submission outcome is ambiguous');
 }
@@ -215,6 +256,9 @@ export async function submitNewChatTurn(page:Page,prompt:string,
   if(!Number.isInteger(timeoutMs)||timeoutMs<10000||timeoutMs>MAX_BROWSER_TURN_TIMEOUT_MS)
     throw new Error('Invalid new-chat timeout');
   await page.goto('https://chatgpt.com/',{waitUntil:'domcontentloaded',timeout:30000});
+  // A fast CDP-driven click can race hydration on the first fresh SPA load.
+  // Waiting for the document load event is a small one-time bootstrap cost.
+  await page.waitForLoadState('load',{timeout:30000});
   const startingUrl=page.url();
   if(startingUrl!=='https://chatgpt.com/'&&startingUrl!=='https://chatgpt.com')
     throw new Error('New ChatGPT tab did not open the authorized origin');
@@ -226,17 +270,25 @@ export async function submitNewChatTurn(page:Page,prompt:string,
   await send.click({timeout:10000});
   const start=Date.now(),deadline=start+timeoutMs;
   const finalMarker=/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED)\]\s*$/;
-  let last='',stableSince=start,failureSince:number|null=null;
+  let last='',stableSince=start,failureSince:number|null=null,reloadedBlank=false;
   while(Date.now()<deadline) {
     const currentUrl=page.url();
     let destination:string|null=null;
     try{destination=normalizeChatGPTUrl(currentUrl);}catch{
       if(!tolerateRolloverNavigation(currentUrl,Date.now()-start))
-        throw new Error('New ChatGPT tab navigated outside an authorized direct conversation URL');
+        throw new Error(`New ChatGPT tab navigated outside an authorized direct conversation URL (class=${rolloverUrlClass(currentUrl)})`);
     }
     let finalCandidate=false;
     if(destination) {
       const snapshot=await inspectChatPage(page,destination);
+      if(shouldReloadBlankNewChat(Date.now()-start,snapshot,reloadedBlank)) {
+        reloadedBlank=true;
+        // Reload only the already-known exact conversation, never the old tab
+        // or an uncertain noncanonical origin; do not click Send again.
+        console.warn('New ChatGPT conversation has no visible answer after two minutes; refreshing the same authorized tab once without resending');
+        await reloadBlankDirectNewChat(page,destination);
+        continue;
+      }
       if(!snapshot.generating&&visibleChatResponseFailed(snapshot.lastAssistant)) {
         failureSince??=Date.now();
         if(Date.now()-failureSince>=5000)
@@ -250,7 +302,9 @@ export async function submitNewChatTurn(page:Page,prompt:string,
           return {url:destination,receipt:{...snapshot,submitted:true,observedAt:new Date().toISOString()}};
       }
     }
-    await delay(Math.max(0,Math.min(observationDelayMs(Date.now()-start,finalCandidate),deadline-Date.now())));
+    const retryDelay=failureSince===null?Infinity:Math.max(0,5_000-(Date.now()-failureSince));
+    await delay(Math.max(0,Math.min(newChatBootstrapDelayMs(Date.now()-start,
+      !destination,finalCandidate),retryDelay,deadline-Date.now())));
   }
   throw new Error('New ChatGPT reply observation timed out; creation outcome is ambiguous');
 }
