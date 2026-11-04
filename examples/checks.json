@@ -1,0 +1,6 @@
+[
+  {
+    "argv": ["node", "--test"],
+    "timeoutMs": 30000
+  }
+]
