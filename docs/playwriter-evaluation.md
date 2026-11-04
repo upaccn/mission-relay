@@ -140,6 +140,7 @@ This acceptance gate cannot be substituted with a relay restart or a wrong-URL t
 | SQLite close/reopen of observed receipt and no-replay key | **Passed automated test and separate local CLI readback** |
 | Post-send Telegram foreground restart without replay | **Passed; original event/revision and browser message counts preserved** |
 | Two or more consecutive real turns without duplicate messages | **Passed via local CLI: NEXT then DONE, distinct durable receipts** |
+| Genuine research continuation with changing assistant DOM fragments | **Passed live after owner tab authorization:** single new request in a fresh 1-turn Mission on the prior research chat; counts varied 3→4→3 and visible partial hashes changed, while final SHA matched SQLite, CLI and a separate read-only page probe; no duplicate Send |
 | Post-run response hash, at-most-once request key, and final page counts | **Passed on live tab; duplicate key rejected with no state change** |
 | Wrong bound browser profile, stale revision and wrong exact URL | **All rejected in live environment; no send or state change** |
 | Project-owned local Playwriter relay restart and Chrome reconnect | **Passed; new relay PID, same bound authorized tab, unchanged message/event state** |
