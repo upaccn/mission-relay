@@ -73,6 +73,8 @@ For an **existing ChatGPT conversation** whose Send succeeded but a previously d
 
 ## Delivery and recovery
 
+**Native Codex final results:** A successful supervised Codex Mission may run through a separate read-only model verifier before publishing a single `verification.accepted` event. The Telegram notification now includes the bounded model summary and up to three verifier evidence statements, explicitly labeled as **model-reviewed, not deterministic proof**. An initial `accepted` message means work started, not that work completed. If the owner sends the same task again while it is active, the Bot returns the active Mission ID and `/status` command rather than triggering another execution. Do not resend while waiting for the final notification. This is separate from duplicate Bot API update-ID protection; intentional repeated tasks after completion are still new commands.
+
 - Only messages in the allowlisted private chat from the allowlisted numeric Telegram user ID are accepted.
 - A Bot API batch is processed in update-ID order. Malformed messages with a valid update ID are skipped and their cursor advanced instead of blocking all later commands.
 - Each Telegram update ID is reserved in SQLite **before** any action, so duplicates cannot trigger a second mission run.

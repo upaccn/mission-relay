@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/core/store.js';
 import { Engine } from '../src/core/engine.js';
-import { TelegramBridge, formatBrowserResultNotification, isolatedCodexHasMcpServers, type TelegramUpdate, type TelegramTransport } from '../src/plugins/telegram.js';
+import { TelegramBridge, formatBrowserResultNotification, formatNativeMissionNotification, isolatedCodexHasMcpServers, type TelegramUpdate, type TelegramTransport } from '../src/plugins/telegram.js';
 import type { AgentAdapter, Decision, Mission, TurnInput, Verification } from '../src/core/types.js';
 import type { Page } from 'playwriter';
 
@@ -367,6 +367,73 @@ test('Authorized Telegram continue starts a single eligible mission and reports 
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.filter(x=>/COMPLETED/.test(x)).length,1);
     assert.equal(f.agent.calls,1);
+  }finally{f.cleanup();}
+});
+
+test('Native Codex final Telegram notification includes concise independently reviewed findings, not only COMPLETED',async()=>{
+  const f=fixture();try{
+    await f.bridge.pollOnce(0);
+    const secret='sk-proj-'+'A'.repeat(29);
+    f.agent.execute=async()=>{
+      f.agent.calls++;
+      return {status:'candidate_complete',summary:`Reviewed README/STATE; found stale examples ${secret}`,
+        next_instruction:'',evidence:['README mismatched']};
+    };
+    f.agent.verify=async()=>({accepted:true,reason:'Review independently confirmed',
+      evidence:['README lacks browser-bind',
+        'STATE contains historical CI entries',
+        'https://private.example/path?token=sensitive']});
+    const m=await f.engine.run(f.m.id);
+    assert.equal(m.state,'COMPLETED');
+    const event=f.store.events(m.id).find(e=>e.type==='verification.accepted')!;
+    const formatted=formatNativeMissionNotification(m,event);
+    assert.match(formatted,/COMPLETED/);
+    assert.match(formatted,/verification.accepted/);
+    assert.match(formatted,/Summary: Reviewed README\/STATE/);
+    assert.match(formatted,/README lacks browser-bind/);
+    assert.match(formatted,/STATE contains historical CI/);
+    assert.match(formatted,/\[REDACTED\]/);
+    assert.match(formatted,/\[PRIVATE LINK\]/);
+    assert.doesNotMatch(formatted,new RegExp(secret));
+    assert.doesNotMatch(formatted,/token=sensitive/);
+    assert.ok(formatted.split('\n').length<=9);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.filter(x=>x.includes('verification.accepted')).length,1);
+    assert.equal(f.transport.sent[0],formatted);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,1);
+  }finally{f.cleanup();}
+});
+
+test('Repeated Codex natural-language message while the first is running reports its existing Mission without replay',async()=>{
+  const f=fixture();try{
+    f.store.setMeta('telegram.codex.workspace',f.dir);
+    let finish:(decision:Decision)=>void=()=>{};
+    const gate=new Promise<Decision>(resolve=>{finish=resolve;});
+    f.agent.execute=async()=>{f.agent.calls++;return gate;};
+    const prompt='Codex：只读检查 README.md 和 STATE.md 的差异';
+    f.transport.updates=[f.message(850,prompt),f.message(851,prompt)];
+    await f.bridge.pollOnce(0);
+    const missions=f.engine.list().filter(x=>x.goal.includes('README.md 和 STATE.md'));
+    assert.equal(missions.length,1);
+    assert.equal(f.agent.calls,1);
+    assert.equal(f.engine.get(missions[0]!.id).state,'RUNNING');
+    const accepted=f.transport.sent.filter(x=>/Codex Mission .* accepted/.test(x));
+    assert.equal(accepted.length,1);
+    assert.match(accepted[0]!,/Do not send the same task again/);
+    const duplicate=f.transport.sent.find(x=>/This task is already active/.test(x));
+    assert.ok(duplicate);
+    assert.match(duplicate,/No new execution was submitted/);
+    assert.match(duplicate,new RegExp(missions[0]!.id));
+    assert.doesNotMatch(duplicate,/Command rejected/);
+    finish({status:'candidate_complete',summary:'Documents reviewed',next_instruction:'',evidence:['README']});
+    for(let i=0;i<50&&f.engine.get(missions[0]!.id).state!=='COMPLETED';i++)
+      await new Promise(resolve=>setTimeout(resolve,10));
+    assert.equal(f.engine.get(missions[0]!.id).state,'COMPLETED');
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.filter(x=>/verification.accepted/.test(x)).length,1);
+    assert.equal(f.agent.calls,1);
+    assert.equal(f.engine.list().filter(x=>x.goal.includes('README.md 和 STATE.md')).length,1);
   }finally{f.cleanup();}
 });
 

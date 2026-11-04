@@ -80,6 +80,41 @@ const STATUS_BY_EVENT:Record<string,string>={
   'chatgpt.browser_run_finished':'PAUSED (final ChatGPT browser batch result observed)',
 };
 
+/** Telegram is not end-to-end encrypted. Treat all model summaries and
+ * verifier evidence as untrusted, potentially secret-bearing display text. */
+function redactTelegramText(value:string):string {
+  return value.replace(/\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{22,}/g,'[REDACTED]')
+    .replace(/\b(?:ghp_|gho_|ghu_|ghs_|github_pat_)[A-Za-z0-9_]{18,}/g,'[REDACTED]')
+    .replace(/\b\d{7,11}:[A-Za-z0-9_-]{30,}\b/g,'[REDACTED]')
+    .replace(/https?:\/\/[^\s]*[#?][^\s]*/gi,'[PRIVATE LINK]');
+}
+function compactTelegramText(value:string,maxLength:number):string {
+  const cleaned=redactTelegramText(value.replace(/\s+/g,' ').trim());
+  return cleaned.length<=maxLength?cleaned:`${cleaned.slice(0,maxLength-1)}…`;
+}
+
+/** A native Codex mission must surface the verified outcome, not just an
+ * opaque status code. Verifier conclusions are separate model judgment, not
+ * independently proven real-world facts or deterministic checks. */
+export function formatNativeMissionNotification(m:Mission,event:MissionEvent):string {
+  const base=[`Mission ${m.id}: ${STATUS_BY_EVENT[event.type]??m.state}`,
+    `Event #${event.id}: ${event.type}`];
+  if(event.type==='verification.accepted') {
+    const payload=event.payload && typeof event.payload==='object'
+      ? event.payload as {reason?:unknown;evidence?:unknown}: {};
+    const evidence=Array.isArray(payload.evidence)?payload.evidence
+      .filter((x):x is string=>typeof x==='string').slice(0,3):[];
+    return [
+      ...base,
+      'Codex result (model + independent model verifier; not deterministic proof):',
+      `Summary: ${compactTelegramText(m.lastSummary??'No summary available',450)}`,
+      ...evidence.map((x,i)=>`Evidence ${i+1}: ${compactTelegramText(x,235)}`),
+      `Details: /status ${m.id}`,
+    ].join('\n').slice(0,2900);
+  }
+  return [...base,`Use /status ${m.id} for details.`].join('\n');
+}
+
 /** Telegram is not end-to-end encrypted: only send a bounded tail of the
  * browser response, never complete tool logs, screenshots or browser secrets. */
 export function formatBrowserResultNotification(m:Mission,event:MissionEvent):string {
@@ -107,14 +142,10 @@ export function formatBrowserResultNotification(m:Mission,event:MissionEvent):st
   const lines=selected.filter(x=>!/^[-=]{3,}$/.test(x)).slice(0,6)
     .map(x=>x.length>190?'…'+x.slice(-189):x);
   // Redact recognizable credential formats if a model accidentally quotes one.
-  const redact=(s:string)=>s.replace(/\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_-]{22,}/g,'[REDACTED]')
-    .replace(/\b(?:ghp_|gho_|ghu_|ghs_|github_pat_)[A-Za-z0-9_]{18,}/g,'[REDACTED]')
-    .replace(/\b\d{7,11}:[A-Za-z0-9_-]{30,}\b/g,'[REDACTED]')
-    .replace(/https?:\/\/[^\s]*[#?][^\s]*/gi,'[PRIVATE LINK]');
   const round=typeof data.round==='number'?data.round:m.turnCount;
   const text=[`Mission ${m.id} — turn ${round}/${m.maxTurns}`,
     'ChatGPT result (model-provided; not independently verified):',
-    ...lines.map(redact),
+    ...lines.map(redactTelegramText),
     ...(finalMarker?[finalMarker]:[]),
     `Status: /status ${m.id}`];
   return text.join('\n').slice(0,2900);
@@ -218,7 +249,7 @@ export class TelegramBridge {
           event.type==='chatgpt.browser_run_finished'||
           event.type==='chatgpt.browser_rollover_recovered'||event.type==='chatgpt.browser_turn_recovered'
           ?formatBrowserResultNotification(this.store.get(event.missionId),event)
-          :`Mission ${event.missionId}: ${STATUS_BY_EVENT[event.type]}\nEvent #${event.id}: ${event.type}\nUse /status ${event.missionId} for details.`;
+          :formatNativeMissionNotification(this.store.get(event.missionId),event);
         await this.transport.sendMessage(this.chatId,body);
       }
       cursor=event.id;
@@ -230,7 +261,7 @@ export class TelegramBridge {
    * explicitly approved and stored by the LOCAL telegram-anchor command.
    * No model is allowed to choose a browser or create a second Send. */
   private async startFreshChat(task:string,commandId:string):Promise<string> {
-    if(this.activeMission)throw new Error(`Mission ${this.activeMission} is already active`);
+    if(this.activeMission)return this.alreadyRunning(task.trim());
     const goal=task.trim();
     const prompt=browserFreshTaskPrompt(goal);
     const anchorId=this.store.getMeta('telegram.chatgpt.anchorMissionId');
@@ -275,7 +306,7 @@ export class TelegramBridge {
   /** Codex tasks use the operator-approved local read-only workspace.
    * There is no silent ChatGPT-to-Codex fallback or workspace selection by AI. */
   private async startCodexTask(task:string,commandId:string):Promise<string> {
-    if(this.activeMission)throw new Error(`Mission ${this.activeMission} is already active`);
+    if(this.activeMission)return this.alreadyRunning(task.trim());
     const goal=task.trim();
     if(!goal||goal.length>1500)throw new Error('Codex task must be 1–1500 characters');
     const workspace=this.store.getMeta('telegram.codex.workspace');
@@ -292,7 +323,7 @@ export class TelegramBridge {
       throw new Error('Remote Codex task refused: isolated profile has external MCP servers with unverified write permissions');
     const ready=await this.preflight();
     if(!ready.ok)throw new Error(ready.message);
-    if(this.activeMission)throw new Error('Another mission started while the Codex preflight ran');
+    if(this.activeMission)return this.alreadyRunning(goal);
     const m=this.engine.create({
       goal,acceptance:['Provide evidence for the requested read-only project analysis; report unverified claims'],
       workspace,sandbox:'read-only',mode:'supervised',maxTurns:1,
@@ -304,7 +335,19 @@ export class TelegramBridge {
     this.activeTask=taskPromise.then(()=>{}).catch(error=>{
       console.error(`Codex task ${m.id}: ${error instanceof Error?error.message:'unknown error'}`);
     }).finally(()=>{this.activeMission=null;this.activeTask=null;});
-    return `Codex Mission ${m.id} accepted (one read-only turn, configured workspace). Check /status; no automatic retry.`;
+    return `Codex Mission ${m.id} accepted (one read-only turn, configured workspace).\nThe model is running; this is not a completion confirmation.\nFinal outcome will be delivered automatically. Do not send the same task again.\nProgress: /status ${m.id}`;
+  }
+
+  private alreadyRunning(goal:string):string {
+    const current=this.engine.get(this.activeMission!);
+    const same=current.goal===goal;
+    return [
+      same?`This task is already active as Mission ${current.id}.`
+        :`Another Mission ${current.id} is active; your new task was not started.`,
+      'No new execution was submitted. Do not resend.',
+      `Progress: /status ${current.id}`,
+      'The terminal result will be delivered automatically.',
+    ].join('\n');
   }
 
   private async handle(text:string,commandId='local-test'):Promise<string> {
