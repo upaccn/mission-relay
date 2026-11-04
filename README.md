@@ -1,5 +1,7 @@
 # Mission Relay
 
+**Telegram natural language:** After a local `telegram-anchor` binds an existing owner-enabled Playwriter ChatGPT tab, sending ordinary text or `/new <task>` to the owner-only Telegram bot starts one **new read-only ChatGPT conversation in a fresh Chrome tab** (one turn, durable request/response receipt). The old `/continue <mission-id> v<revision>` still resumes an existing chat with the longer controller-authored prompt. An explicit `/codex <task>` can instead run the existing Codex SDK in one locally approved read-only workspace; authentication and real execution require separate validation. See [Telegram](docs/telegram.md). These routes do not grant generic browser control, arbitrary model-provider switching or unattended write permissions.
+
 **Local-first mission control and handoff for long-running AI work.** Open source under Apache-2.0.
 
 Mission Relay turns a goal and explicit acceptance criteria into a durable mission. It uses an existing AI agent for work, saves checkpoints, determines whether another turn is needed, and independently verifies a candidate result **for supported native executors**. It does **not** reimplement an agent runtime, copy browser profiles, or extract ChatGPT credentials or internal APIs. The opt-in ChatGPT adapter reads visible UI text; a browser reply alone does not constitute independent mission verification.

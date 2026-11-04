@@ -46,6 +46,8 @@ Commands:
   doctor                Check the configured local Codex bridge without starting a mission
   codex-init            Create an isolated Codex config/auth directory (never copies credentials)
   telegram              Run an optional Telegram channel in the foreground (owner allowlist)
+  telegram-anchor <mission-id>|--clear  Locally approve/revoke the exact pinned new-chat source tab
+  telegram-codex-workspace --workspace <dir>|--clear  Locally approve/revoke the read-only Codex work directory
   telegram-identify     Inspect local /start sender IDs before owner authorization
   channel-status        Inspect durable Telegram delivery cursor and poller status (no secrets)
   create --goal <text> --accept <criterion> [--accept <criterion>...] --workspace <path>
@@ -124,6 +126,30 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       if(previous && previous!==url) throw new Error('Idempotency key already belongs to a different ChatGPT conversation');
       const linked=store.linkChat(mission.id,url,mission.version);
       result={...linked,handoff:renderChatGPTHandoff(linked.mission,linked.url)};
+    } else if (command === 'telegram-anchor' && id === '--clear') {
+      store.setMeta('telegram.chatgpt.anchorMissionId','');
+      result={configured:false,note:'The Telegram fresh-chat launcher has been locally revoked.'};
+    } else if (command === 'telegram-anchor' && id) {
+      const url=store.chatLink(id);
+      const browserId=store.chatBrowserBinding(id);
+      if(!url||!browserId)throw new Error('Anchor requires an existing ChatGPT mission with an explicitly pinned Chrome profile');
+      const session=await connectChatPage(url,{browserId});
+      const snapshot=await withBrowserSession(session,page=>inspectChatPage(page,url));
+      if(!snapshot.composerReady||snapshot.generating)
+        throw new Error('Anchor ChatGPT tab must be idle with a visible composer');
+      store.setMeta('telegram.chatgpt.anchorMissionId',id);
+      result={configured:true,anchorMissionId:id,chatUrl:url,
+        note:'Explicitly approved source tab only; future Telegram tasks create separate new tabs, never send in this old conversation.'};
+    } else if (command === 'telegram-codex-workspace' && id === '--clear') {
+      store.setMeta('telegram.codex.workspace','');
+      result={configured:false,note:'The Telegram remote Codex work directory has been locally revoked.'};
+    } else if (command === 'telegram-codex-workspace') {
+      const f=flags(argv.slice(1));
+      const workspace=resolve(option(f,'workspace'));
+      if(!statSync(workspace).isDirectory())throw new Error('Approved Codex workspace must be an existing directory');
+      store.setMeta('telegram.codex.workspace',workspace);
+      result={configured:true,workspace,mode:'read-only',
+        note:'Telegram /codex is limited to one supervised turn. This filesystem sandbox does not constrain external MCP permissions; use an isolated Codex profile without write-capable MCP tools.'};
     } else if (command === 'codex-init') {
       result={codexHome:initializeCodexHome(),
         next:'Authorize this isolated CODEX_HOME using the official codex login command, then run mission-relay doctor.'};

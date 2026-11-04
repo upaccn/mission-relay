@@ -80,6 +80,24 @@ export function browserContinuationPrompt(goal:string,acceptance:string[],first:
   ].join('\n');
 }
 
+/** A new owner-requested chat needs no old-conversation handoff or verbose
+ * continuation history. Keep the user's actual instruction intact. */
+export function browserFreshTaskPrompt(goal:string):string {
+  if(!goal.trim()||goal.length>1500)throw new Error('Fresh ChatGPT task must be 1–1500 characters');
+  return [
+    'Complete this new task requested by the owner from a private Telegram chat.',
+    'Owner request:',
+    goal.trim(),
+    'This is a bounded, read-only research and planning task. Do not modify files,',
+    'websites, accounts or external services, send messages, spend money or expand permissions.',
+    'Separate verifiable evidence from inference, and state what was not checked.',
+    'If a requested action needs write permissions or further authorization, explain the boundary instead of acting.',
+    'Finish with a Telegram-ready summary of up to six concise lines, then exactly one standalone marker:',
+    '[MISSION_RELAY:DONE] if the read-only task is answered, otherwise [MISSION_RELAY:BLOCKED].',
+    'The controller will independently record this answer; a DONE marker is not proof of business completion.',
+  ].join('\n');
+}
+
 export function browserNewChatPrompt(goal:string,acceptance:string[],handoff:string,operatorInstruction:string|null):string {
   return [
     'Continue an explicitly authorized Mission Relay task in this NEW ChatGPT conversation.',

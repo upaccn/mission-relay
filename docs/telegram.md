@@ -21,6 +21,34 @@ Do not enable a startup service or publish credentials before an end-to-end mobi
 
 `/list`, `/status <uuid>`, `/handoff <uuid>`, `/continue <uuid> v<revision>`, `/pause <uuid>`, `/resume <uuid> v<revision>`, `/instruct <uuid> v<revision> <text>`, `/cancel <uuid> v<revision>`.
 
+### Natural-language tasks and fresh ChatGPT tabs
+
+An owner may send **ordinary text** (no slash command) or `/new <natural-language task>` to create exactly one new **read-only** ChatGPT conversation in a new tab of an explicitly approved Playwriter Chrome profile. The existing anchor conversation is inspected only to obtain its enabled tab/context: no message is sent in the anchor. The new task uses a compact evidence/safety prompt instead of the old conversation's lengthy continuation template. The controller creates a one-turn Mission with a Telegram-update-derived unique request key, reserves the Send before browser interaction, and atomically records the observed new conversation URL and complete response SHA. Ambiguous tab creation or sending is **never** blindly retried.
+
+Configure the exact owner-approved anchor once in the local project (after enabling Playwriter on that tab):
+
+```powershell
+node .\dist\cli.js browser-probe <previously-approved-chat-mission-id>
+node .\dist\cli.js telegram-anchor <previously-approved-chat-mission-id>
+```
+
+The CLI checks the exact authorized tab and stores only the anchor Mission ID in the **local SQLite database**, not in Git. The source tab must remain enabled and idle; an unavailable or wrong tab refuses execution. The Bot sends one concise result; `/handoff <new-mission-id>` returns the resulting private ChatGPT URL. New tasks are capped at **one** read-only turn, with no general browser gestures or external writes.
+
+The ChatGPT read-only restriction is **prompt-level**, not a technical sandbox for connectors already installed in the owner's ChatGPT account. Mission Relay does not invoke external connector writes itself, but cannot independently constrain what tools ChatGPT may have available in that conversation. Keep write-capable connected apps disabled or separately approval-gated for high-risk use. A model-produced `DONE` marker is an observed response, not an independently verified real-world result.
+
+To revoke the owner-approved source, run `node .\dist\cli.js telegram-anchor --clear` locally. The same principle applies to Codex workspaces: `node .\dist\cli.js telegram-codex-workspace --clear`. Disabling Playwriter on the original tab also prevents the new-chat operation from proceeding.
+
+For the already installed **Codex SDK** executor, locally authorize one workspace using:
+
+```powershell
+node .\dist\cli.js telegram-codex-workspace --workspace 'C:\path\to\approved\project'
+node .\dist\cli.js doctor
+```
+
+Then `/codex <natural-language task>` runs one supervised, read-only native Codex turn, without opening Chrome or silently switching providers. The isolated Codex `CODEX_HOME` requires separate user authorization/login; `doctor` does **not** prove the model is authenticated or reachable. A read-only filesystem sandbox does not constrain external write-capable MCP connectors; keep this dedicated Codex profile restricted to read-only tools. Other AI models require an explicit, scoped `AgentAdapter`, not merely a natural-language model name.
+
+After updating code, `npm run build` and restart the existing foreground Telegram session to load these commands. No new server or Telegram webhook is required.
+
 `/handoff` returns a locally linked ChatGPT conversation URL and a manual continuation prompt. `/continue` on a linked Mission executes an optional **Playwriter browser continuation** (up to three turns) in that exact operator-enabled Chrome tab; on an unlinked Mission, it uses the existing Codex executor. There is never silent fallback between the two. **Before remote browser continuation, bind the intended Chrome profile locally using `browser-list` then `browser-bind`; an unbound Mission is rejected without querying Chrome.** See [ChatGPT browser control](playwriter-evaluation.md).
 
 **Revision required:** All mutating commands **except emergency `/pause`** require the current mission revision (for example, `/continue 123e4567-e89b-42d3-a456-426614174000 v0`). First issue `/status <uuid>`; it prints the current revision as `v0`, `v1`, etc. After any state/event change, retrieve the latest revision again. A stale or missing revision is rejected, rather than reinterpreted against a changed mission. `/list` also shows the current revision. `/pause <uuid>` intentionally remains revision-free so a stop request works even while turn events are advancing the revision. This is an intentional protocol change from the initial phone acceptance trial; upgrade the foreground poller before using the new syntax.

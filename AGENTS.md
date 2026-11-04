@@ -16,6 +16,8 @@ This is an independent, public, local-first open-source project. It does not dep
 - A stale `This response couldn’t load` visible *before* sending is not proof the newly sent request failed. Attribute new error observations to the exact latest user prompt and an actual changed assistant turn, never just a time window. `browser-recover-turn` may credit an uncertain original-conversation request only after read-only exact-prompt and stable-response verification plus explicit operator side-effect acknowledgement; retain the original uncertainty audit, original request key and no-replay invariant. A recovered model `DONE` does not equal independently verified business completion.
 
 ## Development
+
+- Telegram ordinary text and `/new` create one new read-only ChatGPT conversation only via a local, previously approved exact Playwriter anchor tab. `/codex` requires a separately approved local read-only workspace and an isolated Codex profile with no configured external MCP servers. Preserve fail-closed authorization, at-most-once browser sends, request-key persistence, single final Telegram notifications and local revocation; neither pathway authorizes generic browser gestures, writes or implicit provider switching.
 - Node.js LTS (24+), `npm ci`, `npm run check`, `npm test`, `npm run build`.
 - Test with scripted fake executors; real Codex use is opt-in and requires an authorized account.
 - Browser tests use a synthetic page unless the operator explicitly enables the Playwriter extension. Never run a real ChatGPT browser-send in CI or against an arbitrary open tab.

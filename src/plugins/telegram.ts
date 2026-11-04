@@ -1,16 +1,24 @@
 import type { PluginManifest } from '../core/plugins.js';
+import {readFileSync} from 'node:fs';
+import {join} from 'node:path';
 import { Engine } from '../core/engine.js';
 import { Store } from '../core/store.js';
 import { codexPreflight, type PreflightResult } from '../core/preflight.js';
 import { renderChatGPTHandoff } from '../core/chatgpt-handoff.js';
+import {missionCodexHome} from '../core/paths.js';
 import {connectChatPage,inspectChatPage,type BrowserSession} from './chatgpt-browser.js';
-import {driveChatConversation} from '../core/browser-controller.js';
+import {driveChatConversation,executeBrowserRollover,browserFreshTaskPrompt} from '../core/browser-controller.js';
 import type {Mission,MissionEvent} from '../core/types.js';
 
 export const telegramPluginManifest:PluginManifest={
   id:'channel.telegram',version:'0.1.0',apiVersion:1,kind:'channel',
   capabilities:['receive-command','notify'],
 };
+
+/** This is a fail-closed capability boundary, not a full TOML policy parser. */
+export function isolatedCodexHasMcpServers(config:string):boolean {
+  return /^\s*\[mcp_servers(?:\.|\])/m.test(config);
+}
 
 export interface TelegramUpdate {
   update_id:number;
@@ -218,12 +226,97 @@ export class TelegramBridge {
     }
   }
 
+  /** One fresh, read-only ChatGPT task per owner message, in the Chrome profile
+   * explicitly approved and stored by the LOCAL telegram-anchor command.
+   * No model is allowed to choose a browser or create a second Send. */
+  private async startFreshChat(task:string,commandId:string):Promise<string> {
+    if(this.activeMission)throw new Error(`Mission ${this.activeMission} is already active`);
+    const goal=task.trim();
+    const prompt=browserFreshTaskPrompt(goal);
+    const anchorId=this.store.getMeta('telegram.chatgpt.anchorMissionId');
+    if(!anchorId)throw new Error('No owner-approved ChatGPT anchor; configure telegram-anchor locally first');
+    const url=this.store.chatLink(anchorId);
+    const browserId=this.store.chatBrowserBinding(anchorId);
+    if(!url||!browserId)throw new Error('Configured ChatGPT anchor is missing its exact URL or Chrome binding');
+    const session=await this.browserConnector(url,{browserId});
+    try{
+      const pageState=await inspectChatPage(session.page,url);
+      if(!pageState.composerReady||pageState.generating)
+        throw new Error('Authorized ChatGPT anchor tab is not idle');
+      // This mission is private to the owner and read-only. A duplicate Bot
+      // API update reuses its request key, never repeats a browser Send.
+      const m=this.engine.create({
+        goal,acceptance:['Return a useful, evidence-aware read-only answer to the owner request'],
+        workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:1,
+        requestKey:`telegram-chat-${commandId}`,checks:[],
+      });
+      const linked=this.store.linkChat(m.id,url,m.version).mission;
+      const bound=this.store.bindChatBrowser(m.id,browserId,linked.version).mission;
+      this.activeMission=m.id;
+      this.activeTask=executeBrowserRollover({
+        store:this.store,missionId:m.id,revision:bound.version,
+        requestKey:`telegram-chat-${commandId}-1`,
+        sourcePage:session.page,sourceUrl:url,prompt,
+        telegramBatch:{lastAuthorizedTurn:true},
+      }).then(()=>{}).catch(error=>{
+        console.error(`Fresh ChatGPT mission ${m.id}: ${error instanceof Error?error.message:'unknown error'}`);
+      }).finally(async()=>{
+        try{await session.close();}
+        catch{console.error('Playwriter fresh-chat session cleanup warning');}
+        finally{this.activeMission=null;this.activeTask=null;}
+      });
+      return `New ChatGPT Mission ${m.id} accepted (one read-only turn). The controller will open an authorized fresh Chrome tab and return a final notification. Do not resend.`;
+    }catch(error){
+      try{await session.close();}catch{console.error('Playwriter fresh-chat preflight cleanup warning');}
+      throw error;
+    }
+  }
+
+  /** Codex tasks use the operator-approved local read-only workspace.
+   * There is no silent ChatGPT-to-Codex fallback or workspace selection by AI. */
+  private async startCodexTask(task:string,commandId:string):Promise<string> {
+    if(this.activeMission)throw new Error(`Mission ${this.activeMission} is already active`);
+    const goal=task.trim();
+    if(!goal||goal.length>1500)throw new Error('Codex task must be 1–1500 characters');
+    const workspace=this.store.getMeta('telegram.codex.workspace');
+    if(!workspace)throw new Error('No approved Codex workspace; configure telegram-codex-workspace locally first');
+    // Codex filesystem read-only does not govern external MCP tools. Deny a
+    // remotely launched task when MCP servers are configured in its isolated
+    // profile: their individual read/write capabilities cannot be inferred.
+    let config='';
+    try{config=readFileSync(join(missionCodexHome(),'config.toml'),'utf8');}
+    catch(error){
+      if((error as NodeJS.ErrnoException).code!=='ENOENT')throw new Error('Cannot inspect isolated Codex tool configuration');
+    }
+    if(isolatedCodexHasMcpServers(config))
+      throw new Error('Remote Codex task refused: isolated profile has external MCP servers with unverified write permissions');
+    const ready=await this.preflight();
+    if(!ready.ok)throw new Error(ready.message);
+    if(this.activeMission)throw new Error('Another mission started while the Codex preflight ran');
+    const m=this.engine.create({
+      goal,acceptance:['Provide evidence for the requested read-only project analysis; report unverified claims'],
+      workspace,sandbox:'read-only',mode:'supervised',maxTurns:1,
+      requestKey:`telegram-codex-${commandId}`,checks:[],
+    });
+    // Synchronously claim before acknowledging the command. No remote writes.
+    const taskPromise=this.engine.run(m.id,m.version);
+    this.activeMission=m.id;
+    this.activeTask=taskPromise.then(()=>{}).catch(error=>{
+      console.error(`Codex task ${m.id}: ${error instanceof Error?error.message:'unknown error'}`);
+    }).finally(()=>{this.activeMission=null;this.activeTask=null;});
+    return `Codex Mission ${m.id} accepted (one read-only turn, configured workspace). Check /status; no automatic retry.`;
+  }
+
   private async handle(text:string,commandId='local-test'):Promise<string> {
-    const [cmd,id,...words]=text.trim().split(/\s+/);
+    const clean=text.trim();
+    const [cmd,id,...words]=clean.split(/\s+/);
     if(!cmd) return 'Send /help for available commands.';
     if(cmd==='/help'||cmd==='/start') return [
       'Mission Relay (single authorized user)',
       '/list — latest missions',
+      'Send plain text — new read-only ChatGPT task in an approved fresh Chrome tab',
+      '/new <task> — same as plain text, one new ChatGPT conversation',
+      '/codex <task> — one read-only Codex turn in a locally approved workspace',
       '/status <mission-id> — shows current revision',
       '/handoff <mission-id> — link and manual prompt for existing ChatGPT chat',
       '/continue <mission-id> v<revision> — Codex or linked ChatGPT Playwriter (up to 3 turns)',
@@ -233,6 +326,9 @@ export class TelegramBridge {
       '/cancel <mission-id> v<revision> — only an inactive mission',
       'Reconciliation, secrets and high-risk approvals are CLI-only.',
     ].join('\n');
+    if(cmd==='/new'||!cmd.startsWith('/'))
+      return this.startFreshChat(cmd==='/new'?clean.slice(4):clean,commandId);
+    if(cmd==='/codex')return this.startCodexTask(clean.slice(6),commandId);
     if(cmd==='/list') {
       const all=this.engine.list().slice(0,10);
       return all.length?all.map(m=>`${m.id} — ${m.state} v${m.version}: ${m.goal.slice(0,100)}`).join('\n'):'No missions yet.';

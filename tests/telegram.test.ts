@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/core/store.js';
 import { Engine } from '../src/core/engine.js';
-import { TelegramBridge, formatBrowserResultNotification, type TelegramUpdate, type TelegramTransport } from '../src/plugins/telegram.js';
+import { TelegramBridge, formatBrowserResultNotification, isolatedCodexHasMcpServers, type TelegramUpdate, type TelegramTransport } from '../src/plugins/telegram.js';
 import type { AgentAdapter, Decision, Mission, TurnInput, Verification } from '../src/core/types.js';
 import type { Page } from 'playwriter';
 
@@ -640,4 +640,132 @@ test('Telegram /continue end-to-end delivers one result after two synthetic brow
     await bridge.pollOnce(0);
     assert.equal(f.transport.sent.filter(x=>/ChatGPT result \(model-provided/.test(x)).length,1);
   }finally{f.cleanup();}
+});
+
+test('Plain-language Telegram creates one isolated ChatGPT tab, commits URL and final SHA, never replays',async()=>{
+  const f=fixture();try{
+    const anchor='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
+    const newUrl='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174001';
+    const linked=f.store.linkChat(f.m.id,anchor,f.m.version).mission;
+    f.store.bindChatBrowser(f.m.id,'install:Chrome:synthetic',linked.version);
+    f.store.setMeta('telegram.chatgpt.anchorMissionId',f.m.id);
+    let newPages=0,sends=0,entered='',location='about:blank',closed=false;
+    const answer='Telegram-ready summary\nOutcome: synthetic read-only report\n[MISSION_RELAY:DONE]';
+    const fakeLocator=(fresh:boolean)=>(selector:string)=>{
+      let role='other';
+      if(selector.includes('data-message-author-role="assistant"'))role='assistant';
+      else if(selector.includes('data-message-author-role="user"'))role='user';
+      else if(selector.includes('prompt-textarea'))role='composer';
+      else if(selector.includes('send-button'))role='send';
+      const obj:any={
+        count:async()=>role==='composer'||role==='send'?1:
+          role==='assistant'||role==='user'?fresh?(sends?1:0):1:0,
+        first:()=>obj,last:()=>obj,isVisible:async()=>role!=='other',
+        isEnabled:async()=>Boolean(entered),
+        innerText:async()=>role==='assistant'?(fresh?answer:'Anchor answer'):
+          (fresh?entered:'Anchor prior prompt'),
+        fill:async(text:string)=>{entered=text;},
+        click:async()=>{sends++;location=newUrl;},
+      };
+      return obj;
+    };
+    const freshPage={
+      url:()=>location,isClosed:()=>false,
+      goto:async(url:string)=>{location=url;},
+      waitForLoadState:async()=>{},
+      getByRole:()=>({count:async()=>0,first:()=>({isVisible:async()=>false})}),
+      locator:fakeLocator(true),
+    } as unknown as Page;
+    const oldPage={
+      url:()=>anchor,isClosed:()=>false,
+      context:()=>({newPage:async()=>{newPages++;return freshPage;}}),
+      getByRole:()=>({count:async()=>0,first:()=>({isVisible:async()=>false})}),
+      locator:fakeLocator(false),
+    } as unknown as Page;
+    const bridge=new TelegramBridge(f.store,f.engine,f.transport,1001,2001,
+      async()=>{throw new Error('Codex should not run');},
+      async(url,options)=>{
+        assert.equal(url,anchor);
+        assert.equal(options?.browserId,'install:Chrome:synthetic');
+        return {page:oldPage,close:async()=>{closed=true;}};
+      });
+    const task='Find three real NetBox field workflow user problems';
+    f.transport.updates=[f.message(501,task)];
+    await bridge.pollOnce(0);
+    assert.ok(f.transport.sent.some(x=>/New ChatGPT Mission/.test(x)));
+    for(let i=0;i<90&&!closed;i++)await new Promise(resolve=>setTimeout(resolve,50));
+    assert.equal(closed,true);
+    const mission=f.engine.list().find(x=>x.goal===task);
+    assert.ok(mission);
+    assert.equal(mission.state,'PAUSED');
+    assert.equal(mission.turnCount,1);
+    assert.equal(f.store.chatLink(mission.id),newUrl);
+    const events=f.store.events(mission.id);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_observed').length,1);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_run_finished').length,1);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_migrated').length,1);
+    assert.equal(newPages,1);assert.equal(sends,1);
+    assert.match(entered,/Owner request:\nFind three real NetBox field workflow user problems/);
+    assert.doesNotMatch(entered,/Prior conversation handoff/);
+    await bridge.pollOnce(0);
+    assert.equal(f.transport.sent.filter(x=>/ChatGPT result \(model-provided/.test(x)).length,1);
+    assert.ok(f.transport.sent.some(x=>/synthetic read-only report/.test(x)));
+    const stateBefore=f.engine.list().length;
+    await bridge.pollOnce(0);
+    assert.equal(f.engine.list().length,stateBefore);
+    assert.equal(newPages,1);assert.equal(sends,1);
+  }finally{f.cleanup();}
+});
+
+test('Natural-language new chat refuses an absent or nonmatching approved Chrome anchor',async()=>{
+  const f=fixture();try{
+    const rejected=new TelegramBridge(f.store,f.engine,f.transport,1001,2001,
+      async()=>{throw new Error('Codex should not run');},
+      async()=>{throw new Error('Should not connect without an anchor');});
+    f.transport.updates=[f.message(502,'Check NetBox app reviews')];
+    await rejected.pollOnce(0);
+    assert.ok(f.transport.sent.some(x=>/No owner-approved ChatGPT anchor/.test(x)));
+    assert.equal(f.engine.list().length,1);
+    const url='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
+    const linked=f.store.linkChat(f.m.id,url,f.m.version).mission;
+    f.store.bindChatBrowser(f.m.id,'install:Chrome:synthetic',linked.version);
+    f.store.setMeta('telegram.chatgpt.anchorMissionId',f.m.id);
+    const wrongPage={url:()=> 'https://example.com/',isClosed:()=>false} as unknown as Page;
+    const wrong=new TelegramBridge(f.store,f.engine,f.transport,1001,2001,
+      async()=>{throw new Error('Codex should not run');},
+      async()=>({page:wrongPage,close:async()=>{}}));
+    f.transport.updates=[f.message(503,'/new Summarize sample topics')];
+    await wrong.pollOnce(0);
+    assert.ok(f.transport.sent.some(x=>/navigated away from the authorized conversation/.test(x)));
+    assert.equal(f.engine.list().length,1);
+  }finally{f.cleanup();}
+});
+
+test('Telegram /codex requires an approved workspace and runs only one read-only native turn',async()=>{
+  const f=fixture();try{
+    f.transport.updates=[f.message(504,'/codex Review the local project README')];
+    await f.bridge.pollOnce(0);
+    assert.ok(f.transport.sent.some(x=>/No approved Codex workspace/.test(x)));
+    assert.equal(f.agent.calls,0);
+    f.store.setMeta('telegram.codex.workspace',f.dir);
+    f.transport.updates=[f.message(505,'/codex Review the local project README')];
+    await f.bridge.pollOnce(0);
+    for(let i=0;i<20&&f.agent.calls===0;i++)await new Promise(resolve=>setTimeout(resolve,10));
+    const m=f.engine.list().find(x=>x.goal==='Review the local project README');
+    assert.ok(m);
+    assert.equal(m.sandbox,'read-only');
+    assert.equal(m.workspace,f.dir);
+    assert.equal(m.maxTurns,1);
+    assert.equal(f.agent.calls,1);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.filter(x=>/Codex Mission/.test(x)).length,1);
+  }finally{f.cleanup();}
+});
+
+test('Remote Codex rejects profile MCP server declarations instead of assuming read-only external tools',()=>{
+  assert.equal(isolatedCodexHasMcpServers('[model_providers.custom]\nfoo = true'),false);
+  assert.equal(isolatedCodexHasMcpServers('[mcp_servers.github]\ncommand = "server"'),true);
+  assert.equal(isolatedCodexHasMcpServers('  [mcp_servers]\n'),true);
+  assert.equal(isolatedCodexHasMcpServers('# [mcp_servers.write]\n[model]'),false);
 });
