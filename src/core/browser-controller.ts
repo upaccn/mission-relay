@@ -12,6 +12,7 @@ export async function executeBrowserTurn(input:{
   store:Store;missionId:string;revision:number;requestKey:string;
   page:Page;url:string;prompt:string;timeoutMs?:number;requireFinalMarker?:boolean;
   consumedInstruction?:string|null;
+  telegramBatch?:{lastAuthorizedTurn:boolean};
 }):Promise<BrowserTurnOutcome> {
   const {store,missionId,revision,requestKey,page,url,prompt}=input;
   // Reject deterministic input errors before reserving a possibly committed
@@ -28,9 +29,13 @@ export async function executeBrowserTurn(input:{
   try {
     const receipt=await submitChatTurn(page,url,prompt,input.timeoutMs,input.requireFinalMarker);
     const assistantSha256=createHash('sha256').update(receipt.lastAssistant).digest('hex');
+    const flow=browserDecision(receipt.lastAssistant);
+    const terminal=input.telegramBatch?.lastAuthorizedTurn||
+      !['NEXT','HANDOFF'].includes(flow);
     const mission=store.finishChatBrowserTurn(missionId,requestKey,{kind:'observed',
       assistantSha256,summary:receipt.lastAssistant.slice(-1000),
-      consumedInstruction:input.consumedInstruction});
+      consumedInstruction:input.consumedInstruction,
+      ...(input.telegramBatch?{telegramBatch:{terminal,flowSignal:flow}}:{})});
     return {missionId,requestKey,state:mission.state,revision:mission.version,
       turnCount:mission.turnCount,assistantSha256,
       assistantExcerpt:receipt.lastAssistant.slice(-1000),lastAssistant:receipt.lastAssistant,
@@ -97,6 +102,7 @@ export async function executeBrowserRollover(input:{
   store:Store;missionId:string;revision:number;requestKey:string;
   sourcePage:Page;sourceUrl:string;prompt:string;timeoutMs?:number;
   consumedInstruction?:string|null;
+  telegramBatch?:{lastAuthorizedTurn:boolean};
 }):Promise<BrowserTurnOutcome&{page:Page;url:string}> {
   const {store,missionId,revision,requestKey,prompt}=input;
   if(!prompt.trim()||prompt.length>12000)throw new Error('Rollover prompt must contain 1–12000 characters');
@@ -111,9 +117,13 @@ export async function executeBrowserRollover(input:{
     const page=await input.sourcePage.context().newPage();
     const {url,receipt}=await submitNewChatTurn(page,prompt,input.timeoutMs);
     const assistantSha256=createHash('sha256').update(receipt.lastAssistant).digest('hex');
+    const flow=browserDecision(receipt.lastAssistant);
+    const terminal=input.telegramBatch?.lastAuthorizedTurn||
+      !['NEXT','HANDOFF'].includes(flow);
     const m=store.finishChatBrowserTurn(missionId,requestKey,{kind:'observed',
       assistantSha256,summary:receipt.lastAssistant.slice(-1000),
-      consumedInstruction:input.consumedInstruction,newChatUrl:url});
+      consumedInstruction:input.consumedInstruction,newChatUrl:url,
+      ...(input.telegramBatch?{telegramBatch:{terminal,flowSignal:flow}}:{})});
     return {missionId,requestKey,state:m.state,revision:m.version,turnCount:m.turnCount,
       assistantSha256,assistantExcerpt:receipt.lastAssistant.slice(-1000),
       lastAssistant:receipt.lastAssistant,observedAt:receipt.observedAt,page,url};
@@ -128,6 +138,7 @@ export async function executeBrowserRollover(input:{
 export async function driveChatConversation(input:{
   store:Store;missionId:string;revision:number;requestPrefix:string;turns:number;
   page:Page;url:string;timeoutMs?:number;
+  notificationMode?:'telegram-final';
 }):Promise<{
   state:string;turnsObserved:Array<{turnCount:number;revision:number;responseSha256:string;responseExcerpt:string;flowSignal:BrowserDecision}>;
 }> {
@@ -143,13 +154,17 @@ export async function driveChatConversation(input:{
     const prompt:string=pendingHandoff!==null
       ?browserNewChatPrompt(m.goal,m.acceptance,pendingHandoff,m.nextInstruction)
       :browserContinuationPrompt(m.goal,m.acceptance,i===0,m.nextInstruction);
+    const batch=input.notificationMode==='telegram-final'
+      ?{lastAuthorizedTurn:i===input.turns-1||m.turnCount+1>=m.maxTurns}:undefined;
     const receipt:BrowserTurnOutcome|(BrowserTurnOutcome&{page:Page;url:string})=pendingHandoff!==null
       ?await executeBrowserRollover({store:input.store,missionId:input.missionId,revision,
         requestKey:`${input.requestPrefix}-${i+1}`,sourcePage:page,sourceUrl:url,
-        prompt,timeoutMs:input.timeoutMs,consumedInstruction:m.nextInstruction})
+        prompt,timeoutMs:input.timeoutMs,consumedInstruction:m.nextInstruction,
+        telegramBatch:batch})
       :await executeBrowserTurn({store:input.store,missionId:input.missionId,revision,
         requestKey:`${input.requestPrefix}-${i+1}`,page,url,prompt,timeoutMs:input.timeoutMs,
-        requireFinalMarker:true,consumedInstruction:m.nextInstruction});
+        requireFinalMarker:true,consumedInstruction:m.nextInstruction,
+        telegramBatch:batch});
     if('page' in receipt){
       page=(receipt as BrowserTurnOutcome&{page:Page;url:string}).page;
       url=(receipt as BrowserTurnOutcome&{page:Page;url:string}).url;
@@ -161,7 +176,9 @@ export async function driveChatConversation(input:{
     revision=receipt.revision;
     if(signal==='HANDOFF')pendingHandoff=receipt.lastAssistant;
     else pendingHandoff=null;
-    if(!['NEXT','HANDOFF'].includes(signal)||input.store.get(input.missionId).stopRequested)break;
+    const latest=input.store.get(input.missionId);
+    if(!['NEXT','HANDOFF'].includes(signal)||latest.stopRequested||
+      latest.turnCount>=latest.maxTurns)break;
   }
   return {state:input.store.get(input.missionId).state,turnsObserved:results};
 }

@@ -56,6 +56,7 @@ const TERMINAL_EVENTS=new Set([
   'verification.accepted','verification.checks_required',
   'chatgpt.browser_observed','chatgpt.browser_uncertain',
   'chatgpt.browser_rollover_recovered',
+  'chatgpt.browser_run_finished',
 ]);
 const STATUS_BY_EVENT:Record<string,string>={
   'mission.ambiguous_failure':'NEEDS_RECONCILIATION',
@@ -66,6 +67,7 @@ const STATUS_BY_EVENT:Record<string,string>={
   'chatgpt.browser_observed':'PAUSED (ChatGPT browser response observed)',
   'chatgpt.browser_uncertain':'NEEDS_RECONCILIATION (browser side effect ambiguous)',
   'chatgpt.browser_rollover_recovered':'PAUSED (operator-confirmed new ChatGPT conversation)',
+  'chatgpt.browser_run_finished':'PAUSED (final ChatGPT browser batch result observed)',
 };
 
 /** Telegram is not end-to-end encrypted: only send a bounded tail of the
@@ -194,7 +196,16 @@ export class TelegramBridge {
     let cursor=Number(this.store.getMeta('telegram.notifications_cursor') || '0');
     for(const event of this.store.eventsAfter(cursor)) {
       if(TERMINAL_EVENTS.has(event.type)) {
+        const payload=event.payload as {notificationMode?:string}|null;
+        // Telegram batch intermediate turns remain in the SQLite event log,
+        // but only its final outcome is delivered as one concise notification.
+        if(event.type==='chatgpt.browser_observed'&&payload?.notificationMode==='telegram-batch'){
+          cursor=event.id;
+          this.store.setMeta('telegram.notifications_cursor',String(cursor));
+          continue;
+        }
         const body=event.type==='chatgpt.browser_observed'||event.type==='chatgpt.browser_uncertain'||
+          event.type==='chatgpt.browser_run_finished'||
           event.type==='chatgpt.browser_rollover_recovered'
           ?formatBrowserResultNotification(this.store.get(event.missionId),event)
           :`Mission ${event.missionId}: ${STATUS_BY_EVENT[event.type]}\nEvent #${event.id}: ${event.type}\nUse /status ${event.missionId} for details.`;
@@ -276,6 +287,7 @@ export class TelegramBridge {
           this.activeTask=driveChatConversation({
             store:this.store,missionId:id,revision:expectedVersion,
             requestPrefix:`telegram-${commandId}`,turns:3,page:session.page,url:linkedUrl,
+            notificationMode:'telegram-final',
           }).then(()=>{}).catch(error=>{
             console.error(`ChatGPT browser mission ${id}: ${error instanceof Error?error.message:'unknown error'}`);
           }).finally(async()=>{

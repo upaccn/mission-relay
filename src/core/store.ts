@@ -229,6 +229,8 @@ export class Store {
     consumedInstruction?:string|null;
     /** Only on a successfully observed new-tab rollover, commit the new URL in this same transaction. */
     newChatUrl?:string;
+    /** Telegram multi-turn continuation emits only its final summary, never intermediate turns. */
+    telegramBatch?:{terminal:boolean;flowSignal:'NEXT'|'DONE'|'BLOCKED'|'HANDOFF'|'UNMARKED'};
   }):Mission {
     return this.transaction(()=>{
       const current=this.get(id);
@@ -273,7 +275,20 @@ export class Store {
         {requestKey,assistantSha256:outcome.assistantSha256??null,
           round:current.turnCount+(observed?1:0),
           ...(observed?{excerpt:(outcome.summary??'Browser response observed').slice(-1000)}:{}),
+          ...(observed&&outcome.telegramBatch?{notificationMode:'telegram-batch'}:{}),
           reason:outcome.error?.slice(0,500)});
+      // The last Telegram notification is committed in the SAME transaction
+      // as the observed reply and final URL migration. A crash between turns
+      // cannot publish a false final result or silently duplicate a reply.
+      if(observed&&outcome.telegramBatch&&
+        (outcome.telegramBatch.terminal||current.stopRequested)) {
+        this.event(id,'chatgpt.browser_run_finished',{
+          requestKey,round:current.turnCount+1,
+          assistantSha256:outcome.assistantSha256??null,
+          excerpt:(outcome.summary??'Browser response observed').slice(-1000),
+          flowSignal:outcome.telegramBatch.flowSignal,
+        });
+      }
       return this.get(id);
     });
   }

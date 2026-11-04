@@ -380,6 +380,56 @@ test('HANDOFF marker creates one new authorized tab, sends task context and atom
   }finally{f.cleanup();}
 });
 
+test('Telegram-scoped HANDOFF to a new chat creates only one terminal notification event',async()=>{
+  const f=fixture();try {
+    const source=new SourceWithNewTab();
+    source.reply='Validated context for a new conversation.\n[MISSION_RELAY:HANDOFF]';
+    source.destination.reply='Final verified acknowledgement.\n[MISSION_RELAY:DONE]';
+    const result=await driveChatConversation({store:f.store,missionId:f.linked.id,
+      revision:f.linked.version,requestPrefix:'telegram-200-1',turns:3,
+      page:source as unknown as Page,url:URL,timeoutMs:12000,
+      notificationMode:'telegram-final'});
+    assert.equal(result.turnsObserved.length,2);
+    assert.equal(result.turnsObserved[0]?.flowSignal,'HANDOFF');
+    assert.equal(result.turnsObserved[1]?.flowSignal,'DONE');
+    const events=f.store.events(f.linked.id);
+    const observed=events.filter(e=>e.type==='chatgpt.browser_observed');
+    const end=events.filter(e=>e.type==='chatgpt.browser_run_finished');
+    assert.equal(observed.length,2);
+    assert.equal(end.length,1);
+    assert.equal((end[0]!.payload as {flowSignal:string}).flowSignal,'DONE');
+    assert.equal((end[0]!.payload as {assistantSha256:string}).assistantSha256,
+      result.turnsObserved[1]?.responseSha256);
+    assert.equal(source.created,1);
+    assert.equal(source.destination.sends,1);
+    assert.equal(f.store.chatLink(f.linked.id),NEXT_CHAT_URL);
+  }finally{f.cleanup();}
+});
+
+test('Telegram browser batch stops at Mission budget even if ChatGPT ends NEXT',async()=>{
+  const f=fixture();try {
+    const base=f.store.create({goal:'Budgeted one-turn ChatGPT run',
+      acceptance:['One response; no further send'],workspace:'',sandbox:'read-only',
+      mode:'supervised',maxTurns:1,requestKey:'one-turn-budget'});
+    const linked=f.store.linkChat(base.id,URL,base.version).mission;
+    const page=new SyntheticChatPage();
+    page.reply='Only authorized one reply.\n[MISSION_RELAY:NEXT]';
+    const result=await driveChatConversation({store:f.store,missionId:linked.id,
+      revision:linked.version,requestPrefix:'telegram-budget-1',turns:3,
+      page:page as unknown as Page,url:URL,timeoutMs:10000,
+      notificationMode:'telegram-final'});
+    assert.equal(result.turnsObserved.length,1);
+    assert.equal(page.sends,1);
+    assert.equal(f.store.get(linked.id).turnCount,1);
+    assert.equal(f.store.get(linked.id).state,'PAUSED');
+    const events=f.store.events(linked.id);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_run_finished').length,1);
+    assert.equal((events.find(e=>e.type==='chatgpt.browser_run_finished')!.payload as
+      {flowSignal:string}).flowSignal,'NEXT');
+  }finally{f.cleanup();}
+});
+
 test('New ChatGPT first Send tolerates same-origin transitional URLs but refuses a different origin',async()=>{
   assert.equal(isPendingNewChatUrl('https://chatgpt.com/?model=auto'),true);
   assert.equal(isPendingNewChatUrl('https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000?src=new'),true);

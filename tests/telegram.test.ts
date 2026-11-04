@@ -132,6 +132,130 @@ test('Telegram reports a compact browser reply tail and real turn count without 
   }finally{f.cleanup();}
 });
 
+test('Telegram multi-turn ChatGPT continuation delivers one final compact summary, never intermediate NEXT/HANDOFF turns',async()=>{
+  const f=fixture();try {
+    await f.bridge.pollOnce(0);
+    const url='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
+    const m=f.store.linkChat(f.m.id,url,f.m.version).mission;
+    const first=f.store.reserveChatBrowserTurn(m.id,m.version,'telegram-900-1','a'.repeat(64));
+    const one=f.store.finishChatBrowserTurn(m.id,'telegram-900-1',{
+      kind:'observed',assistantSha256:'b'.repeat(64),
+      summary:'First interim status\n[MISSION_RELAY:NEXT]',
+      telegramBatch:{terminal:false,flowSignal:'NEXT'},
+    });
+    assert.equal(one.turnCount,1);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,0,'Intermediate NEXT must not notify Telegram');
+    const two=f.store.reserveChatBrowserTurn(m.id,one.version,'telegram-900-2','c'.repeat(64));
+    const done=f.store.finishChatBrowserTurn(m.id,'telegram-900-2',{
+      kind:'observed',assistantSha256:'d'.repeat(64),
+      summary:'Telegram-ready summary\nProgress: done\nEvidence: final receipt\nNext: inspect status\n[MISSION_RELAY:DONE]',
+      telegramBatch:{terminal:true,flowSignal:'DONE'},
+    });
+    assert.equal(done.turnCount,2);
+    const events=f.store.events(m.id);
+    assert.equal(events.filter(x=>x.type==='chatgpt.browser_observed').length,2);
+    assert.equal(events.filter(x=>x.type==='chatgpt.browser_run_finished').length,1);
+    const final=events.find(x=>x.type==='chatgpt.browser_run_finished')!;
+    assert.equal((final.payload as {requestKey:string}).requestKey,'telegram-900-2');
+    assert.equal((final.payload as {assistantSha256:string}).assistantSha256,'d'.repeat(64));
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,1);
+    assert.match(f.transport.sent[0]!,/Progress: done/);
+    assert.match(f.transport.sent[0]!,/Evidence: final receipt/);
+    assert.match(f.transport.sent[0]!,/\[MISSION_RELAY:DONE\]/);
+    assert.doesNotMatch(f.transport.sent[0]!,/First interim status/);
+    assert.ok(f.transport.sent[0]!.split('\n').length<=10);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,1,'Notification cursor prevents duplicate final message');
+  }finally{f.cleanup();}
+});
+
+test('Telegram single-turn capped NEXT still has one durable final notification',async()=>{
+  const f=fixture();try {
+    await f.bridge.pollOnce(0);
+    const m=f.store.linkChat(f.m.id,'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',f.m.version).mission;
+    f.store.reserveChatBrowserTurn(m.id,m.version,'telegram-901-1','a'.repeat(64));
+    f.store.finishChatBrowserTurn(m.id,'telegram-901-1',{
+      kind:'observed',assistantSha256:'b'.repeat(64),
+      summary:'Need operator to continue later\n[MISSION_RELAY:NEXT]',
+      telegramBatch:{terminal:true,flowSignal:'NEXT'},
+    });
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,1);
+    assert.match(f.transport.sent[0]!,/Need operator to continue later/);
+    assert.match(f.transport.sent[0]!,/\[MISSION_RELAY:NEXT\]/);
+  }finally{f.cleanup();}
+});
+
+test('A failed Telegram final notification is retried from SQLite without repeating a browser turn',async()=>{
+  const f=fixture();try {
+    await f.bridge.pollOnce(0);
+    const m=f.store.linkChat(f.m.id,'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',f.m.version).mission;
+    f.store.reserveChatBrowserTurn(m.id,m.version,'telegram-902-1','a'.repeat(64));
+    f.store.finishChatBrowserTurn(m.id,'telegram-902-1',{
+      kind:'observed',assistantSha256:'b'.repeat(64),
+      summary:'Completed once\n[MISSION_RELAY:DONE]',
+      telegramBatch:{terminal:true,flowSignal:'DONE'},
+    });
+    f.transport.failSend=true;
+    await assert.rejects(f.bridge.pollOnce(0),/network drop/);
+    assert.equal(f.transport.sent.length,0);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,1);
+    assert.match(f.transport.sent[0]!,/Completed once/);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,1);
+    assert.equal(f.store.events(m.id).filter(x=>x.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(f.store.events(m.id).filter(x=>x.type==='chatgpt.browser_run_finished').length,1);
+  }finally{f.cleanup();}
+});
+
+test('An ambiguous Telegram continuation reports only its uncertainty, not a false final result',async()=>{
+  const f=fixture();try {
+    await f.bridge.pollOnce(0);
+    const m=f.store.linkChat(f.m.id,'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',f.m.version).mission;
+    f.store.reserveChatBrowserTurn(m.id,m.version,'telegram-903-1','a'.repeat(64));
+    f.store.finishChatBrowserTurn(m.id,'telegram-903-1',{
+      kind:'observed',assistantSha256:'b'.repeat(64),
+      summary:'Intermediate work\n[MISSION_RELAY:NEXT]',
+      telegramBatch:{terminal:false,flowSignal:'NEXT'},
+    });
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,0);
+    const current=f.store.get(m.id);
+    f.store.reserveChatBrowserTurn(m.id,current.version,'telegram-903-2','c'.repeat(64));
+    f.store.finishChatBrowserTurn(m.id,'telegram-903-2',{
+      kind:'uncertain',error:'Relay disconnected after sending',
+    });
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,1);
+    assert.match(f.transport.sent[0]!,/NEEDS_RECONCILIATION/);
+    assert.doesNotMatch(f.transport.sent[0]!,/Intermediate work|Relay disconnected/);
+    assert.equal(f.store.events(m.id).filter(x=>x.type==='chatgpt.browser_run_finished').length,0);
+  }finally{f.cleanup();}
+});
+
+test('Atomic Telegram final notification rollback preserves reserved turn and cannot falsely report success',()=>{
+  const f=fixture();try {
+    const m=f.store.linkChat(f.m.id,'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',f.m.version).mission;
+    const running=f.store.reserveChatBrowserTurn(m.id,m.version,'telegram-rollback-1','a'.repeat(64));
+    f.store.db.exec(`CREATE TRIGGER fail_telegram_batch BEFORE INSERT ON events
+      WHEN NEW.type='chatgpt.browser_run_finished'
+      BEGIN SELECT RAISE(ABORT,'injected batch failure'); END`);
+    assert.throws(()=>f.store.finishChatBrowserTurn(m.id,'telegram-rollback-1',{
+      kind:'observed',assistantSha256:'b'.repeat(64),
+      summary:'Reply seems done\n[MISSION_RELAY:DONE]',
+      telegramBatch:{terminal:true,flowSignal:'DONE'},
+    }),/injected batch failure/);
+    assert.equal(f.store.get(m.id).version,running.version);
+    assert.equal(f.store.get(m.id).turnCount,0);
+    assert.equal(f.store.chatBrowserTurn(m.id)?.status,'reserved');
+    assert.equal(f.store.events(m.id).filter(x=>x.type==='chatgpt.browser_observed').length,0);
+    assert.equal(f.store.events(m.id).filter(x=>x.type==='chatgpt.browser_run_finished').length,0);
+  }finally{f.cleanup();}
+});
+
 test('Telegram preferentially extracts the explicit decision summary, redacts private links and sends at most ten lines',()=>{
   const f=fixture();try {
     const linked=f.store.linkChat(f.m.id,'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',f.m.version).mission;
@@ -434,5 +558,60 @@ test('Telegram /continue uses the linked Playwriter adapter, not Codex, on a syn
     assert.equal(closed,true);
     await bridge.pollOnce(0);
     assert.ok(f.transport.sent.some(x=>/Verified synthetic response/.test(x)));
+    assert.equal(f.store.events(f.m.id).filter(x=>x.type==='chatgpt.browser_run_finished').length,1);
+  }finally{f.cleanup();}
+});
+
+test('Telegram /continue end-to-end delivers one result after two synthetic browser turns',async()=>{
+  const f=fixture();try {
+    const url='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
+    const linked=f.store.linkChat(f.m.id,url,f.m.version).mission;
+    const bound=f.store.bindChatBrowser(f.m.id,'install:Chrome:synthetic',linked.version).mission;
+    let submitted=0,entered='',closed=false;
+    const page={
+      url:()=>url,isClosed:()=>false,
+      getByRole:()=>({count:async()=>0,first:()=>({isVisible:async()=>false})}),
+      locator:(selector:string)=>{
+        let role='other';
+        if(selector.includes('data-message-author-role="assistant"'))role='assistant';
+        else if(selector.includes('data-message-author-role="user"'))role='user';
+        else if(selector.includes('prompt-textarea'))role='composer';
+        else if(selector.includes('send-button'))role='send';
+        const obj:any={
+          count:async()=>role==='assistant'||role==='user'?1+submitted:role==='composer'||role==='send'?1:0,
+          first:()=>obj,last:()=>obj,isVisible:async()=>role!=='other',
+          isEnabled:async()=>Boolean(entered),
+          innerText:async()=>role==='user'
+            ?submitted?entered:'Original user prompt'
+            :submitted===0?'Original assistant reply'
+              :submitted===1?'Telegram-ready summary\nProgress: interim\n[MISSION_RELAY:NEXT]'
+              :'Telegram-ready summary\nProgress: final verified\nNext: owner review\n[MISSION_RELAY:DONE]',
+          fill:async(value:string)=>{entered=value;},
+          click:async()=>{if(!entered)throw new Error('Empty prompt');submitted++;},
+        };
+        return obj;
+      },
+    } as unknown as Page;
+    const bridge=new TelegramBridge(f.store,f.engine,f.transport,1001,2001,
+      async()=>({ok:true,source:'default',message:'ready'}),
+      async()=>({page,close:async()=>{closed=true;}}));
+    f.transport.updates=[f.message(124,`/continue ${f.m.id} v${bound.version}`)];
+    await bridge.pollOnce(0);
+    assert.ok(f.transport.sent.some(x=>/accepted for a bounded/.test(x)));
+    for(let i=0;i<160&&!closed;i++)
+      await new Promise(resolve=>setTimeout(resolve,50));
+    assert.equal(closed,true);
+    assert.equal(submitted,2);
+    await bridge.pollOnce(0);
+    const notifications=f.transport.sent.filter(x=>/ChatGPT result \(model-provided/.test(x));
+    assert.equal(notifications.length,1);
+    assert.match(notifications[0]!,/final verified/);
+    assert.doesNotMatch(notifications[0]!,/Progress: interim/);
+    assert.ok(notifications[0]!.split('\n').length<=10);
+    assert.equal(f.store.events(f.m.id).filter(x=>x.type==='chatgpt.browser_reserved').length,2);
+    assert.equal(f.store.events(f.m.id).filter(x=>x.type==='chatgpt.browser_observed').length,2);
+    assert.equal(f.store.events(f.m.id).filter(x=>x.type==='chatgpt.browser_run_finished').length,1);
+    await bridge.pollOnce(0);
+    assert.equal(f.transport.sent.filter(x=>/ChatGPT result \(model-provided/.test(x)).length,1);
   }finally{f.cleanup();}
 });
