@@ -21,6 +21,7 @@ An operator may register a ChatGPT conversation against a native Mission. This l
 - The executor may nominate candidate completion, but a separate read-only verifier must accept it.
 - The verifier can still be wrong; model judgment is not a substitute for project-specific deterministic checks.
 - Operator-defined checks run as explicit executable/argument arrays (`shell: false`) with a bounded timeout. A write-capable mission cannot reach `COMPLETED` with zero checks or any failing check. Receipts record status and output hashes instead of raw secret-bearing logs. This guarantees only that the configured checks succeeded, **not** that every acceptance criterion was deterministically proven.
+- A check's timeout is a **hard failure deadline**, including when its original process exits but a descendant holds inherited stdout/stderr handles open. On timeout the verifier fails closed and stops waiting on the pipes; on POSIX it kills the dedicated verifier process group, and on Windows it requests native `taskkill /T /F` tree termination (then attempts direct termination). Windows cannot reliably discover descendants if their parent has already exited; orphan cleanup is best-effort, not a guaranteed sandbox boundary. This does not authorize running untrusted verifier commands or claims of unattended Windows process isolation.
 - SQLite schema v2 adds checks configuration; schema v3 adds durable channel command de-duplication. Schema v1/v2 are migrated transactionally without discarding existing mission state.
 
 ## Adapters

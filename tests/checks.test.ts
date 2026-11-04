@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Store } from '../src/core/store.js';
@@ -64,6 +64,49 @@ test('timeout prevents completion and does not trust running subprocess',async()
     const event=f.store.events(m.id).find(x=>x.type==='verification.check_receipts');
     const receipt=(event?.payload as {receipts:{timedOut:boolean}[]}).receipts[0];
     assert.equal(receipt.timedOut,true);
+  }finally{f.cleanup();}
+});
+
+test('check timeout is a hard bound even when an exited parent leaves output pipes open',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'relay-check-pipes-'));
+  const pidPath=join(dir,'descendant.pid');
+  const script=[
+    "const {spawn}=require('node:child_process')",
+    "const {writeFileSync}=require('node:fs')",
+    "const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:['ignore','inherit','inherit']})",
+    `writeFileSync(${JSON.stringify(pidPath)},String(child.pid))`,
+    'child.unref()',
+  ].join(';');
+  const f=make([{argv:[process.execPath,'-e',script],timeoutMs:1000}]);
+  try{
+    const start=Date.now();
+    const receipts=await runChecks(f.m);
+    const elapsed=Date.now()-start;
+    assert.ok(existsSync(pidPath),'the descendant process was started');
+    assert.equal(receipts.length,1);
+    assert.equal(receipts[0]?.passed,false);
+    assert.equal(receipts[0]?.timedOut,true);
+    assert.ok(elapsed<5000,`verification must not hang on inherited pipes (${elapsed}ms)`);
+  }finally{
+    // Explicit cleanup also covers Windows, where taskkill cannot traverse
+    // children after their original parent has already exited.
+    if(existsSync(pidPath)){
+      const pid=Number(readFileSync(pidPath,'utf8'));
+      if(Number.isSafeInteger(pid)&&pid>0)try{process.kill(pid,'SIGKILL');}catch{/* Already exited. */}
+    }
+    f.cleanup();
+    rmSync(dir,{recursive:true,force:true});
+  }
+});
+
+test('nonexistent verifier executable fails closed with a receipt and no hang',async()=>{
+  const f=make([{argv:['mission-relay-nonexistent-verifier-command-2981'],timeoutMs:1000}]);
+  try{
+    const receipts=await runChecks(f.m);
+    assert.equal(receipts.length,1);
+    assert.equal(receipts[0]?.passed,false);
+    assert.equal(receipts[0]?.timedOut,false);
+    assert.equal(receipts[0]?.exitCode,null);
   }finally{f.cleanup();}
 });
 
