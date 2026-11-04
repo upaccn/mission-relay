@@ -317,6 +317,7 @@ export class TelegramBridge {
       'Send plain text — new read-only ChatGPT task in an approved fresh Chrome tab',
       '/new <task> — same as plain text, one new ChatGPT conversation',
       '/codex <task> — one read-only Codex turn in a locally approved workspace',
+      'Codex: <task> or ChatGPT: <task> — natural-language provider prefixes',
       '/status <mission-id> — shows current revision',
       '/handoff <mission-id> — link and manual prompt for existing ChatGPT chat',
       '/continue <mission-id> v<revision> — Codex or linked ChatGPT Playwriter (up to 3 turns)',
@@ -326,6 +327,10 @@ export class TelegramBridge {
       '/cancel <mission-id> v<revision> — only an inactive mission',
       'Reconciliation, secrets and high-risk approvals are CLI-only.',
     ].join('\n');
+    if(/^codex\s*[:：]/i.test(clean))
+      return this.startCodexTask(clean.replace(/^codex\s*[:：]\s*/i,''),commandId);
+    if(/^chatgpt\s*[:：]/i.test(clean))
+      return this.startFreshChat(clean.replace(/^chatgpt\s*[:：]\s*/i,''),commandId);
     if(cmd==='/new'||!cmd.startsWith('/'))
       return this.startFreshChat(cmd==='/new'?clean.slice(4):clean,commandId);
     if(cmd==='/codex')return this.startCodexTask(clean.slice(6),commandId);

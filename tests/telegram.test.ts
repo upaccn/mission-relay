@@ -763,6 +763,20 @@ test('Telegram /codex requires an approved workspace and runs only one read-only
   }finally{f.cleanup();}
 });
 
+test('Natural-language Codex: prefix deterministically selects the native executor, never Chrome',async()=>{
+  const f=fixture();try{
+    f.store.setMeta('telegram.codex.workspace',f.dir);
+    const bridge=new TelegramBridge(f.store,f.engine,f.transport,1001,2001,
+      async()=>({ok:true,source:'default',message:'ready'}),
+      async()=>{throw new Error('Chrome must not be contacted');});
+    f.transport.updates=[f.message(506,'Codex： Inspect current readme only')];
+    await bridge.pollOnce(0);
+    const m=f.engine.list().find(x=>x.goal==='Inspect current readme only');
+    assert.ok(m);assert.equal(m.sandbox,'read-only');
+    assert.equal(f.agent.calls,1);
+  }finally{f.cleanup();}
+});
+
 test('Remote Codex rejects profile MCP server declarations instead of assuming read-only external tools',()=>{
   assert.equal(isolatedCodexHasMcpServers('[model_providers.custom]\nfoo = true'),false);
   assert.equal(isolatedCodexHasMcpServers('[mcp_servers.github]\ncommand = "server"'),true);

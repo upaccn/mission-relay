@@ -47,6 +47,8 @@ node .\dist\cli.js doctor
 
 Then `/codex <natural-language task>` runs one supervised, read-only native Codex turn, without opening Chrome or silently switching providers. The isolated Codex `CODEX_HOME` requires separate user authorization/login; `doctor` does **not** prove the model is authenticated or reachable. A read-only filesystem sandbox does not constrain external write-capable MCP connectors; keep this dedicated Codex profile restricted to read-only tools. Other AI models require an explicit, scoped `AgentAdapter`, not merely a natural-language model name.
 
+For conversational input without a slash command, the explicit leading prefixes `Codex: <task>` (also `Codex：`) and `ChatGPT: <task>` select the provider deterministically. Plain text without a provider prefix defaults to a new ChatGPT tab. The controller does not use an LLM to guess the requested provider, preserving predictable routing.
+
 After updating code, `npm run build` and restart the existing foreground Telegram session to load these commands. No new server or Telegram webhook is required.
 
 `/handoff` returns a locally linked ChatGPT conversation URL and a manual continuation prompt. `/continue` on a linked Mission executes an optional **Playwriter browser continuation** (up to three turns) in that exact operator-enabled Chrome tab; on an unlinked Mission, it uses the existing Codex executor. There is never silent fallback between the two. **Before remote browser continuation, bind the intended Chrome profile locally using `browser-list` then `browser-bind`; an unbound Mission is rejected without querying Chrome.** See [ChatGPT browser control](playwriter-evaluation.md).
