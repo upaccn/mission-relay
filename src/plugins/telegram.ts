@@ -1,13 +1,16 @@
 import type { PluginManifest } from '../core/plugins.js';
 import {readFileSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {join} from 'node:path';
 import { Engine } from '../core/engine.js';
 import { Store } from '../core/store.js';
 import { codexPreflight, type PreflightResult } from '../core/preflight.js';
 import { renderChatGPTHandoff } from '../core/chatgpt-handoff.js';
 import {missionCodexHome} from '../core/paths.js';
-import {connectChatPage,inspectChatPage,type BrowserSession} from './chatgpt-browser.js';
+import {connectChatPage,inspectChatPage,lastVisibleUserPromptSha256,type BrowserSession} from './chatgpt-browser.js';
 import {driveChatConversation,executeBrowserRollover,browserFreshTaskPrompt} from '../core/browser-controller.js';
+import {drivePiAutopilot,pauseFailedPiPlanning} from '../core/pi-autopilot.js';
+import {AiosPiPlanner,type PiPlanner} from '../core/pi-planner.js';
 import type {Mission,MissionEvent} from '../core/types.js';
 
 export const telegramPluginManifest:PluginManifest={
@@ -66,6 +69,7 @@ const TERMINAL_EVENTS=new Set([
   'chatgpt.browser_rollover_recovered',
   'chatgpt.browser_turn_recovered',
   'chatgpt.browser_run_finished',
+  'pi.decision','pi.autopilot_finished','pi.autopilot_interrupted',
 ]);
 const STATUS_BY_EVENT:Record<string,string>={
   'mission.ambiguous_failure':'NEEDS_RECONCILIATION',
@@ -78,6 +82,8 @@ const STATUS_BY_EVENT:Record<string,string>={
   'chatgpt.browser_rollover_recovered':'PAUSED (operator-confirmed new ChatGPT conversation)',
   'chatgpt.browser_turn_recovered':'PAUSED (original ChatGPT reply independently re-observed)',
   'chatgpt.browser_run_finished':'PAUSED (final ChatGPT browser batch result observed)',
+  'pi.autopilot_finished':'PAUSED (PI autopilot ended)',
+  'pi.autopilot_interrupted':'PAUSED (PI coordinator failed; no next Send)',
 };
 
 /** Telegram is not end-to-end encrypted. Treat all model summaries and
@@ -113,6 +119,30 @@ export function formatNativeMissionNotification(m:Mission,event:MissionEvent):st
     ].join('\n').slice(0,2900);
   }
   return [...base,`Use /status ${m.id} for details.`].join('\n');
+}
+
+export function formatPiNotification(m:Mission,event:MissionEvent):string {
+  const payload=event.payload && typeof event.payload==='object'
+    ?event.payload as {summary?:unknown;action?:unknown;reason?:unknown}:{};
+  const action=event.type==='pi.autopilot_interrupted'?'INTERRUPTED':
+    typeof payload.action==='string'?payload.action:'UNKNOWN';
+  const summary=typeof payload.summary==='string'?payload.summary:
+    typeof payload.reason==='string'?payload.reason:'No PI decision summary';
+  return [`Mission ${m.id}: PI ${action} — ${m.turnCount}/${m.maxTurns} ChatGPT turns`,
+    'Result (PI model-reviewed, not independently verified):',
+    compactTelegramText(summary,850),
+    action==='INTERRUPTED'?'No new browser Send has been authorized; inspect before resuming.':'',
+    `Status: /status ${m.id}`,
+    `ChatGPT link: /handoff ${m.id}`].filter(Boolean).join('\n').slice(0,1600);
+}
+function formatPiProgress(m:Mission,event:MissionEvent):string {
+  const payload=event.payload && typeof event.payload==='object'
+    ?event.payload as {action?:unknown;round?:unknown;summary?:unknown}:{};
+  return [`PI Mission ${m.id}: round ${typeof payload.round==='number'?payload.round:m.turnCount}/${m.maxTurns} observed`,
+    `PI decision: ${String(payload.action??'UNKNOWN')}`,
+    `Progress (model-reviewed): ${compactTelegramText(typeof payload.summary==='string'?payload.summary:'',520)}`,
+    'Owner notes received during the next ChatGPT turn will be queued for the following PI decision.',
+    `Status: /status ${m.id}`].join('\n').slice(0,1250);
 }
 
 /** Telegram is not end-to-end encrypted: only send a bounded tail of the
@@ -161,6 +191,10 @@ export class TelegramBridge {
     readonly userId:number,readonly chatId:number,
     private readonly preflight:()=>Promise<PreflightResult>=codexPreflight,
     private readonly browserConnector:(url:string,options?:{browserId?:string})=>Promise<BrowserSession>=connectChatPage,
+    private readonly piPlanner:PiPlanner=new AiosPiPlanner({
+      sshHost:store.getMeta('telegram.pi.sshHost')||'UNCONFIGURED',
+      project:store.getMeta('telegram.pi.project')||'/srv',
+    }),
   ) {
     if(!Number.isSafeInteger(userId)||userId<=0||!Number.isSafeInteger(chatId)||chatId<=0)
       throw new Error('Set numeric Telegram owner user and private chat IDs');
@@ -200,6 +234,9 @@ export class TelegramBridge {
     const lease=this.store.acquireChannelLease(this.source);
     let backoff=1000;
     try {
+      // Recover ONLY a PI decision whose previous browser response and
+      // next-step plan were durably observed. Never reconstruct an uncertain Send.
+      await this.recoverObservedPiCheckpoint();
       while(!signal?.aborted) {
         try {await this.pollOnce();backoff=1000;}
         catch(error) {
@@ -215,6 +252,65 @@ export class TelegramBridge {
       // A transport exit must not silently kill an in-flight external action.
       if(this.activeTask) await this.activeTask;
       this.store.releaseChannelLease(this.source,lease);
+    }
+  }
+
+  private async recoverObservedPiCheckpoint():Promise<void> {
+    const candidates=this.engine.list().filter(m=>
+      this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1' &&
+      m.state==='PAUSED'&&!m.stopRequested&&!m.lastError&&
+      m.turnCount>0&&m.turnCount<=m.maxTurns&&
+      (this.store.piPlan(m.id)?.round!==m.turnCount||
+        (m.turnCount<m.maxTurns&&
+         ['NEXT','HANDOFF'].includes(this.store.piPlan(m.id)?.action??''))));
+    if(!candidates.length)return;
+    if(candidates.length>1){
+      console.error('Multiple PI checkpoints need recovery; no automatic browser Send is permitted');
+      for(const candidate of candidates)
+        pauseFailedPiPlanning(this.store,candidate.id,'Multiple PI recovery candidates require operator inspection');
+      return;
+    }
+    const m=candidates[0]!;
+    const url=this.store.chatLink(m.id),browserId=this.store.chatBrowserBinding(m.id);
+    if(!url||!browserId){
+      pauseFailedPiPlanning(this.store,m.id,'PI recovery source URL or bound Chrome profile is absent');
+      return;
+    }
+    let session:BrowserSession|undefined;
+    try{
+      session=await this.browserConnector(url,{browserId});
+      const snapshot=await inspectChatPage(session.page,url);
+      const previous=this.store.chatBrowserTurn(m.id);
+      const lastUserHash=await lastVisibleUserPromptSha256(session.page);
+      if(!snapshot.composerReady||snapshot.generating||
+        !previous||previous.status!=='observed'||
+        createHash('sha256').update(snapshot.lastAssistant).digest('hex')!==previous.assistantSha256||
+        lastUserHash!==previous.promptSha256)
+        throw new Error('PI recovery refused: current Chrome user/assistant turns differ from the last durable receipt');
+      this.activeMission=m.id;
+      const held=session;session=undefined;
+      this.activeTask=drivePiAutopilot({
+        store:this.store,planner:this.piPlanner,missionId:m.id,
+        revision:m.version,requestPrefix:m.requestKey,
+        page:held.page,url,
+        recoveredAnswer:{
+          responseSha256:createHash('sha256').update(snapshot.lastAssistant).digest('hex'),
+          lastAssistant:snapshot.lastAssistant,
+        },
+      }).catch(error=>{
+        const reason=error instanceof Error?error.message:'unknown PI recovery error';
+        console.error(`PI recovery ${m.id}: ${reason}`);
+        pauseFailedPiPlanning(this.store,m.id,reason);
+      }).finally(async()=>{
+        try{await held.close();}catch{console.error('PI recovery session cleanup warning');}
+        finally{this.activeMission=null;this.activeTask=null;}
+      });
+    }catch(error){
+      const reason=error instanceof Error?error.message:'unknown PI checkpoint error';
+      console.error(`PI recovery ${m.id}: ${reason}`);
+      pauseFailedPiPlanning(this.store,m.id,reason);
+    }finally{
+      if(session)try{await session.close();}catch{/* Best effort only. */}
     }
   }
 
@@ -245,7 +341,18 @@ export class TelegramBridge {
           this.store.setMeta('telegram.notifications_cursor',String(cursor));
           continue;
         }
-        const body=event.type==='chatgpt.browser_observed'||event.type==='chatgpt.browser_uncertain'||
+        if(event.type==='pi.decision' &&
+          (!['NEXT','HANDOFF'].includes(String((event.payload as {action?:unknown})?.action))||
+            Number((event.payload as {round?:unknown})?.round)>=this.store.get(event.missionId).maxTurns)){
+          cursor=event.id;
+          this.store.setMeta('telegram.notifications_cursor',String(cursor));
+          continue;
+        }
+        const body=event.type==='pi.decision'
+          ?formatPiProgress(this.store.get(event.missionId),event)
+          :event.type==='pi.autopilot_finished'||event.type==='pi.autopilot_interrupted'
+          ?formatPiNotification(this.store.get(event.missionId),event)
+          :event.type==='chatgpt.browser_observed'||event.type==='chatgpt.browser_uncertain'||
           event.type==='chatgpt.browser_run_finished'||
           event.type==='chatgpt.browser_rollover_recovered'||event.type==='chatgpt.browser_turn_recovered'
           ?formatBrowserResultNotification(this.store.get(event.missionId),event)
@@ -255,6 +362,79 @@ export class TelegramBridge {
       cursor=event.id;
       this.store.setMeta('telegram.notifications_cursor',String(cursor));
     }
+  }
+
+  /** PI takes the planner role, but never gains browser tools or permits
+   * writes. The ChatGPT executor is still the exact pinned Chrome context. */
+  private async startPiChat(task:string,commandId:string):Promise<string> {
+    const goal=task.trim();
+    if(this.activeMission)return this.queuePiOwnerText(goal,commandId);
+    // A dead foreground process may have left a reserved browser Send or a
+    // PI analysis checkpoint behind. Do not treat a fresh Telegram message
+    // as permission to submit the old task in another new tab.
+    const unresolved=this.engine.list().find(m=>{
+      if(this.store.getMeta(`pi.autopilot.enabled.${m.id}`)!=='1'||m.stopRequested)
+        return false;
+      if(['RUNNING','VERIFYING','NEEDS_RECONCILIATION','READY'].includes(m.state))
+        return true;
+      if(m.state!=='PAUSED')return false;
+      const finished=this.store.events(m.id).some(e=>e.type==='pi.autopilot_finished');
+      return !finished;
+    });
+    if(unresolved)
+      throw new Error(`An earlier PI Mission ${unresolved.id} is not terminal (${unresolved.state}); inspect its exact Chrome/SQLite receipt before starting another. No browser Send was submitted.`);
+    if(this.piPlanner instanceof AiosPiPlanner &&
+      !this.store.getMeta('telegram.pi.sshHost'))
+      throw new Error('PI coordinator not configured; use the local telegram-pi-config command');
+    browserFreshTaskPrompt(goal);
+    const anchorId=this.store.getMeta('telegram.chatgpt.anchorMissionId');
+    if(!anchorId)throw new Error('No approved PI ChatGPT anchor; use telegram-anchor locally');
+    const url=this.store.chatLink(anchorId),browserId=this.store.chatBrowserBinding(anchorId);
+    if(!url||!browserId)throw new Error('PI source Chrome binding is missing');
+    if(this.piPlanner instanceof AiosPiPlanner)
+      await this.piPlanner.preflight(); // Avoid starting Chrome if PI is already offline.
+    const session=await this.browserConnector(url,{browserId});
+    try{
+      const state=await inspectChatPage(session.page,url);
+      if(!state.composerReady||state.generating)
+        throw new Error('PI ChatGPT anchor tab is not ready');
+      const m=this.engine.create({
+        goal,acceptance:['Substantively answer the owner request with evidence within read-only permissions'],
+        workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:8,
+        requestKey:`telegram-pi-${commandId}`,checks:[],
+      });
+      const linked=this.store.linkChat(m.id,url,m.version).mission;
+      const bound=this.store.bindChatBrowser(m.id,browserId,linked.version).mission;
+      this.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
+      this.activeMission=m.id;
+      this.activeTask=drivePiAutopilot({
+        store:this.store,planner:this.piPlanner,missionId:m.id,
+        revision:bound.version,requestPrefix:`telegram-pi-${commandId}`,
+        page:session.page,url,
+      }).catch(error=>{
+        const message=error instanceof Error?error.message:'unknown PI autopilot error';
+        console.error(`PI autopilot ${m.id}: ${message}`);
+        pauseFailedPiPlanning(this.store,m.id,message);
+      }).finally(async()=>{
+        try{await session.close();}catch{console.error('PI Playwriter session cleanup warning');}
+        finally{this.activeMission=null;this.activeTask=null;}
+      });
+      return `PI-coordinated ChatGPT Mission ${m.id} accepted (max 8 read-only turns).\nPI will inspect each observed ChatGPT answer and decide whether another turn is useful.\nYou may send additional plain-text instructions while it runs; they are queued for PI.\nProgress: /status ${m.id}. Do not resend the original task.`;
+    }catch(error){
+      try{await session.close();}catch{console.error('PI source preflight cleanup warning');}
+      throw error;
+    }
+  }
+
+  private queuePiOwnerText(text:string,commandId:string):string {
+    const id=this.activeMission!;
+    if(this.store.getMeta(`pi.autopilot.enabled.${id}`)!=='1')
+      return this.alreadyRunning(text);
+    if(!text||text.length>1500)
+      throw new Error('PI instruction must contain 1–1500 characters');
+    const accepted=this.store.queuePiOwnerDirective(id,commandId,text);
+    return accepted?`Owner instruction queued for PI Mission ${id}.\nPI will integrate it after the current ChatGPT round before another Send.\nProgress: /status ${id}`
+      :`Instruction already queued for PI Mission ${id}; no duplicate.\nProgress: /status ${id}`;
   }
 
   /** One fresh, read-only ChatGPT task per owner message, in the Chrome profile
@@ -357,7 +537,9 @@ export class TelegramBridge {
     if(cmd==='/help'||cmd==='/start') return [
       'Mission Relay (single authorized user)',
       '/list — latest missions',
-      'Send plain text — new read-only ChatGPT task in an approved fresh Chrome tab',
+      'Plain text and ChatGPT: — PI automatically plans ChatGPT rounds (max 8)',
+      '/auto <task> — start PI-managed read-only ChatGPT autopilot',
+      'While PI is working, send plain text to queue owner instructions for its next decision',
       '/new <task> — same as plain text, one new ChatGPT conversation',
       '/codex <task> — one read-only Codex turn in a locally approved workspace',
       'Codex: <task> or ChatGPT: <task> — natural-language provider prefixes',
@@ -373,9 +555,10 @@ export class TelegramBridge {
     if(/^codex\s*[:：]/i.test(clean))
       return this.startCodexTask(clean.replace(/^codex\s*[:：]\s*/i,''),commandId);
     if(/^chatgpt\s*[:：]/i.test(clean))
-      return this.startFreshChat(clean.replace(/^chatgpt\s*[:：]\s*/i,''),commandId);
-    if(cmd==='/new'||!cmd.startsWith('/'))
-      return this.startFreshChat(cmd==='/new'?clean.slice(4):clean,commandId);
+      return this.startPiChat(clean.replace(/^chatgpt\s*[:：]\s*/i,''),commandId);
+    if(cmd==='/auto')return this.startPiChat(clean.slice(5),commandId);
+    if(cmd==='/new')return this.startFreshChat(clean.slice(4),commandId);
+    if(!cmd.startsWith('/'))return this.startPiChat(clean,commandId);
     if(cmd==='/codex')return this.startCodexTask(clean.slice(6),commandId);
     if(cmd==='/list') {
       const all=this.engine.list().slice(0,10);
@@ -384,7 +567,11 @@ export class TelegramBridge {
     if(!id || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Provide a complete mission UUID');
     const m=this.engine.get(id);
     if(cmd==='/status') return [`${m.id} [${m.state}] v${m.version}`,`Turn ${m.turnCount}/${m.maxTurns}`,
-      `Goal: ${m.goal.slice(0,400)}`,`Last summary: ${(m.lastSummary ?? 'none').slice(0,1000)}`].join('\n');
+      `Goal: ${m.goal.slice(0,400)}`,
+      ...(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'
+        ?[`PI coordinator: ${this.store.piPlan(id)?.action??'analyzing / awaiting the first answer'}`,
+          `Pending owner instructions: ${this.store.pendingPiOwnerDirectives(id).length}`]:[]),
+      `Last summary: ${(m.lastSummary ?? 'none').slice(0,1000)}`].join('\n');
     if(cmd==='/handoff') {
       if(words.length) throw new Error('Use /handoff <mission-id>');
       const url=this.store.chatLink(id);
@@ -394,6 +581,12 @@ export class TelegramBridge {
     // A safety stop must not fail because executor progress increments the revision.
     if(cmd==='/pause') {
       if(words.length) throw new Error('Use /pause <mission-id> without a revision');
+      if(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'&&m.state==='PAUSED'
+        &&!m.stopRequested){
+        this.store.update(id,m.version,{stopRequested:true},'mission.pause_requested',
+          {reason:'Owner stopped PI before another ChatGPT turn'});
+        return 'PI pause recorded. No new browser Send will be submitted.';
+      }
       return `Pause recorded: ${this.engine.pause(id).state}`;
     }
     if(!['/pause','/resume','/cancel','/instruct','/continue'].includes(cmd))
@@ -406,6 +599,8 @@ export class TelegramBridge {
     if(cmd!=='/instruct' && words.length) throw new Error('Unexpected command arguments');
     if(cmd==='/resume') {
       if(m.sandbox!=='read-only') throw new Error('Remote resume of workspace-write missions is disabled; use the local CLI');
+      if(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1')
+        throw new Error('PI automated recovery after restart requires exact browser receipt reconciliation; do not use native resume');
       return `Mission is now ${this.engine.resume(id,expectedVersion).state}; use /status then /continue to run.`;
     }
     if(cmd==='/cancel') return `Mission is now ${this.engine.cancel(id,expectedVersion).state}`;
@@ -413,9 +608,15 @@ export class TelegramBridge {
       if(m.sandbox!=='read-only') throw new Error('Remote instructions for workspace-write missions are disabled; use the local CLI');
       const instruction=words.join(' ').trim();
       if(!instruction || instruction.length>1500) throw new Error('Instruction must contain 1–1500 characters');
+      if(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'){
+        if(id!==this.activeMission)throw new Error('PI Mission is not currently active; no instruction was queued');
+        return this.queuePiOwnerText(instruction,commandId);
+      }
       return `Instruction saved (state ${this.engine.instruct(id,instruction,expectedVersion).state}).`;
     }
     if(cmd==='/continue') {
+      if(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1')
+        throw new Error('PI-owned Mission cannot be continued through the legacy ChatGPT driver; inspect PI checkpoint first');
       if(this.activeMission) throw new Error(`Mission ${this.activeMission} already running in this bridge`);
       if(m.sandbox!=='read-only') throw new Error('Remote execution of workspace-write missions is disabled; use the local CLI');
       if(!['READY','PAUSED'].includes(m.state)) throw new Error(`Mission ${id} is ${m.state}; inspect/reconcile before continuing`);

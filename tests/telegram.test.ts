@@ -709,7 +709,7 @@ test('Telegram /continue end-to-end delivers one result after two synthetic brow
   }finally{f.cleanup();}
 });
 
-test('Plain-language Telegram creates one isolated ChatGPT tab, commits URL and final SHA, never replays',async()=>{
+test('Explicit /new creates one isolated ChatGPT tab, commits URL and final SHA, never replays',async()=>{
   const f=fixture();try{
     const anchor='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
     const newUrl='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174001';
@@ -757,7 +757,7 @@ test('Plain-language Telegram creates one isolated ChatGPT tab, commits URL and 
         return {page:oldPage,close:async()=>{closed=true;}};
       });
     const task='Find three real NetBox field workflow user problems';
-    f.transport.updates=[f.message(501,task)];
+    f.transport.updates=[f.message(501,`/new ${task}`)];
     await bridge.pollOnce(0);
     assert.ok(f.transport.sent.some(x=>/New ChatGPT Mission/.test(x)));
     for(let i=0;i<90&&!closed;i++)await new Promise(resolve=>setTimeout(resolve,50));
@@ -790,7 +790,7 @@ test('Natural-language new chat refuses an absent or nonmatching approved Chrome
     const rejected=new TelegramBridge(f.store,f.engine,f.transport,1001,2001,
       async()=>{throw new Error('Codex should not run');},
       async()=>{throw new Error('Should not connect without an anchor');});
-    f.transport.updates=[f.message(502,'Check NetBox app reviews')];
+    f.transport.updates=[f.message(502,'/new Check NetBox app reviews')];
     await rejected.pollOnce(0);
     assert.ok(f.transport.sent.some(x=>/No owner-approved ChatGPT anchor/.test(x)));
     assert.equal(f.engine.list().length,1);

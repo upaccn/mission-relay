@@ -12,7 +12,7 @@ export async function executeBrowserTurn(input:{
   store:Store;missionId:string;revision:number;requestKey:string;
   page:Page;url:string;prompt:string;timeoutMs?:number;requireFinalMarker?:boolean;
   consumedInstruction?:string|null;
-  telegramBatch?:{lastAuthorizedTurn:boolean};
+  telegramBatch?:{lastAuthorizedTurn:boolean;piManaged?:boolean};
 }):Promise<BrowserTurnOutcome> {
   const {store,missionId,revision,requestKey,page,url,prompt}=input;
   // Reject deterministic input errors before reserving a possibly committed
@@ -35,7 +35,8 @@ export async function executeBrowserTurn(input:{
     const mission=store.finishChatBrowserTurn(missionId,requestKey,{kind:'observed',
       assistantSha256,summary:receipt.lastAssistant.slice(-1000),
       consumedInstruction:input.consumedInstruction,
-      ...(input.telegramBatch?{telegramBatch:{terminal,flowSignal:flow}}:{})});
+      ...(input.telegramBatch?{telegramBatch:{terminal,flowSignal:flow,
+        piManaged:input.telegramBatch.piManaged}}:{})});
     return {missionId,requestKey,state:mission.state,revision:mission.version,
       turnCount:mission.turnCount,assistantSha256,
       assistantExcerpt:receipt.lastAssistant.slice(-1000),lastAssistant:receipt.lastAssistant,
@@ -120,7 +121,7 @@ export async function executeBrowserRollover(input:{
   store:Store;missionId:string;revision:number;requestKey:string;
   sourcePage:Page;sourceUrl:string;prompt:string;timeoutMs?:number;
   consumedInstruction?:string|null;
-  telegramBatch?:{lastAuthorizedTurn:boolean};
+  telegramBatch?:{lastAuthorizedTurn:boolean;piManaged?:boolean};
 }):Promise<BrowserTurnOutcome&{page:Page;url:string}> {
   const {store,missionId,revision,requestKey,prompt}=input;
   if(!prompt.trim()||prompt.length>12000)throw new Error('Rollover prompt must contain 1–12000 characters');
@@ -141,7 +142,8 @@ export async function executeBrowserRollover(input:{
     const m=store.finishChatBrowserTurn(missionId,requestKey,{kind:'observed',
       assistantSha256,summary:receipt.lastAssistant.slice(-1000),
       consumedInstruction:input.consumedInstruction,newChatUrl:url,
-      ...(input.telegramBatch?{telegramBatch:{terminal,flowSignal:flow}}:{})});
+      ...(input.telegramBatch?{telegramBatch:{terminal,flowSignal:flow,
+        piManaged:input.telegramBatch.piManaged}}:{})});
     return {missionId,requestKey,state:m.state,revision:m.version,turnCount:m.turnCount,
       assistantSha256,assistantExcerpt:receipt.lastAssistant.slice(-1000),
       lastAssistant:receipt.lastAssistant,observedAt:receipt.observedAt,page,url};

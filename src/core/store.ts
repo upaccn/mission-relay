@@ -22,6 +22,14 @@ export interface ChatBrowserTurn {
   createdAt:string; urlHash:string; reservationRevision?:number;
   assistantSha256?:string; observedAt?:string; error?:string;
 }
+export interface PiOwnerDirective {
+  id:number;externalId:string;text:string;
+}
+export type PiPlanAction='NEXT'|'DONE'|'BLOCKED'|'HANDOFF';
+export interface PiPlan {
+  action:PiPlanAction;summary:string;nextPrompt:string;responseSha256:string;
+  round:number;reviewedDirectiveIds:number[];
+}
 
 function fromRow(r: MissionRow): Mission {
   return {
@@ -87,6 +95,14 @@ export class Store {
       source TEXT PRIMARY KEY,owner_pid INTEGER NOT NULL,owner_host TEXT NOT NULL,
       lease_key TEXT NOT NULL,created_at TEXT NOT NULL
     )`);
+    this.db.exec(`CREATE TABLE IF NOT EXISTS pi_owner_directives (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      mission_id TEXT NOT NULL REFERENCES missions(id),
+      external_id TEXT NOT NULL, text TEXT NOT NULL, received_at TEXT NOT NULL,
+      consumed_round INTEGER,
+      UNIQUE(mission_id,external_id)
+    ); CREATE INDEX IF NOT EXISTS pi_owner_pending
+      ON pi_owner_directives(mission_id,consumed_round,id);`);
     if (filename !== ':memory:' && process.platform !== 'win32') {
       try { chmodSync(filename, 0o600); } catch { /* host ACL may manage permissions */ }
     }
@@ -230,7 +246,8 @@ export class Store {
     /** Only on a successfully observed new-tab rollover, commit the new URL in this same transaction. */
     newChatUrl?:string;
     /** Telegram multi-turn continuation emits only its final summary, never intermediate turns. */
-    telegramBatch?:{terminal:boolean;flowSignal:'NEXT'|'DONE'|'BLOCKED'|'HANDOFF'|'UNMARKED'};
+    telegramBatch?:{terminal:boolean;flowSignal:'NEXT'|'DONE'|'BLOCKED'|'HANDOFF'|'UNMARKED';
+      piManaged?:boolean};
   }):Mission {
     return this.transaction(()=>{
       const current=this.get(id);
@@ -280,7 +297,7 @@ export class Store {
       // The last Telegram notification is committed in the SAME transaction
       // as the observed reply and final URL migration. A crash between turns
       // cannot publish a false final result or silently duplicate a reply.
-      if(observed&&outcome.telegramBatch&&
+      if(observed&&outcome.telegramBatch&&!outcome.telegramBatch.piManaged&&
         (outcome.telegramBatch.terminal||current.stopRequested)) {
         this.event(id,'chatgpt.browser_run_finished',{
           requestKey,round:current.turnCount+1,
@@ -399,6 +416,78 @@ export class Store {
   }
   setMeta(key:string,value:string):void {
     this.db.prepare('INSERT INTO meta(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,value);
+  }
+  queuePiOwnerDirective(id:string,externalId:string,text:string):boolean {
+    if(!/^\d+$/.test(externalId)||!text.trim()||text.length>1500)
+      throw new Error('PI owner instruction requires a Telegram update ID and 1–1500 characters');
+    return this.transaction(()=>{
+      const m=this.get(id);
+      if(['COMPLETED','CANCELLED','BLOCKED','NEEDS_RECONCILIATION'].includes(m.state))
+        throw new Error('PI Mission cannot accept an instruction in its current state');
+      const plan=this.piPlan(id);
+      if(plan?.round===m.turnCount &&
+        (['DONE','BLOCKED'].includes(plan.action)||m.turnCount>=m.maxTurns))
+        throw new Error('PI Mission has already reached its terminal decision or turn budget');
+      const result=this.db.prepare(`INSERT OR IGNORE INTO pi_owner_directives
+        (mission_id,external_id,text,received_at) VALUES(?,?,?,?)`)
+        .run(id,externalId,text.trim(),new Date().toISOString());
+      if(result.changes) this.event(id,'pi.owner_directive_queued',{
+        externalId,textSha256:createHash('sha256').update(text.trim()).digest('hex')});
+      return result.changes===1;
+    });
+  }
+  pendingPiOwnerDirectives(id:string):PiOwnerDirective[] {
+    this.raw(id);
+    return this.db.prepare(`SELECT id,external_id AS externalId,text
+      FROM pi_owner_directives WHERE mission_id=? AND consumed_round IS NULL ORDER BY id`)
+      .all(id) as unknown as PiOwnerDirective[];
+  }
+  piPlan(id:string):PiPlan|null {
+    this.raw(id);
+    const value=this.getMeta(`pi.plan.${id}`);
+    return value?JSON.parse(value) as PiPlan:null;
+  }
+  /** Atomic PI decision + exact owner directive acknowledgement. If another
+   * note arrived during inference, re-plan; never silently drop it. */
+  commitPiPlan(id:string,expectedSha:string,reviewedDirectiveIds:number[],
+    plan:Omit<PiPlan,'responseSha256'|'round'|'reviewedDirectiveIds'>,
+    replaceExisting=false):PiPlan {
+    return this.transaction(()=>{
+      const m=this.get(id),receipt=this.chatBrowserTurn(id);
+      if(m.state!=='PAUSED'||m.stopRequested||!receipt||
+         receipt.status!=='observed'||receipt.assistantSha256!==expectedSha)
+        throw new Error('PI decision requires one matching, fully observed and unpaused ChatGPT turn');
+      const previous=this.piPlan(id);
+      if(previous?.round===m.turnCount &&
+        (!replaceExisting||!['NEXT','HANDOFF'].includes(previous.action)||
+          reviewedDirectiveIds.length===0))
+        throw new Error('PI decision already exists for this turn');
+      if(replaceExisting&&previous?.round!==m.turnCount)
+        throw new Error('Cannot revise a PI decision for a different turn');
+      const pending=this.pendingPiOwnerDirectives(id).map(x=>x.id);
+      if(JSON.stringify(pending)!==JSON.stringify(reviewedDirectiveIds))
+        throw new Error('PI owner instructions changed during inference; re-plan before dispatch');
+      for(const directiveId of reviewedDirectiveIds){
+        const changed=this.db.prepare(`UPDATE pi_owner_directives SET consumed_round=?
+          WHERE mission_id=? AND id=? AND consumed_round IS NULL`)
+          .run(m.turnCount,id,directiveId);
+        if(changed.changes!==1)throw new Error('PI directive acknowledgement conflict');
+      }
+      const result:PiPlan={...plan,responseSha256:expectedSha,round:m.turnCount,
+        reviewedDirectiveIds:[...reviewedDirectiveIds]};
+      this.setMeta(`pi.plan.${id}`,JSON.stringify(result));
+      this.event(id,replaceExisting?'pi.decision_revised':'pi.decision',{
+        action:plan.action,round:m.turnCount,
+        summary:plan.summary,
+        responseSha256:expectedSha,nextPromptSha256:createHash('sha256').update(plan.nextPrompt).digest('hex'),
+        directivesReviewed:reviewedDirectiveIds.length});
+      if(['DONE','BLOCKED'].includes(plan.action)||m.turnCount>=m.maxTurns){
+        this.event(id,'pi.autopilot_finished',{action:m.turnCount>=m.maxTurns&&['NEXT','HANDOFF'].includes(plan.action)
+          ?'LIMIT':plan.action,round:m.turnCount,summary:plan.summary,
+          responseSha256:expectedSha});
+      }
+      return result;
+    });
   }
   maxEventId():number {
     return (this.db.prepare('SELECT COALESCE(MAX(id),0) AS max FROM events').get() as {max:number}).max;

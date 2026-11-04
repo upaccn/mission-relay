@@ -23,7 +23,7 @@ Do not enable a startup service or publish credentials before an end-to-end mobi
 
 ### Natural-language tasks and fresh ChatGPT tabs
 
-An owner may send **ordinary text** (no slash command) or `/new <natural-language task>` to create exactly one new **read-only** ChatGPT conversation in a new tab of an explicitly approved Playwriter Chrome profile. The existing anchor conversation is inspected only to obtain its enabled tab/context: no message is sent in the anchor. The new task uses a compact evidence/safety prompt instead of the old conversation's lengthy continuation template. The controller creates a one-turn Mission with a Telegram-update-derived unique request key, reserves the Send before browser interaction, and atomically records the observed new conversation URL and complete response SHA. Ambiguous tab creation or sending is **never** blindly retried.
+An owner may send **ordinary text**, `ChatGPT: <task>` or `/auto <task>` for PI-controlled automatic continuation (maximum **8** bounded read-only ChatGPT turns). The first turn creates one fresh Chrome ChatGPT tab from the explicitly approved anchor; the original anchor is not sent any message. On each complete observed reply, Mission Relay sends the result and pending authenticated owner notes to AIOS PI using **tool-free** `pictl infer`, then validates PI's strict `NEXT/DONE/BLOCKED/HANDOFF` decision before considering another browser Send. A ChatGPT `DONE` marker is not itself the PI verdict. Telegram receives a **bounded progress notification for each PI NEXT/HANDOFF**, and one final PI result on DONE/BLOCKED/turn-budget exhaustion; the full intermediate ChatGPT responses/hashes remain in the authorized conversation and SQLite receipts. `/new <task>` preserves the previous **one-turn without PI** path.
 
 Configure the exact owner-approved anchor once in the local project (after enabling Playwriter on that tab):
 
@@ -32,7 +32,21 @@ node .\dist\cli.js browser-probe <previously-approved-chat-mission-id>
 node .\dist\cli.js telegram-anchor <previously-approved-chat-mission-id>
 ```
 
-The CLI checks the exact authorized tab and stores only the anchor Mission ID in the **local SQLite database**, not in Git. The source tab must remain enabled and idle; an unavailable or wrong tab refuses execution. The Bot sends one concise result; `/handoff <new-mission-id>` returns the resulting private ChatGPT URL. New tasks are capped at **one** read-only turn, with no general browser gestures or external writes.
+The CLI checks the exact authorized tab and stores only the anchor Mission ID in the **local SQLite database**, not in Git. The source tab must remain enabled and idle; an unavailable or wrong tab refuses execution. The Bot sends one concise final result; `/handoff <new-mission-id>` returns the resulting private ChatGPT URL. `/new` is capped at **one** read-only-prompt turn; PI-managed plain-text/`/auto` missions are capped at **eight**. No generic browser gestures or external writes are granted.
+
+Configure a separate AIOS PI inference route locally, reusing the existing **authenticated SSH** path (no PI install or OAuth copy onto the Chrome host):
+
+```powershell
+node .\dist\cli.js telegram-pi-config --ssh-host aios --project /srv/ai/workspace/projects/mission-relay
+```
+
+The route is persisted **only in local SQLite** and can be revoked with `node .\dist\cli.js telegram-pi-config --clear`. These host/path values are examples for the owner's environment, **not public repository defaults**. Mission Relay invokes only `ssh -T <approved-host> sudo -n /usr/local/bin/pictl infer --stdin --json` with a fixed bounded argument vector and the model task passed as stdin. AIOS `pictl infer` runs without filesystem, browser, web, extension, subagent, or other tools; it returns a JSON decision rather than taking actions. The remote SSH login/sudo permission must already exist and should be restricted to this operation for higher-assurance environments; this pilot currently reuses a more privileged existing operator SSH account. No generic remote-command or arbitrary Pi tool API is exposed to Telegram.
+
+The first browser dispatch also requires a successful bounded, non-model `pictl doctor --json` preflight over the same SSH path. This checks health but **does not** certify the subsequent model call or every future network request. Each PI inference is separately bounded (120-second remote inference, 135-second SSH deadline). PI is a coordinator, not an independent tool-based verifier of external business outcomes.
+
+While the PI Mission is active, ordinary Telegram text is queued as authenticated owner guidance **for PI**, not sent into an in-progress ChatGPT response. The controller persists every update ID and includes queued notes in the next PI decision; if a new note arrives while PI is thinking, the controller re-plans before the next browser Send. `/status <id>` reports the PI decision and pending note count. `/pause <id>` prevents further turns; if you explicitly want to handle the next step yourself, tell PI in natural language or issue `/pause` for deterministic stopping. `/continue` and native `/resume` cannot bypass PI planning on a PI-owned Mission.
+
+After a foreground restart, a PI Mission with a **fully observed** prior ChatGPT response is recovered only after checking the exact approved tab's latest user-prompt SHA and full assistant-answer SHA against SQLite. A durable PI `NEXT` decision can then resume the next unsent turn; if the previous response was observed but PI had not finished evaluating it, PI reviews that response without another ChatGPT Send. Any missing tab, changed history, ambiguous Send, unavailable PI, or missing authorization **fails closed** and informs the owner; there is no automatic replay. After a crash, inspect `/status` and do not submit the original task again.
 
 The ChatGPT read-only restriction is **prompt-level**, not a technical sandbox for connectors already installed in the owner's ChatGPT account. Mission Relay does not invoke external connector writes itself, but cannot independently constrain what tools ChatGPT may have available in that conversation. Keep write-capable connected apps disabled or separately approval-gated for high-risk use. A model-produced `DONE` marker is an observed response, not an independently verified real-world result.
 
@@ -47,7 +61,7 @@ node .\dist\cli.js doctor
 
 Then `/codex <natural-language task>` runs one supervised, read-only native Codex turn, without opening Chrome or silently switching providers. The isolated Codex `CODEX_HOME` requires separate user authorization/login; `doctor` does **not** prove the model is authenticated or reachable. A read-only filesystem sandbox does not constrain external write-capable MCP connectors; keep this dedicated Codex profile restricted to read-only tools. Other AI models require an explicit, scoped `AgentAdapter`, not merely a natural-language model name.
 
-For conversational input without a slash command, the explicit leading prefixes `Codex: <task>` (also `Codex：`) and `ChatGPT: <task>` select the provider deterministically. Plain text without a provider prefix defaults to a new ChatGPT tab. The controller does not use an LLM to guess the requested provider, preserving predictable routing.
+For conversational input without a slash command, the explicit leading prefixes `Codex: <task>` (also `Codex：`) and `ChatGPT: <task>` select the route deterministically. Plain text defaults to PI-managed ChatGPT, while `Codex:` continues to use the independent native Codex path. The system does not use another model just to guess the route.
 
 After updating code, `npm run build` and restart the existing foreground Telegram session to load these commands. No new server or Telegram webhook is required.
 

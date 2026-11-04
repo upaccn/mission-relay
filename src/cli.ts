@@ -12,6 +12,7 @@ import { codexPreflight } from './core/preflight.js';
 import { renderChatGPTHandoff, normalizeChatGPTUrl } from './core/chatgpt-handoff.js';
 import { connectChatPage, inspectChatPage, lastVisibleUserContainsPrompt, withBrowserSession } from './plugins/chatgpt-browser.js';
 import { executeBrowserTurn, driveChatConversation, browserDecision, browserNewChatPrompt, browserContinuationPrompt } from './core/browser-controller.js';
+import {validatePictlRemoteConfig} from './core/pi-planner.js';
 import { listBrowsers } from 'playwriter';
 import type { AgentAdapter, CreateMission, Sandbox } from './core/types.js';
 import type { VerificationCheck } from './core/types.js';
@@ -48,6 +49,8 @@ Commands:
   telegram              Run an optional Telegram channel in the foreground (owner allowlist)
   telegram-anchor <mission-id>|--clear  Locally approve/revoke the exact pinned new-chat source tab
   telegram-codex-workspace --workspace <dir>|--clear  Locally approve/revoke the read-only Codex work directory
+  telegram-pi-config --ssh-host <alias> --project <remote-absolute-path> | --clear
+                      Configure tool-free PI inference through the existing SSH connection
   telegram-identify     Inspect local /start sender IDs before owner authorization
   channel-status        Inspect durable Telegram delivery cursor and poller status (no secrets)
   create --goal <text> --accept <criterion> [--accept <criterion>...] --workspace <path>
@@ -150,6 +153,19 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       store.setMeta('telegram.codex.workspace',workspace);
       result={configured:true,workspace,mode:'read-only',
         note:'Telegram /codex is limited to one supervised turn. This filesystem sandbox does not constrain external MCP permissions; use an isolated Codex profile without write-capable MCP tools.'};
+    } else if (command === 'telegram-pi-config' && id === '--clear') {
+      store.setMeta('telegram.pi.sshHost','');
+      store.setMeta('telegram.pi.project','');
+      result={configured:false,note:'PI coordinator SSH route revoked locally; no other execution routes changed.'};
+    } else if (command === 'telegram-pi-config') {
+      const f=flags(argv.slice(1));
+      const config=validatePictlRemoteConfig({
+        sshHost:option(f,'ssh-host'),project:option(f,'project'),
+      });
+      store.setMeta('telegram.pi.sshHost',config.sshHost);
+      store.setMeta('telegram.pi.project',config.project);
+      result={configured:true,route:config,
+        note:'PI uses a fixed SSH → sudo pictl infer --stdin --json command with no tools. No credentials stored here; requires pre-authorized SSH and remote pictl.'};
     } else if (command === 'codex-init') {
       result={codexHome:initializeCodexHome(),
         next:'Authorize this isolated CODEX_HOME using the official codex login command, then run mission-relay doctor.'};

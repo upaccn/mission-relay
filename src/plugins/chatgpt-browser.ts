@@ -1,4 +1,5 @@
 import type { Page, PlaywriterBrowserConnection } from 'playwriter';
+import {createHash} from 'node:crypto';
 import { normalizeChatGPTUrl } from '../core/chatgpt-handoff.js';
 
 const ASSISTANT_SELECTOR='[data-message-author-role="assistant"]';
@@ -30,6 +31,21 @@ export async function lastVisibleUserContainsPrompt(page:Page,prompt:string):Pro
   const headings=userHeadings(page);
   if(!await headings.count()) return false;
   return (await headings.last().locator('xpath=..').innerText({timeout:5000})).includes(prompt);
+}
+
+/** Read-only recovery guard: match the last submitted prompt hash, never
+ * assume that an unchanged assistant message means no human intervened. */
+export async function lastVisibleUserPromptSha256(page:Page):Promise<string|null> {
+  const legacy=page.locator(USER_SELECTOR);
+  let last:string;
+  if(await legacy.count())last=await legacy.last().innerText({timeout:5000});
+  else {
+    const headings=userHeadings(page);
+    if(!await headings.count())return null;
+    last=(await headings.last().locator('xpath=..').innerText({timeout:5000}))
+      .replace(/^You said:\s*/,'');
+  }
+  return createHash('sha256').update(last.trim()).digest('hex');
 }
 
 export interface ChatPageSnapshot {
