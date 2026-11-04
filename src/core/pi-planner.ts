@@ -122,6 +122,11 @@ function sshPictlCommand(remote:PictlRemoteConfig,commandArgs:string[],
     // an SSH subprocess. Keep only OS/SSH-agent discovery values.
     const env=childEnvironment('check');
     if(process.env.SSH_AUTH_SOCK)env.SSH_AUTH_SOCK=process.env.SSH_AUTH_SOCK;
+    // Windows OpenSSH requires ProgramData to locate system-level SSH
+    // configuration, even when HOME/USERPROFILE/PATH are available. Omitting
+    // it yields SSH exit 255 with no diagnostic. This path is not a secret.
+    if(process.platform==='win32'&&process.env.ProgramData)
+      env.ProgramData=process.env.ProgramData;
     const child=spawn('ssh',args,{windowsHide:true,shell:false,stdio:['pipe','pipe','pipe'],env});
     let stdout='',stderr='',settled=false;
     const finish=(error?:Error)=>{
