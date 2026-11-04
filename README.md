@@ -80,7 +80,7 @@ See [architecture](docs/architecture.md), [plugin API](docs/plugin-api.md), [ope
 1. **v0.1** Native missions, SQLite, Codex adapter, durable CLI, Telegram and human-operated ChatGPT conversation handoff.
 2. **v0.2** Real Chrome Playwriter handshake, first live ChatGPT turn, bounded multi-turn recovery and Telegram acceptance on an operator-enabled conversation (**achieved for attended text-only pilots; not a general production release**).
 3. **v0.3** Harden browser session lifecycle, recovery notices and independent outcome verification; optional mobile UI/desktop handoff and native ChatGPT scheduling only where independently useful.
-4. **v0.4** External Mission Providers (including AIOS), plugin contract tests; ChatGPT handoff remains human-operated unless an official supported automation contract exists.
+4. **v0.4** External Mission Providers (including AIOS) and plugin contract tests; Playwriter tab permission stays operator-enabled, while bounded text-only ChatGPT HANDOFF already supports attended automatic new-tab migration.
 5. **v1.0** Cross-platform recovery, security and maintenance gates.
 
 Contributions welcome after the initial core stabilizes. See [CONTRIBUTING.md](CONTRIBUTING.md).
