@@ -67,7 +67,8 @@ test('timeout prevents completion and does not trust running subprocess',async()
   }finally{f.cleanup();}
 });
 
-test('check timeout is a hard bound even when an exited parent leaves output pipes open',async()=>{
+test('check timeout is a hard bound even when an exited parent leaves output pipes open',
+  {skip:process.platform==='win32'?'Windows closes the inherited verifier pipes when this parent exits':false},async()=>{
   const dir=mkdtempSync(join(tmpdir(),'relay-check-pipes-'));
   const pidPath=join(dir,'descendant.pid');
   const script=[
@@ -90,6 +91,36 @@ test('check timeout is a hard bound even when an exited parent leaves output pip
   }finally{
     // Explicit cleanup also covers Windows, where taskkill cannot traverse
     // children after their original parent has already exited.
+    if(existsSync(pidPath)){
+      const pid=Number(readFileSync(pidPath,'utf8'));
+      if(Number.isSafeInteger(pid)&&pid>0)try{process.kill(pid,'SIGKILL');}catch{/* Already exited. */}
+    }
+    f.cleanup();
+    rmSync(dir,{recursive:true,force:true});
+  }
+});
+
+test('timed-out live verifier parent and inherited-output descendant fail closed',async()=>{
+  const dir=mkdtempSync(join(tmpdir(),'relay-check-tree-'));
+  const pidPath=join(dir,'descendant.pid');
+  const script=[
+    "const {spawn}=require('node:child_process')",
+    "const {writeFileSync}=require('node:fs')",
+    "const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:['ignore','inherit','inherit']})",
+    `writeFileSync(${JSON.stringify(pidPath)},String(child.pid))`,
+    'setInterval(()=>{},1000)',
+  ].join(';');
+  const f=make([{argv:[process.execPath,'-e',script],timeoutMs:1000}]);
+  try{
+    const start=Date.now();
+    const receipts=await runChecks(f.m);
+    const elapsed=Date.now()-start;
+    assert.ok(existsSync(pidPath));
+    assert.equal(receipts.length,1);
+    assert.equal(receipts[0]?.passed,false);
+    assert.equal(receipts[0]?.timedOut,true);
+    assert.ok(elapsed<5000,`verifier timeout exceeded its bounded cleanup window (${elapsed}ms)`);
+  }finally{
     if(existsSync(pidPath)){
       const pid=Number(readFileSync(pidPath,'utf8'));
       if(Number.isSafeInteger(pid)&&pid>0)try{process.kill(pid,'SIGKILL');}catch{/* Already exited. */}
