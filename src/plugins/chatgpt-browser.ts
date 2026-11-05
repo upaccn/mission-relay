@@ -22,17 +22,6 @@ async function sendLocator(page:Page) {
   return page.getByRole('button',{name:/^Send(?: prompt| message)?$/i}).first();
 }
 
-/** ChatGPT can virtualize older turns while a response is generated, so the
- * number of rendered message headings is not a monotonically increasing ID.
- * Correlate the newest visible user turn with the prompt actually submitted. */
-export async function lastVisibleUserContainsPrompt(page:Page,prompt:string):Promise<boolean> {
-  const legacy=page.locator(USER_SELECTOR);
-  if(await legacy.count()) return (await legacy.last().innerText({timeout:5000})).includes(prompt);
-  const headings=userHeadings(page);
-  if(!await headings.count()) return false;
-  return (await headings.last().locator('xpath=..').innerText({timeout:5000})).includes(prompt);
-}
-
 /** Accessible ChatGPT transcript wrappers can put You said: and Show more
  * controls into the parent heading's innerText. They are NOT user-authored
  * prompt bytes. Strip only these exact observed UI decorations; other text
@@ -59,6 +48,14 @@ export async function lastVisibleUserPrompt(page:Page):Promise<string|null>{
 export async function lastVisibleUserPromptSha256(page:Page):Promise<string|null> {
   const last=await lastVisibleUserPrompt(page);
   return last===null?null:createHash('sha256').update(last).digest('hex');
+}
+
+/** Exact correlation for a pending Send. A later PI/owner prompt may quote
+ * the complete earlier prompt; substring containment would misattribute the
+ * later assistant answer to the earlier Send. */
+export function matchesSubmittedUserPrompt(lastVisibleSha256:string|null,prompt:string):boolean {
+  return lastVisibleSha256!==null &&
+    lastVisibleSha256===createHash('sha256').update(prompt.trim()).digest('hex');
 }
 
 export interface ChatPageSnapshot {
@@ -296,7 +293,7 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
   while(Date.now()<deadline) {
     const current=await inspectChatPage(page,targetUrl);
     const newestUserMatchesPrompt=current.userCount>0 &&
-      await lastVisibleUserContainsPrompt(page,prompt.trim());
+      matchesSubmittedUserPrompt(await lastVisibleUserPromptSha256(page),prompt);
     if(isFreshResponseLoadFailure(before,current,newestUserMatchesPrompt)) {
       failureSince??=Date.now();
       if(Date.now()-failureSince>=5000)
@@ -369,7 +366,7 @@ export async function submitNewChatTurn(page:Page,prompt:string,
           throw new Error('New ChatGPT reply failed to load; first Send may have committed; do not replay');
       }else failureSince=null;
       if(snapshot.userCount>0 && snapshot.assistantCount>0 && snapshot.lastAssistant &&
-        await lastVisibleUserContainsPrompt(page,prompt.trim())) {
+        matchesSubmittedUserPrompt(await lastVisibleUserPromptSha256(page),prompt)) {
         if(snapshot.lastAssistant!==last){last=snapshot.lastAssistant;stableSince=Date.now();}
         finalCandidate=!snapshot.generating && finalMarker.test(snapshot.lastAssistant.trim());
         if(finalCandidate && Date.now()-stableSince>=2500)

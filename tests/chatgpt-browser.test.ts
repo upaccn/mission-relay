@@ -9,7 +9,7 @@ import {Engine} from '../src/core/engine.js';
 import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUrl,
   tolerateRolloverNavigation,rolloverUrlClass,newChatBootstrapDelayMs,
   shouldReloadBlankNewChat,reloadBlankDirectNewChat,isFreshResponseLoadFailure,
-  canonicalVisibleUserPrompt,
+  canonicalVisibleUserPrompt,matchesSubmittedUserPrompt,
   ACTIVE_REPLY_OBSERVATION_INTERVAL_MS,
   submitNewChatTurn,
   DEFAULT_BROWSER_TURN_TIMEOUT_MS,MAX_BROWSER_TURN_TIMEOUT_MS,type BrowserSession} from '../src/plugins/chatgpt-browser.js';
@@ -28,6 +28,22 @@ test('ChatGPT accessible user transcript decorations are excluded from prompt id
   assert.equal(canonicalVisibleUserPrompt(`${submitted}\n…\nShow more`,false),submitted);
   assert.notEqual(canonicalVisibleUserPrompt(`You said:\n${submitted}\nAdditional human edit\n…\nShow more`,true),submitted);
   assert.notEqual(canonicalVisibleUserPrompt(`You said:\n${submitted}\nShow something else`,true),submitted);
+});
+
+test('A later PI prompt quoting the full original cannot satisfy earlier Send correlation',()=>{
+  const original='Mission Relay acceptance: phase one only; do not begin phase two.';
+  const later=[
+    'Continue the same authorized Mission Relay task.',
+    'Prior owner prompt:',original,
+    'PI decision: NEXT; complete phase two now.',
+  ].join('\n');
+  const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
+  assert.equal(later.includes(original),true,
+    'The former substring predicate erroneously accepted this later user prompt');
+  assert.equal(matchesSubmittedUserPrompt(hash(original),original),true);
+  assert.equal(matchesSubmittedUserPrompt(hash(later),original),false);
+  assert.equal(matchesSubmittedUserPrompt(null,original),false);
+  assert.equal(matchesSubmittedUserPrompt(hash(original+' extra'),original),false);
 });
 const URL='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
 const never:AgentAdapter={

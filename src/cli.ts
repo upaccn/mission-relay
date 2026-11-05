@@ -9,7 +9,7 @@ import {LazyExecutor,registerExecutorPlugin,registeredExecutorPlugins,defaultExe
 import { TelegramBridge, TelegramHttpTransport } from './plugins/telegram.js';
 import { stateHome } from './core/paths.js';
 import { renderChatGPTHandoff, normalizeChatGPTUrl } from './core/chatgpt-handoff.js';
-import { connectChatPage, inspectChatPage, lastVisibleUserContainsPrompt, lastVisibleUserPrompt, lastVisibleUserPromptSha256, listConnectedChatCandidates, withBrowserSession } from './plugins/chatgpt-browser.js';
+import { connectChatPage, inspectChatPage, matchesSubmittedUserPrompt, lastVisibleUserPrompt, lastVisibleUserPromptSha256, listConnectedChatCandidates, withBrowserSession } from './plugins/chatgpt-browser.js';
 import { executeBrowserTurn, driveChatConversation, browserDecision, browserNewChatPrompt, browserContinuationPrompt } from './core/browser-controller.js';
 import {AiosPiPlanner,validatePictlRemoteConfig} from './core/pi-planner.js';
 import {adoptConnectedConversation} from './core/chat-adoption.js';
@@ -418,12 +418,12 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
         const first=await inspectChatPage(page,url);
         if(first.generating||!first.lastAssistant.trim()||
           !['DONE','NEXT','BLOCKED','HANDOFF'].includes(browserDecision(first.lastAssistant))||
-          !await lastVisibleUserContainsPrompt(page,prompt.trim()))
+          !matchesSubmittedUserPrompt(await lastVisibleUserPromptSha256(page),prompt))
           throw new Error('Original chat does not show the exact reserved user request and a complete marked assistant reply');
         await new Promise(resolve=>setTimeout(resolve,3000));
         const second=await inspectChatPage(page,url);
         if(second.generating||second.lastAssistant!==first.lastAssistant||
-          !await lastVisibleUserContainsPrompt(page,prompt.trim()))
+          !matchesSubmittedUserPrompt(await lastVisibleUserPromptSha256(page),prompt))
           throw new Error('Original ChatGPT reply was unstable or no longer corresponds to the reserved request');
         return second.lastAssistant;
       });
@@ -459,12 +459,12 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       const answer=await withBrowserSession(newSession,async page=>{
         const first=await inspectChatPage(page,newUrl);
         if(first.generating||!['DONE','NEXT','BLOCKED'].includes(browserDecision(first.lastAssistant))||
-          !await lastVisibleUserContainsPrompt(page,prompt.trim()))
+          !matchesSubmittedUserPrompt(await lastVisibleUserPromptSha256(page),prompt))
           throw new Error('New conversation is not a complete reply to the exact reserved prompt');
         await new Promise(resolve=>setTimeout(resolve,2600));
         const second=await inspectChatPage(page,newUrl);
         if(second.generating||second.lastAssistant!==first.lastAssistant||
-          !await lastVisibleUserContainsPrompt(page,prompt.trim()))
+          !matchesSubmittedUserPrompt(await lastVisibleUserPromptSha256(page),prompt))
           throw new Error('New ChatGPT reply was not stable or its submitted prompt changed');
         return second.lastAssistant;
       });
