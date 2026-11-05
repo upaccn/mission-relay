@@ -121,8 +121,8 @@ See [architecture](docs/architecture.md), [plugin API](docs/plugin-api.md), [ope
 
 ## Roadmap
 
-1. **Current alpha (implemented):** SQLite Mission authority, profile-pinned Playwriter, browser-first zero-Send human-chat adoption, PI orchestration, Telegram commands and opted-in profile-scoped watch. No tab-group membership requirement. A bounded production text-only pilot passed; the stricter prompt-correlation fix has automated regression and deployment evidence, but no separate post-fix live Send pilot.
-2. **Next reliability gates:** Deterministic post-fix browser observation acceptance, recovery from a genuinely exited production controller, hung-process detection strategy, and stronger evidence of notification delivery; do not run disruptive tests against an active Mission.
+1. **Current alpha (implemented):** SQLite Mission authority, profile-pinned Playwriter, browser-first zero-Send human-chat adoption, PI orchestration, Telegram commands and opted-in profile-scoped watch. No tab-group membership requirement. A real *post-fix* two-stage Chrome Watch → PI → ChatGPT → Telegram text-only acceptance passed, including one exact correlated browser Send, durable answer and terminal PI decision, followed by a no-replay production controller restart. This does not independently verify business outcomes.
+2. **Next reliability gates:** Recovery from a genuinely hung production controller, naturally occurring long-task connection/Retry UI, independently observed phone-side Telegram delivery, and stronger unattended-operation evidence; do not induce disruptive failures while a Mission or Send is active.
 3. **Optional extension:** Further native executor adapters and narrowly approved browser gestures only where a real user case requires them. No built-in vendor chooser or plugin marketplace is needed for the browser-first workflow.
 4. **v1.0:** Cross-platform restart/recovery, security and operational maintenance gates with real evidence, not just synthetic fixtures.
 

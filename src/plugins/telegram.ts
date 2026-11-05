@@ -519,14 +519,23 @@ export class TelegramBridge {
       const state=await inspectChatPage(session.page,url);
       if(!state.composerReady||state.generating)
         throw new Error('PI ChatGPT anchor tab is not ready');
-      const m=this.engine.create({
-        goal,acceptance:['Substantively answer the owner request with evidence within read-only permissions'],
-        workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:8,
-        requestKey:`telegram-pi-${commandId}`,checks:[],
+      // The external maintenance CLI may request a drain while PI preflight
+      // or Chrome inspection is awaited. Publish the PI-ready intent, exact
+      // browser binding and drain check as one SQLite transaction.
+      const bound=this.store.atomic(()=>{
+        if(this.store.channelDrainRequested(this.source))
+          throw new Error('Telegram maintenance drain active; PI task was not created');
+        const m=this.engine.create({
+          goal,acceptance:['Substantively answer the owner request with evidence within read-only permissions'],
+          workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:8,
+          requestKey:`telegram-pi-${commandId}`,checks:[],
+        });
+        const linked=this.store.linkChat(m.id,url,m.version).mission;
+        const bound=this.store.bindChatBrowser(m.id,browserId,linked.version).mission;
+        this.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
+        return bound;
       });
-      const linked=this.store.linkChat(m.id,url,m.version).mission;
-      const bound=this.store.bindChatBrowser(m.id,browserId,linked.version).mission;
-      this.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
+      const m=bound;
       this.activeMission=m.id;
       this.activeTask=drivePiAutopilot({
         store:this.store,planner:this.piPlanner,missionId:m.id,

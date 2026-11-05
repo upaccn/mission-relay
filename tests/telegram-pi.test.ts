@@ -82,6 +82,34 @@ function rig(planner:PiPlanner){
     cleanup:()=>{store.close();rmSync(dir,{recursive:true,force:true});}};
 }
 
+test('An unsubmitted PI-ready task prevents an idle Telegram maintenance drain',()=>{
+  const f=rig({decide:async()=>({action:'BLOCKED',summary:'No Send',nextPrompt:''})});
+  try{
+    const m=f.engine.create({goal:'PI accepted but the first Send is not reserved',
+      acceptance:['No lost command'],workspace:'',sandbox:'read-only',
+      mode:'supervised',maxTurns:8,requestKey:'pi-ready-fence',checks:[]});
+    f.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
+    assert.throws(()=>f.store.requestChannelDrain('telegram'),/Maintenance deferred/);
+    assert.equal(f.store.channelDrainRequested('telegram'),false);
+    f.store.setMeta(`pi.autopilot.enabled.${m.id}`,'');
+    const drain=f.store.requestChannelDrain('telegram');
+    assert.equal(f.store.releaseChannelDrain('telegram',drain),undefined);
+  }finally{f.cleanup();}
+});
+
+test('Telegram PI task creation rolls back its Mission when Chrome binding fails',async()=>{
+  const f=rig({decide:async()=>({action:'BLOCKED',summary:'No Send',nextPrompt:''})});
+  try{
+    const original=f.store.bindChatBrowser.bind(f.store);
+    f.store.bindChatBrowser=(()=>{throw new Error('synthetic Chrome binding failure');}) as typeof original;
+    f.setUpdates([f.message(968,'Read-only PI create must be atomic')]);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.engine.list().length,1,'No orphan PI READY Mission may survive');
+    assert.equal(f.state().sends,0);
+    assert.ok(f.sent.some(x=>/synthetic Chrome binding failure/.test(x)));
+  }finally{f.cleanup();}
+});
+
 test('Telegram default text starts PI autopilot and later owner text is queued until PI reviews the round',async()=>{
   let seen:PiTurnContext|null=null;
   const planner:PiPlanner={decide:async context=>{

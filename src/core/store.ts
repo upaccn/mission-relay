@@ -133,6 +133,12 @@ export class Store {
     const active=(this.db.prepare(
       "SELECT COUNT(*) AS count FROM missions WHERE state IN ('RUNNING','VERIFYING')"
     ).get() as {count:number}).count;
+    // A PI task can be READY while the controller is inspecting its approved
+    // anchor, before the first browser Send has been durably reserved. Draining
+    // at that instant would strand an accepted owner command with no worker.
+    const piReady=(this.db.prepare("SELECT id FROM missions WHERE state='READY'")
+      .all() as {id:string}[]).some(({id})=>
+      this.getMeta(`pi.autopilot.enabled.${id}`)==='1');
     const pending=(this.db.prepare(
       "SELECT COUNT(*) AS count FROM channel_commands WHERE source=? AND status!='delivered'"
     ).get(source) as {count:number}).count;
@@ -148,7 +154,7 @@ export class Store {
         throw new Error('Unknown browser turn state; maintenance must fail closed');
       return status==='reserved';
     });
-    return Boolean(active||pending||reserved);
+    return Boolean(active||piReady||pending||reserved);
   }
   /** Only the CURRENT local lease owner may abandon a stalled, fully idle
    * channel. No drain is created: a task-managed restart must not inherit a
