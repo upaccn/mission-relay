@@ -9,7 +9,7 @@ import {Engine} from '../src/core/engine.js';
 import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUrl,
   tolerateRolloverNavigation,rolloverUrlClass,newChatBootstrapDelayMs,
   shouldReloadBlankNewChat,reloadBlankDirectNewChat,isFreshResponseLoadFailure,
-  canonicalVisibleUserPrompt,matchesSubmittedUserPrompt,isNewAssistantReply,
+  canonicalVisibleUserPrompt,matchesSubmittedUserPrompt,matchesReservedPromptHash,isNewAssistantReply,
   ACTIVE_REPLY_OBSERVATION_INTERVAL_MS,
   submitNewChatTurn,
   DEFAULT_BROWSER_TURN_TIMEOUT_MS,MAX_BROWSER_TURN_TIMEOUT_MS,type BrowserSession} from '../src/plugins/chatgpt-browser.js';
@@ -44,6 +44,18 @@ test('A later PI prompt quoting the full original cannot satisfy earlier Send co
   assert.equal(matchesSubmittedUserPrompt(hash(later),original),false);
   assert.equal(matchesSubmittedUserPrompt(null,original),false);
   assert.equal(matchesSubmittedUserPrompt(hash(original+' extra'),original),false);
+});
+test('Recovery binds the latest visible user to the durable PI-authored reservation hash',()=>{
+  const piPrompt='Explicit PI request: execute phase two now.';
+  const goal='Owner original goal: perform phase one only.';
+  const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
+  const reserved=hash(piPrompt);
+  assert.notEqual(reserved,hash(goal),
+    'Recovery must not attempt to reconstruct a PI-authored prompt from a goal');
+  assert.equal(matchesReservedPromptHash(hash(piPrompt),reserved),true);
+  assert.equal(matchesReservedPromptHash(hash(`Prior prompt: ${piPrompt}\nAnother request`),reserved),false);
+  assert.equal(matchesReservedPromptHash(hash(goal),reserved),false);
+  assert.equal(matchesReservedPromptHash(null,reserved),false);
 });
 test('Same assistant text counts as a new response only with changed message identity',()=>{
   const old={url:'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',

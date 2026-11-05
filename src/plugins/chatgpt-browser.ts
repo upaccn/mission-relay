@@ -58,6 +58,12 @@ export function matchesSubmittedUserPrompt(lastVisibleSha256:string|null,prompt:
     lastVisibleSha256===createHash('sha256').update(prompt.trim()).digest('hex');
 }
 
+/** Recovery uses the original SQLite reservation hash. PI may have authored a
+ * prompt that cannot be rebuilt from the Mission goal after an interruption. */
+export function matchesReservedPromptHash(lastVisibleSha256:string|null,reservedSha256:string):boolean {
+  return lastVisibleSha256!==null && lastVisibleSha256===reservedSha256;
+}
+
 export interface ChatPageSnapshot {
   url:string;
   assistantCount:number;

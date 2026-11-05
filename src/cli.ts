@@ -9,7 +9,7 @@ import {LazyExecutor,registerExecutorPlugin,registeredExecutorPlugins,defaultExe
 import { TelegramBridge, TelegramHttpTransport } from './plugins/telegram.js';
 import { stateHome } from './core/paths.js';
 import { renderChatGPTHandoff, normalizeChatGPTUrl } from './core/chatgpt-handoff.js';
-import { connectChatPage, inspectChatPage, matchesSubmittedUserPrompt, lastVisibleUserPrompt, lastVisibleUserPromptSha256, listConnectedChatCandidates, withBrowserSession } from './plugins/chatgpt-browser.js';
+import { connectChatPage, inspectChatPage, matchesSubmittedUserPrompt, matchesReservedPromptHash, lastVisibleUserPrompt, lastVisibleUserPromptSha256, listConnectedChatCandidates, withBrowserSession } from './plugins/chatgpt-browser.js';
 import { executeBrowserTurn, driveChatConversation, browserDecision, browserNewChatPrompt, browserContinuationPrompt } from './core/browser-controller.js';
 import {AiosPiPlanner,validatePictlRemoteConfig} from './core/pi-planner.js';
 import {adoptConnectedConversation} from './core/chat-adoption.js';
@@ -407,23 +407,21 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       if(!url||!bound||m.version!==revision||m.state!=='NEEDS_RECONCILIATION'||
         record?.status!=='uncertain')
         throw new Error('No eligible uncertain, bound existing ChatGPT conversation turn at this revision');
-      // Reconstruction must match the *original reserved* request hash. A
-      // concurrent instruction or different browser prompt fails closed.
-      const candidates=[true,false].map(first=>
-        browserContinuationPrompt(m.goal,m.acceptance,first,m.nextInstruction));
-      const prompt=candidates.find(value=>createHash('sha256').update(value.trim()).digest('hex')===record.promptSha256);
-      if(!prompt)throw new Error('Cannot reconstruct the original reserved continuation prompt exactly');
+      // PI-authored continuations cannot be reconstructed from the mission goal.
+      // The original exact submitted prompt hash is already durable in SQLite.
+      // Compare it with the latest visible user turn; never accept a quote of
+      // an earlier prompt or replay the uncertain Send.
       const session=await connectChatPage(url,{browserId:bound});
       const answer=await withBrowserSession(session,async page=>{
         const first=await inspectChatPage(page,url);
         if(first.generating||!first.lastAssistant.trim()||
           !['DONE','NEXT','BLOCKED','HANDOFF'].includes(browserDecision(first.lastAssistant))||
-          !matchesSubmittedUserPrompt(await lastVisibleUserPromptSha256(page),prompt))
+          !matchesReservedPromptHash(await lastVisibleUserPromptSha256(page),record.promptSha256))
           throw new Error('Original chat does not show the exact reserved user request and a complete marked assistant reply');
         await new Promise(resolve=>setTimeout(resolve,3000));
         const second=await inspectChatPage(page,url);
         if(second.generating||second.lastAssistant!==first.lastAssistant||
-          !matchesSubmittedUserPrompt(await lastVisibleUserPromptSha256(page),prompt))
+          !matchesReservedPromptHash(await lastVisibleUserPromptSha256(page),record.promptSha256))
           throw new Error('Original ChatGPT reply was unstable or no longer corresponds to the reserved request');
         return second.lastAssistant;
       });
