@@ -2,6 +2,12 @@
 
 Updated: 2026-11-05
 
+## 2026-11-05 permanent long-task connection and delivery-retry rules
+
+- Owner specified two recurring ChatGPT UI states: `Connection interrupted. Waiting for the complete answer` must remain a wait, often after ~30 minutes; `Message delivery timed out. Please try again.` requires clicking the right-hand `Retry` UI button on the existing request. These are owner-observed operational cases, not independently reproduced production errors during this change.
+- Existing and fresh-tab Playwriter Send observers now detect these exact visible transport banners separately from the assistant answer, and never accept a final marker while a banner is present. The connection-interrupted case keeps polling the same reply (60-second cadence), extending a default-length 60-minute run once by up to 120 minutes (4-hour ceiling); explicit caller timeouts are not silently extended. The delivery case checks pinned conversation URL, exact latest user prompt SHA-256 and a unique visible enabled `Retry` button, and clicks it at most once within the same reserved Send. It never issues a second composer Send or a generic Regenerate fallback.
+- Synthetic regression exercises both existing-chat and new-chat Retry, no duplicate composer Send, URL/prompt mismatch rejection, nonterminal interruption, bounded grace and quoted banner text. Exact live UI behavior remains to be observed when these banners occur naturally. Changes require full regression, build, one-controller maintenance drain deployment and post-deploy health readback before being marked operationally released.
+
 ## 2026-11-05 PI-authored uncertain browser Send recovered without replay
 
 - A real production two-stage pilot's second browser Send entered `NEEDS_RECONCILIATION` after the old worker timed out on identical consecutive assistant replies. Read-only Playwriter snapshots independently observed the exact latest reserved prompt SHA-256 and a stable complete `PHASE_TWO_CONFIRM`/`DONE` answer. No new Send occurred.

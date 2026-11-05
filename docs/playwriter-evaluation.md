@@ -22,6 +22,14 @@ Status: **attended browser adapter passed real post-fix Telegram → Chrome Chat
 
 ## Architecture and upstream
 
+### Permanent long-task transport rules (2026-11-05)
+
+In both existing ChatGPT conversations and newly created ChatGPT tabs, `Connection interrupted. Waiting for the complete answer` means the answer is still pending. Do not mark it complete, click Regenerate, refresh the page or resubmit the prompt. Maintain the same 60-second normal DOM observation cadence. The default timeout is 60 minutes and may be extended **once** upon the interrupted banner by up to 120 minutes, capped at four hours from the first Send. A caller's explicit timeout is not silently extended. If the maximum expires without a complete marked answer, leave the Send ambiguous for reconciliation; do not replay it.
+
+When `Message delivery timed out. Please try again.` appears with a distinct `Retry` button, the controller may click **that exact button once** on the existing message, but only while the current user message still matches the original reserved prompt SHA-256 and the tab URL is still the authorized direct conversation. Neither a generic Retry/Regenerate control nor another composer Send is permitted. If the UI cannot identify exactly one enabled, visible Retry button or a stable complete answer never appears, stop conservatively with the original request key preserved. This owner-authorized UI action is not a guarantee that the upstream provider will not internally retry work. Log the action without copying private prompt text.
+
+These are fixed operating rules, not proof of new live faults having occurred: synthetic browser regression tests cover both banners, one click, no duplicate composer Send, URL/prompt checks and fresh-tab recovery. Production behavior for those banners still needs observation when one naturally occurs; do not intentionally induce a 30-minute external failure.
+
 Playwriter is a **pinned package dependency** (`playwriter@0.9.0` from npm), but the browser integration is optional to **activate** and never starts when running ordinary native/Codex missions. This avoids npm silently omitting the module on Windows. It connects to the **already running Chrome** via the official extension, local loopback relay, and `connectViaExtension()`. No patched Playwriter fork, browser-profile copy, public tunnel, second database or bespoke automation daemon.
 
 Upstream:

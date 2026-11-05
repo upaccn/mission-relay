@@ -83,9 +83,9 @@ Commands:
   browser-bind <id> --browser-id <id> --revision <n>   Pin a mission to one Chrome profile
   browser-probe <id> [--browser-id <id>]   Read a Playwriter-enabled ChatGPT tab
   browser-send <id> --revision <n> --request-key <key> --prompt-file <file>
-         [--browser-id <id>] [--timeout-ms 2100000]  Submit once; never blind-retry
+         [--browser-id <id>] [--timeout-ms 3600000]  Submit once; never blind-retry
   browser-drive <id> --revision <n> --request-prefix <key> [--turns 3]
-         [--browser-id <id>] [--timeout-ms 2100000]  Bounded ChatGPT multi-turn loop
+         [--browser-id <id>] [--timeout-ms 3600000]  Bounded ChatGPT multi-turn loop
   browser-reconcile <id> --acknowledge-side-effects  Manual ambiguous-turn recovery
   browser-recover-turn <id> --revision <n> --acknowledge-side-effects
          Verify a complete reply in the original chat without resending, then credit its observed turn
@@ -355,7 +355,7 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       const requestKey=option(f,'request-key');
       const prompt=readFileSync(resolve(option(f,'prompt-file')),'utf8').trim();
       if(!prompt || prompt.length>12000) throw new Error('Browser prompt must contain 1–12000 characters');
-      const timeoutMs=Number(option(f,'timeout-ms','2100000'));
+      const timeoutMs=Number(option(f,'timeout-ms','3600000'));
       const bound=store.chatBrowserBinding(id);
       if(!bound) throw new Error('Pin this ChatGPT Mission to an explicitly approved Chrome profile with browser-bind before sending');
       const browserId=f['--browser-id']?option(f,'browser-id'):bound??undefined;
@@ -376,7 +376,7 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       if(!Number.isInteger(turns)||turns<1||turns>8) throw new Error('Drive turns must be 1–8');
       const prefix=option(f,'request-prefix');
       if(!/^[\w.-]{1,120}$/.test(prefix)) throw new Error('Request prefix must be 1–120 safe characters');
-      const timeoutMs=Number(option(f,'timeout-ms','2100000'));
+      const timeoutMs=Number(option(f,'timeout-ms','3600000'));
       const bound=store.chatBrowserBinding(id);
       if(!bound) throw new Error('Pin this ChatGPT Mission to an explicitly approved Chrome profile with browser-bind before continuing');
       const browserId=f['--browser-id']?option(f,'browser-id'):bound??undefined;

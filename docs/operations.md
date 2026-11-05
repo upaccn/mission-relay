@@ -35,6 +35,8 @@ Model-only completion is still allowed for `read-only` missions, but should be t
 
 ## Recovery
 
+**Permanent long-task browser transport handling:** `Connection interrupted. Waiting for the complete answer` is a *wait* state, not evidence that the committed request failed. Preserve the tab and observe the original response. The default 60-minute browser window gains one bounded two-hour grace period when this banner appears, never exceeding four hours from Send; an explicitly chosen shorter timeout is respected. `Message delivery timed out. Please try again.` with a visible, uniquely identified `Retry` button allows **one UI Retry for the existing submitted message** in the same exact Chrome conversation, only when the latest visible user prompt SHA-256 still matches the SQLite reservation. This is not permission to click Send again, regenerate unrelated answers, or retry an uncertain request key. If the Retry control cannot be uniquely located, fails, or the final marked answer is not observed within the deadline, preserve the original uncertain Send and reconcile before further instructions. See [Playwriter evaluation](playwriter-evaluation.md).
+
 If execution stops or the process crashes, inspect `show` and `events`. When state is `NEEDS_RECONCILIATION`, inspect the workspace and actual external side effects before using `reconcile`. Reconcile does not replay the interrupted turn; it only permits a new, explicitly requested continuation.
 
 Do not run multiple `run` commands for one mission. The database lease blocks parallel workers, but only one process should own the executor session.

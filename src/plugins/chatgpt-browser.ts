@@ -204,8 +204,8 @@ export function isNewAssistantReply(before:ChatPageSnapshot,
 
 function delay(ms:number):Promise<void> {return new Promise(resolve=>setTimeout(resolve,ms));}
 
-export const DEFAULT_BROWSER_TURN_TIMEOUT_MS=35*60*1000;
-export const MAX_BROWSER_TURN_TIMEOUT_MS=45*60*1000;
+export const DEFAULT_BROWSER_TURN_TIMEOUT_MS=60*60*1000;
+export const MAX_BROWSER_TURN_TIMEOUT_MS=4*60*60*1000;
 
 /** A 5–30-minute model turn only needs one DOM snapshot per minute. The one
  * exception is a response with an apparent final marker: confirm its stable
@@ -285,6 +285,53 @@ function visibleChatResponseFailed(answer:string):boolean {
   return /(?:This response couldn.t load|Unable to load response|Something went wrong while generating)/i.test(answer);
 }
 
+/** Transient ChatGPT transport banners must not be credited as final answers.
+ * The banner is checked explicitly; never treat a generic Retry as authorization. */
+export const CONNECTION_INTERRUPTED_TEXT='Connection interrupted. Waiting for the complete answer';
+export const MESSAGE_DELIVERY_TIMEOUT_TEXT='Message delivery timed out. Please try again.';
+export const INTERRUPTED_WAIT_GRACE_MS=120*60_000;
+export const MAX_INTERRUPTED_WAIT_MS=4*60*60_000;
+
+export async function visibleLongTaskBanner(page:Page,answer:string):Promise<'interrupted'|'delivery-timeout'|null>{
+  // A model can discuss these strings in ordinary prose. Only an exact
+  // trailing status line or a separately visible exact UI banner qualifies.
+  const trailingLine=answer.trimEnd().split('\n').at(-1)?.trim()??'';
+  const visible=async(text:string):Promise<boolean>=>{
+    if(typeof page.getByText!=='function')return false;
+    const found=page.getByText(text,{exact:true});
+    const count=await found.count();
+    for(let i=0;i<Math.min(count,4);i++){
+      if(await found.nth(i).isVisible())return true;
+    }
+    return false;
+  };
+  if(trailingLine===MESSAGE_DELIVERY_TIMEOUT_TEXT||
+     await visible(MESSAGE_DELIVERY_TIMEOUT_TEXT))return 'delivery-timeout';
+  if(trailingLine===CONNECTION_INTERRUPTED_TEXT||
+     await visible(CONNECTION_INTERRUPTED_TEXT))return 'interrupted';
+  return null;
+}
+
+/** Extend a default-length interrupted run once. Explicit timeouts win. */
+export function interruptedDeadline(start:number,deadline:number,now:number,
+  allowExtension:boolean):number {
+  return allowExtension?Math.max(deadline,
+    Math.min(start+MAX_INTERRUPTED_WAIT_MS,now+INTERRUPTED_WAIT_GRACE_MS)):deadline;
+}
+
+/** Owner-approved UI Retry of the existing delivery, not a second composer Send. */
+export async function clickDeliveryRetryOnce(page:Page,expectedUrl:string,
+  latestUserMatchesReserved:boolean,alreadyClicked:boolean):Promise<boolean> {
+  if(alreadyClicked||!latestUserMatchesReserved)return false;
+  if(normalizeChatGPTUrl(page.url())!==normalizeChatGPTUrl(expectedUrl))
+    throw new Error('Delivery Retry refused: conversation URL changed');
+  if(await visibleLongTaskBanner(page,'')!=='delivery-timeout')return false;
+  const retry=page.getByRole('button',{name:'Retry',exact:true});
+  if(await retry.count()!==1||!await retry.isVisible()||!await retry.isEnabled())return false;
+  await retry.click({timeout:10000});
+  return true;
+}
+
 /** A pre-existing ChatGPT reply-load error belongs to the *previous* turn.
  * It must not mark the newly submitted request uncertain while ChatGPT is
  * still rendering its next assistant message. DOM counts can be virtualized,
@@ -304,7 +351,7 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
   if(typeof prompt!=='string'||!prompt.trim()||prompt.length>12000)
     throw new Error('Prompt must contain 1–12000 characters');
   if(!Number.isInteger(timeoutMs)||timeoutMs<10000||timeoutMs>MAX_BROWSER_TURN_TIMEOUT_MS)
-    throw new Error('Browser turn timeout must be between 10 seconds and 45 minutes');
+    throw new Error('Browser turn timeout must be between 10 seconds and 4 hours');
   // Mission continuation turns explicitly require a final marker. The accessible
   // ChatGPT UI may not expose a Stop button while streaming; a short stable
   // pause alone is not evidence that the response is finished.
@@ -319,14 +366,39 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
   if(!await send.isEnabled()) throw new Error('ChatGPT Send button is not enabled');
   await send.click({timeout:10000});
   // Sending may have succeeded even if the next read fails. Never click twice.
-  const startedAt=Date.now(),deadline=startedAt+timeoutMs;
+  const startedAt=Date.now();let deadline=startedAt+timeoutMs;
   let last='',lastTurnId:string|null=null;let stableSince=Date.now();
   let failureSince:number|null=null;
+  let interruptedSeen=false,deliveryRetryClicked=false,transportExtensionUsed=false;
   while(Date.now()<deadline) {
     const current=await inspectChatPage(page,targetUrl);
     const newestUserMatchesPrompt=current.userCount>0 &&
       matchesSubmittedUserPrompt(await lastVisibleUserPromptSha256(page),prompt);
-    if(isFreshResponseLoadFailure(before,current,newestUserMatchesPrompt)) {
+    const banner=await visibleLongTaskBanner(page,current.lastAssistant);
+    if(banner==='interrupted'&&newestUserMatchesPrompt&&!interruptedSeen) {
+      interruptedSeen=true;
+      if(!transportExtensionUsed){
+        deadline=interruptedDeadline(startedAt,deadline,Date.now(),
+          timeoutMs===DEFAULT_BROWSER_TURN_TIMEOUT_MS);
+        transportExtensionUsed=true;
+      }
+      console.warn('ChatGPT connection interrupted; waiting for the same response without another Send');
+    }
+    if(banner==='delivery-timeout'&&!deliveryRetryClicked&&newestUserMatchesPrompt) {
+      const clicked=await clickDeliveryRetryOnce(page,targetUrl,true,false);
+      if(clicked) {
+        deliveryRetryClicked=true;
+        if(!transportExtensionUsed){
+          deadline=interruptedDeadline(startedAt,deadline,Date.now(),
+            timeoutMs===DEFAULT_BROWSER_TURN_TIMEOUT_MS);
+          transportExtensionUsed=true;
+        }
+        console.warn('ChatGPT delivery timed out; clicked its existing-message Retry button once');
+        await delay(Math.min(3000,Math.max(0,deadline-Date.now())));
+        continue;
+      }
+    }
+    if(banner===null&&isFreshResponseLoadFailure(before,current,newestUserMatchesPrompt)) {
       failureSince??=Date.now();
       if(Date.now()-failureSince>=5000)
         throw new Error('ChatGPT displayed a response-load failure; submission outcome is ambiguous');
@@ -340,7 +412,8 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
         lastTurnId=current.lastAssistantTurnId??null;
         stableSince=Date.now();
       }
-      finalCandidate=!current.generating && (!requireFinalMarker||finalMarker.test(current.lastAssistant.trim()));
+      finalCandidate=!current.generating && banner===null &&
+        (!requireFinalMarker||finalMarker.test(current.lastAssistant.trim()));
       if(finalCandidate && Date.now()-stableSince>=2500) {
         return {...current,submitted:true,observedAt:new Date().toISOString()};
       }
@@ -375,9 +448,10 @@ export async function submitNewChatTurn(page:Page,prompt:string,
   if(!await send.count()||!await send.isEnabled())
     throw new Error('New ChatGPT tab has no enabled Send button');
   await send.click({timeout:10000});
-  const start=Date.now(),deadline=start+timeoutMs;
+  const start=Date.now();let deadline=start+timeoutMs;
   const finalMarker=/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED)\]\s*$/;
   let last='',stableSince=start,failureSince:number|null=null,reloadedBlank=false;
+  let interruptedSeen=false,deliveryRetryClicked=false,transportExtensionUsed=false;
   while(Date.now()<deadline) {
     const currentUrl=page.url();
     let destination:string|null=null;
@@ -388,7 +462,33 @@ export async function submitNewChatTurn(page:Page,prompt:string,
     let finalCandidate=false;
     if(destination) {
       const snapshot=await inspectChatPage(page,destination);
-      if(shouldReloadBlankNewChat(Date.now()-start,snapshot,reloadedBlank)) {
+      const banner=await visibleLongTaskBanner(page,snapshot.lastAssistant);
+      const newestUserMatchesPrompt=snapshot.userCount>0 &&
+        matchesSubmittedUserPrompt(await lastVisibleUserPromptSha256(page),prompt);
+      if(banner==='interrupted'&&newestUserMatchesPrompt&&!interruptedSeen) {
+        interruptedSeen=true;
+        if(!transportExtensionUsed){
+          deadline=interruptedDeadline(start,deadline,Date.now(),
+            timeoutMs===DEFAULT_BROWSER_TURN_TIMEOUT_MS);
+          transportExtensionUsed=true;
+        }
+        console.warn('New ChatGPT connection interrupted; waiting without a second Send');
+      }
+      if(banner==='delivery-timeout'&&!deliveryRetryClicked&&newestUserMatchesPrompt) {
+        const clicked=await clickDeliveryRetryOnce(page,destination,true,false);
+        if(clicked) {
+          deliveryRetryClicked=true;
+          if(!transportExtensionUsed){
+            deadline=interruptedDeadline(start,deadline,Date.now(),
+              timeoutMs===DEFAULT_BROWSER_TURN_TIMEOUT_MS);
+            transportExtensionUsed=true;
+          }
+          console.warn('New ChatGPT delivery timed out; clicked Retry once on the existing message');
+          await delay(Math.min(3000,Math.max(0,deadline-Date.now())));
+          continue;
+        }
+      }
+      if(banner===null&&shouldReloadBlankNewChat(Date.now()-start,snapshot,reloadedBlank)) {
         reloadedBlank=true;
         // Reload only the already-known exact conversation, never the old tab
         // or an uncertain noncanonical origin; do not click Send again.
@@ -396,15 +496,15 @@ export async function submitNewChatTurn(page:Page,prompt:string,
         await reloadBlankDirectNewChat(page,destination);
         continue;
       }
-      if(!snapshot.generating&&visibleChatResponseFailed(snapshot.lastAssistant)) {
+      if(!snapshot.generating&&banner===null&&visibleChatResponseFailed(snapshot.lastAssistant)) {
         failureSince??=Date.now();
         if(Date.now()-failureSince>=5000)
           throw new Error('New ChatGPT reply failed to load; first Send may have committed; do not replay');
       }else failureSince=null;
       if(snapshot.userCount>0 && snapshot.assistantCount>0 && snapshot.lastAssistant &&
-        matchesSubmittedUserPrompt(await lastVisibleUserPromptSha256(page),prompt)) {
+        newestUserMatchesPrompt) {
         if(snapshot.lastAssistant!==last){last=snapshot.lastAssistant;stableSince=Date.now();}
-        finalCandidate=!snapshot.generating && finalMarker.test(snapshot.lastAssistant.trim());
+        finalCandidate=!snapshot.generating && banner===null && finalMarker.test(snapshot.lastAssistant.trim());
         if(finalCandidate && Date.now()-stableSince>=2500)
           return {url:destination,receipt:{...snapshot,submitted:true,observedAt:new Date().toISOString()}};
       }

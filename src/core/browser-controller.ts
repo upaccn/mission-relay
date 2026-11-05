@@ -21,7 +21,7 @@ export async function executeBrowserTurn(input:{
     throw new Error('Browser prompt must contain 1–12000 characters; no message was reserved');
   if(input.timeoutMs!==undefined && (!Number.isInteger(input.timeoutMs)||
      input.timeoutMs<10000||input.timeoutMs>MAX_BROWSER_TURN_TIMEOUT_MS))
-    throw new Error('Browser timeout must be between 10 seconds and 45 minutes; no message was reserved');
+    throw new Error('Browser timeout must be between 10 seconds and 4 hours; no message was reserved');
   const before=await inspectChatPage(page,url);
   if(!before.composerReady||before.generating) throw new Error('ChatGPT tab is not ready for a new turn');
   const promptSha256=createHash('sha256').update(prompt.trim()).digest('hex');
@@ -127,7 +127,7 @@ export async function executeBrowserRollover(input:{
   if(!prompt.trim()||prompt.length>12000)throw new Error('Rollover prompt must contain 1–12000 characters');
   if(input.timeoutMs!==undefined&&(!Number.isInteger(input.timeoutMs)||
     input.timeoutMs<10000||input.timeoutMs>MAX_BROWSER_TURN_TIMEOUT_MS))
-    throw new Error('Rollover timeout must be between 10 seconds and 45 minutes');
+    throw new Error('Rollover timeout must be between 10 seconds and 4 hours');
   const current=await inspectChatPage(input.sourcePage,input.sourceUrl);
   if(!current.composerReady||current.generating)
     throw new Error('Source ChatGPT tab must be idle before a new conversation is opened');

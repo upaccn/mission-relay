@@ -10,8 +10,11 @@ import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUr
   tolerateRolloverNavigation,rolloverUrlClass,newChatBootstrapDelayMs,
   shouldReloadBlankNewChat,reloadBlankDirectNewChat,isFreshResponseLoadFailure,
   canonicalVisibleUserPrompt,matchesSubmittedUserPrompt,matchesReservedPromptHash,isNewAssistantReply,
+  visibleLongTaskBanner,clickDeliveryRetryOnce,interruptedDeadline,
+  CONNECTION_INTERRUPTED_TEXT,MESSAGE_DELIVERY_TIMEOUT_TEXT,
+  INTERRUPTED_WAIT_GRACE_MS,MAX_INTERRUPTED_WAIT_MS,
   ACTIVE_REPLY_OBSERVATION_INTERVAL_MS,
-  submitNewChatTurn,
+  submitChatTurn,submitNewChatTurn,
   DEFAULT_BROWSER_TURN_TIMEOUT_MS,MAX_BROWSER_TURN_TIMEOUT_MS,type BrowserSession} from '../src/plugins/chatgpt-browser.js';
 import {executeBrowserTurn,driveChatConversation,browserDecision,browserContinuationPrompt} from '../src/core/browser-controller.js';
 import type {AgentAdapter} from '../src/core/types.js';
@@ -100,8 +103,8 @@ test('Browser turn is durably reserved before any external interaction',()=>{
 });
 
 test('Long tasks use 60-second normal DOM polls and a separate quick final-stability check',()=>{
-  assert.equal(DEFAULT_BROWSER_TURN_TIMEOUT_MS,35*60*1000);
-  assert.equal(MAX_BROWSER_TURN_TIMEOUT_MS,45*60*1000);
+  assert.equal(DEFAULT_BROWSER_TURN_TIMEOUT_MS,60*60*1000);
+  assert.equal(MAX_BROWSER_TURN_TIMEOUT_MS,4*60*60*1000);
   assert.equal(ACTIVE_REPLY_OBSERVATION_INTERVAL_MS,60000);
   for(const elapsed of [0,15000,120000,600000,1800000])
     assert.equal(observationDelayMs(elapsed,false),60000);
@@ -110,7 +113,21 @@ test('Long tasks use 60-second normal DOM polls and a separate quick final-stabi
   assert.equal(newChatBootstrapDelayMs(15000,true,false),2000);
   assert.equal(newChatBootstrapDelayMs(25000,false,false),60000);
   assert.equal(newChatBootstrapDelayMs(120000,false,true),3000);
-  assert.ok(35*60*1000/60000<40,'A 35-minute task must need fewer than 40 steady-state snapshots');
+  assert.ok(DEFAULT_BROWSER_TURN_TIMEOUT_MS/60000<=60,
+    'A default long task should need at most one DOM read per minute');
+});
+
+test('Connection interrupted extends the same long reply once, never past a bounded four hours',()=>{
+  const start=1000,normal=start+DEFAULT_BROWSER_TURN_TIMEOUT_MS;
+  const now=start+35*60_000;
+  const extended=interruptedDeadline(start,normal,now,true);
+  assert.equal(extended,now+INTERRUPTED_WAIT_GRACE_MS);
+  assert.equal(interruptedDeadline(start,normal,now,false),normal,
+    'An explicit caller deadline must not be silently overridden');
+  assert.equal(interruptedDeadline(start,normal,start+3*60*60_000,true),
+    start+MAX_INTERRUPTED_WAIT_MS,'The wait must remain bounded');
+  assert.equal(interruptedDeadline(start,extended,now,true),extended,
+    'The extension should not accumulate in a status polling loop');
 });
 
 test('A pre-existing ChatGPT response-load error is not mistaken for the newly submitted turn',()=>{
@@ -424,6 +441,77 @@ class AccessibleChatPage extends SyntheticChatPage {
   }
 }
 
+class TransportBannerPage extends AccessibleChatPage {
+  banner:'interrupted'|'delivery-timeout'|null='delivery-timeout';
+  retryClicks=0;
+  override getByRole(role:string,options:{name:string|RegExp}):any {
+    if(role==='button'&&options.name==='Retry') {
+      const self=this;
+      return {
+        count:async()=>self.banner==='delivery-timeout'&&self.sends>0?1:0,
+        isVisible:async()=>self.banner==='delivery-timeout'&&self.sends>0,
+        isEnabled:async()=>self.banner==='delivery-timeout'&&self.sends>0,
+        click:async()=>{
+          if(self.banner!=='delivery-timeout'||!self.sends)throw new Error('Retry unavailable');
+          self.retryClicks++;
+          self.banner=null;
+          self.reply='Completed after transport Retry.\n[MISSION_RELAY:DONE]';
+        },
+      };
+    }
+    return super.getByRole(role,options);
+  }
+  getByText(text:string,options:{exact?:boolean}):any {
+    const self=this;
+    const requested=text===CONNECTION_INTERRUPTED_TEXT?'interrupted':
+      text===MESSAGE_DELIVERY_TIMEOUT_TEXT?'delivery-timeout':null;
+    const visible=()=>Boolean(options.exact&&self.sends>0&&self.banner===requested&&requested);
+    const locator:any={count:async()=>visible()?1:0,isVisible:async()=>visible(),
+      nth:(_index:number)=>locator};
+    return locator;
+  }
+}
+
+test('Long-task UI Retry targets only an exact visible delivery banner and bound conversation',async()=>{
+  const page=new TransportBannerPage();page.sends=1;
+  assert.equal(await visibleLongTaskBanner(page as unknown as Page,
+    `An article discussing ${CONNECTION_INTERRUPTED_TEXT} is not a banner.`),'delivery-timeout',
+    'Only the genuine delivery UI is visible; quoted prose cannot override it');
+  assert.equal(await visibleLongTaskBanner(page as unknown as Page,page.reply),'delivery-timeout');
+  assert.equal(await clickDeliveryRetryOnce(page as unknown as Page,URL,false,false),false);
+  assert.equal(page.retryClicks,0,'A changed latest user prompt must not trigger Retry');
+  await assert.rejects(()=>clickDeliveryRetryOnce(page as unknown as Page,
+    'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614179999',true,false),/URL changed/);
+  assert.equal(await clickDeliveryRetryOnce(page as unknown as Page,URL,true,false),true);
+  assert.equal(page.retryClicks,1);
+  assert.equal(await clickDeliveryRetryOnce(page as unknown as Page,URL,true,true),false);
+  assert.equal(await visibleLongTaskBanner(page as unknown as Page,page.reply),null);
+  assert.equal(await visibleLongTaskBanner(page as unknown as Page,
+    `A paragraph quoted: ${MESSAGE_DELIVERY_TIMEOUT_TEXT} but continued normally`),null);
+});
+
+test('Existing ChatGPT continuation clicks the delivery Retry once and observes the same Send',async()=>{
+  const page=new TransportBannerPage();
+  const result=await submitChatTurn(page as unknown as Page,URL,
+    'Owner-authorized existing-message Retry test',12000,true);
+  assert.equal(page.sends,1);
+  assert.equal(page.retryClicks,1);
+  assert.match(result.lastAssistant,/Completed after transport Retry/);
+  assert.equal(result.submitted,true);
+});
+
+test('Connection interrupted is a waiting state, not a final reply or Retry trigger',async()=>{
+  const page=new TransportBannerPage();page.banner='interrupted';
+  page.reply='Response is not yet complete.\n[MISSION_RELAY:DONE]';
+  assert.equal(await visibleLongTaskBanner(page as unknown as Page,page.reply),null,
+    'Before Send a stale or hidden error should not be treated as active');
+  await assert.rejects(()=>submitChatTurn(page as unknown as Page,URL,
+    'Do not finalize while connection is interrupted',10000,true),/observation timed out/);
+  assert.equal(page.sends,1);
+  assert.equal(page.retryClicks,0);
+  assert.equal(await visibleLongTaskBanner(page as unknown as Page,page.reply),'interrupted');
+});
+
 /** Rendered turn counts may shrink after ChatGPT virtualizes old messages. */
 class VirtualizedChatPage extends AccessibleChatPage {
   override getByRole(role:string,options:{name:string|RegExp}):any {
@@ -484,6 +572,39 @@ class SyntheticNewChatPage extends SyntheticChatPage {
     return locator;
   }
 }
+class TransportNewChatPage extends SyntheticNewChatPage {
+  banner=true;
+  retryClicks=0;
+  getByText(text:string,options:{exact?:boolean}):any {
+    const self=this;
+    const visible=()=>self.sends>0&&self.banner&&options.exact===true&&
+      text===MESSAGE_DELIVERY_TIMEOUT_TEXT;
+    const locator:any={count:async()=>visible()?1:0,isVisible:async()=>visible(),
+      nth:(_index:number)=>locator};
+    return locator;
+  }
+  override getByRole(role:string,options:{name:string|RegExp}):any {
+    if(role==='button'&&options.name==='Retry') {
+      const self=this;
+      return {count:async()=>self.banner&&self.sends>0?1:0,
+        isVisible:async()=>self.banner&&self.sends>0,
+        isEnabled:async()=>self.banner&&self.sends>0,
+        click:async()=>{self.retryClicks++;self.banner=false;
+          self.reply='New ChatGPT tab recovered.\n[MISSION_RELAY:DONE]';}};
+    }
+    return super.getByRole(role,options);
+  }
+}
+
+test('New ChatGPT conversation retries only the delivery UI, never the original Send',async()=>{
+  const page=new TransportNewChatPage();
+  const result=await submitNewChatTurn(page as unknown as Page,
+    'Authorized new-chat transport Retry test',12000);
+  assert.equal(result.url,NEXT_CHAT_URL);
+  assert.equal(page.sends,1);
+  assert.equal(page.retryClicks,1);
+  assert.match(result.receipt.lastAssistant,/New ChatGPT tab recovered/);
+});
 class TransientNewChatPage extends SyntheticNewChatPage {
   transientReads=0;
   override url(){
