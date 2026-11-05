@@ -42,3 +42,24 @@ test('PI input distinctly tags untrusted browser content and includes every queu
   assert.match(prompt,/No account, file, website, network or external writes/);
   assert.match(prompt,/Full visible answer SHA-256:/);
 });
+
+test('PI receives evidence buried in a 50000-character browser answer, not just the Telegram excerpt',()=>{
+  const evidence='CRITICAL_MIDDLE_EVIDENCE=all_170_tests_passed';
+  const answer='A'.repeat(25000)+evidence+'B'.repeat(25000);
+  const prompt=piDecisionPrompt({goal:'Mission Relay v1 gate',acceptance:['Check CI'],
+    turnCount:1,maxTurns:32,responseSha256:'b'.repeat(64),
+    lastAssistant:answer,ownerDirectives:[]});
+  assert.ok(prompt.includes(evidence));
+  assert.ok(prompt.includes('Full visible answer characters: '+answer.length));
+  assert.ok(!prompt.includes('RESPONSE MIDDLE OMITTED'));
+});
+
+test('PI input is bounded for exceptionally large answers and declares omitted evidence',()=>{
+  const prompt=piDecisionPrompt({goal:'Large audit',acceptance:['Check evidence'],
+    turnCount:1,maxTurns:32,responseSha256:'c'.repeat(64),
+    lastAssistant:'A'.repeat(50000)+'MIDDLE_NOT_VERIFIED'.repeat(1000)+'Z'.repeat(50000),
+    ownerDirectives:[]});
+  assert.ok(prompt.includes('RESPONSE MIDDLE OMITTED'));
+  assert.ok(!prompt.includes('MIDDLE_NOT_VERIFIED'));
+  assert.ok(prompt.length<110000);
+});

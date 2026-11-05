@@ -7,6 +7,8 @@ import {executeBrowserTurn,executeBrowserRollover,browserFreshTaskPrompt,
   browserNewChatPrompt,type BrowserTurnOutcome} from './browser-controller.js';
 
 const MAX_REPLANS=3;
+/** Independent of the Mission's total budget, avoid overlong ChatGPT chats. */
+export const MAX_PI_CHAT_TURNS=8;
 
 function nextPiBrowserPrompt(goal:string,plan:PiPlan):string {
   return [
@@ -147,14 +149,16 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
     const requestKey=`${requestPrefix}-${i+1}`;
     const payload={store,missionId,revision,requestKey,
       telegramBatch:{lastAuthorizedTurn:false,piManaged:true}};
+    const rotateChat=nextPlan?.action==='HANDOFF'||
+      ((i>0||adopted)&&store.piChatObservedTurns(missionId)>=MAX_PI_CHAT_TURNS);
     const received:BrowserTurnOutcome|(BrowserTurnOutcome&{page:Page;url:string})=
       i===0&&!adopted?await executeBrowserRollover({
         ...payload,sourcePage:page,sourceUrl:url,
         prompt:browserFreshTaskPrompt(origin.goal),
-      }):nextPlan!.action==='HANDOFF'?await executeBrowserRollover({
+      }):rotateChat?await executeBrowserRollover({
         ...payload,sourcePage:page,sourceUrl:url,
         prompt:browserNewChatPrompt(origin.goal,origin.acceptance,
-          nextPlan!.summary,nextPlan!.nextPrompt),
+          nextPlan!.summary,nextPlan!.nextPrompt,latestBrowserAnswer),
       }):await executeBrowserTurn({
         ...payload,page,url,prompt:nextPiBrowserPrompt(origin.goal,nextPlan!),
         requireFinalMarker:true,

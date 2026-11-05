@@ -257,6 +257,10 @@ export class TelegramBridge {
       try {
         if(stalledPollerMayExit(Date.now(),lastLoopProgressAt,false,
           this.store.canAbandonStalledChannel(this.source))) {
+          // The Windows task intentionally ignores duplicate trigger results;
+          // persist a minimal self-exit reason so a later PID change can be
+          // distinguished from an unexplained crash without exposing messages.
+          this.store.recordChannelIdleExit(this.source,lastLoopProgressAt);
           console.error('Telegram idle control loop stalled; exiting worker for task-managed recovery (no Mission replay)');
           process.exit(75);
         }
@@ -527,7 +531,7 @@ export class TelegramBridge {
           throw new Error('Telegram maintenance drain active; PI task was not created');
         const m=this.engine.create({
           goal,acceptance:['Substantively answer the owner request with evidence within read-only permissions'],
-          workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:8,
+          workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:32,
           requestKey:`telegram-pi-${commandId}`,checks:[],
         });
         const linked=this.store.linkChat(m.id,url,m.version).mission;
@@ -549,7 +553,7 @@ export class TelegramBridge {
         try{await session.close();}catch{console.error('PI Playwriter session cleanup warning');}
         finally{this.activeMission=null;this.activeTask=null;}
       });
-      return `PI-coordinated ChatGPT Mission ${m.id} accepted (max 8 read-only turns).\nPI will inspect each observed ChatGPT answer and decide whether another turn is useful.\nYou may send additional plain-text instructions while it runs; they are queued for PI.\nProgress: /status ${m.id}. Do not resend the original task.`;
+      return `PI-coordinated ChatGPT Mission ${m.id} accepted (up to 32 read-only turns, max 8 per chat).\nPI will inspect each observed ChatGPT answer and decide whether another turn is useful.\nYou may send additional plain-text instructions while it runs; they are queued for PI.\nProgress: /status ${m.id}. Do not resend the original task.`;
     }catch(error){
       try{await session.close();}catch{console.error('PI source preflight cleanup warning');}
       throw error;
@@ -656,7 +660,7 @@ export class TelegramBridge {
     if(cmd==='/help'||cmd==='/start') return [
       'Mission Relay (single authorized user)',
       '/list — latest missions',
-      'Plain text and ChatGPT: — PI automatically plans ChatGPT rounds (max 8)',
+      'Plain text and ChatGPT: — PI plans up to 32 read-only turns, max 8 per chat',
       '/auto <task> — start PI-managed read-only ChatGPT autopilot',
       'While PI is working, send plain text to queue owner instructions for its next decision',
       '/new <task> — same as plain text, one new ChatGPT conversation',

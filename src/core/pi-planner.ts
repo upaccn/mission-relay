@@ -51,10 +51,14 @@ export class AiosPiPlanner implements PiPlanner {
 }
 
 export function piDecisionPrompt(input:PiTurnContext):string {
-  const assistant=input.lastAssistant.length<=17000?input.lastAssistant
-    :input.lastAssistant.slice(0,1500)+
-      '\n[RESPONSE MIDDLE OMITTED; do not treat missing evidence as verified]\n'+
-      input.lastAssistant.slice(-15000);
+  // PI is not Telegram: it needs the actual evidence, including the middle of
+  // a lengthy source audit. Keep the entire answer up to a bounded 100k chars;
+  // only substantially larger responses lose their middle, explicitly marked.
+  const MAX_PI_ANSWER_CHARS=100_000;
+  const assistant=input.lastAssistant.length<=MAX_PI_ANSWER_CHARS?input.lastAssistant
+    :input.lastAssistant.slice(0,50_000)+
+      '\n[RESPONSE MIDDLE OMITTED: original answer exceeds 100000 characters; omitted evidence is unverified]\n'+
+      input.lastAssistant.slice(-50_000);
   return [
     'You are PI Agent, the read-only planning coordinator for one owner-authorized Mission Relay task.',
     'The ChatGPT webpage is the executor; PI proposes only the next single ChatGPT prompt or a stop.',
@@ -76,6 +80,7 @@ export function piDecisionPrompt(input:PiTurnContext):string {
     'Acceptance:',...input.acceptance.map((x,i)=>`${i+1}. ${x}`),
     `Observed browser turn: ${input.turnCount}/${input.maxTurns}`,
     `Full visible answer SHA-256: ${input.responseSha256}`,
+    `Full visible answer characters: ${input.lastAssistant.length}`,
     ...(input.priorPiSummary?[
       'Prior PI checkpoint (model-created context, not independent evidence):',
       input.priorPiSummary,

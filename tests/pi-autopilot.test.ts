@@ -11,6 +11,7 @@ import type {PiPlanner,PiTurnContext} from '../src/core/pi-planner.js';
 
 const SOURCE='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
 const DEST='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174001';
+const DEST2='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174002';
 
 function fixture() {
   const dir=mkdtempSync(join(tmpdir(),'relay-pi-autopilot-'));
@@ -23,6 +24,7 @@ function fixture() {
   let currentUrl='about:blank',sends=0,newPages=0,latestPrompt='',baseTurns=0;
   const fresh={
     url:()=>currentUrl,isClosed:()=>false,
+    context:()=>({newPage:async()=>{newPages++;return fresh;}}),
     goto:async(url:string)=>{currentUrl=url;},
     waitForLoadState:async()=>{},
     getByRole:()=>({count:async()=>0,first:()=>({isVisible:async()=>false})}),
@@ -38,9 +40,9 @@ function fixture() {
         isEnabled:async()=>Boolean(latestPrompt),
         innerText:async()=>role==='user'?latestPrompt:
           baseTurns+sends===1?'First NetBox research answer\n[MISSION_RELAY:DONE]':
-            'Second NetBox research with VRF evidence\n[MISSION_RELAY:DONE]',
+            `NetBox research with VRF evidence, observed round ${baseTurns+sends}\n[MISSION_RELAY:DONE]`,
         fill:async(value:string)=>{latestPrompt=value;},
-        click:async()=>{sends++;currentUrl=DEST;},
+        click:async()=>{sends++;currentUrl=newPages>1?DEST2:DEST;},
       };
       return obj;
     },
@@ -67,6 +69,30 @@ function fixture() {
     results:()=>({sends,newPages,latestPrompt}),
     cleanup:()=>{store.close();rmSync(dir,{recursive:true,force:true});}};
 }
+
+test('a PI NEXT after eight observed sends starts exactly one fresh chat and preserves its Mission',async()=>{
+  const f=fixture();try{
+    const created=f.store.create({goal:'Long-running staged evidence audit',
+      acceptance:['Gather nine independently checked rounds'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:10,checks:[],requestKey:'pi-long'});
+    const linked=f.store.linkChat(created.id,SOURCE,created.version).mission;
+    const bound=f.store.bindChatBrowser(linked.id,'install:Chrome:fake',linked.version).mission;
+    const planner:PiPlanner={decide:async input=>input.turnCount<9
+      ?{action:'NEXT',summary:'Evidence still pending',nextPrompt:'Review another evidence item'}
+      :{action:'DONE',summary:'Nine rounds checked',nextPrompt:''}};
+    await drivePiAutopilot({store:f.store,planner,missionId:bound.id,
+      revision:bound.version,requestPrefix:'pi-rotate',page:f.anchor,url:SOURCE});
+    const m=f.store.get(bound.id);
+    assert.equal(m.turnCount,9);
+    assert.equal(f.results().sends,9);
+    assert.equal(f.results().newPages,2);
+    assert.equal(f.store.piChatObservedTurns(m.id),1);
+    assert.equal(f.store.chatLink(m.id),DEST2);
+    assert.equal(f.store.events(m.id).filter(x=>x.type==='chatgpt.browser_migrated').length,2);
+    assert.equal(f.store.events(m.id).filter(x=>x.type==='chatgpt.browser_reserved').length,9);
+    assert.equal(f.store.events(m.id).filter(x=>x.type==='pi.autopilot_finished').length,1);
+  }finally{f.cleanup();}
+});
 
 test('PI independently keeps ChatGPT running after model DONE, reviews queued owner changes and emits one final result',async()=>{
   const f=fixture();try{

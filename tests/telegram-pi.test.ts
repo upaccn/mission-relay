@@ -122,7 +122,7 @@ test('Telegram default text starts PI autopilot and later owner text is queued u
     assert.ok(f.sent.some(x=>/PI-coordinated ChatGPT Mission/.test(x)));
     const mission=f.engine.list().find(m=>m.goal==='Read-only NetBox field operations research');
     assert.ok(mission);
-    assert.equal(mission.maxTurns,8);
+    assert.equal(mission.maxTurns,32);
     f.setUpdates([f.message(971,'后续我要手动测试 Android，请在当前轮结束后停下来')]);
     await f.bridge.pollOnce(0);
     assert.ok(f.sent.some(x=>/Owner instruction queued/.test(x)));

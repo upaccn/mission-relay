@@ -169,6 +169,20 @@ export class Store {
        !Number.isSafeInteger(Number(cursor))||Number(cursor)<this.maxEventId())return false;
     return true;
   }
+  /** Durable, secret-free evidence for the ONE worker's voluntary idle exit.
+   * Store it only after rechecking its lease and the same fail-closed safety
+   * predicate that permits exit; do not add a Mission event/notification. */
+  recordChannelIdleExit(source:string,lastProgressAt:number,now=Date.now()):void {
+    this.transaction(()=>{
+      if(!Number.isSafeInteger(lastProgressAt)||!Number.isSafeInteger(now)||
+         now-lastProgressAt<300_000||!this.canAbandonStalledChannel(source))
+        throw new Error('Idle exit telemetry refused: worker is not safely idle');
+      this.setMeta(`${source}.last_idle_exit`,JSON.stringify({
+        at:new Date(now).toISOString(),pid:process.pid,
+        elapsedMs:now-lastProgressAt,exitCode:75,
+      }));
+    });
+  }
   /** A local, transactionally fenced maintenance request. No remote caller may set it. */
   requestChannelDrain(source:string):string {
     return this.transaction(()=>{
@@ -207,6 +221,7 @@ export class Store {
     pendingReplies:number;pollerPid:number|null;pollerPresent:boolean;
     transportHealth:'offline'|'starting'|'healthy'|'stale';
     lastPollSuccessAt:string|null;
+    lastIdleExit:{at:string;pid:number;elapsedMs:number;exitCode:75}|null;
     drainRequested:boolean;
   } {
     const lease=this.db.prepare('SELECT owner_pid,owner_host FROM channel_leases WHERE source=?').get(source) as
@@ -230,11 +245,20 @@ export class Store {
     const age=lastPollSuccessAt===null?Infinity:Date.now()-Date.parse(lastPollSuccessAt);
     const transportHealth=!pollerPresent?'offline':lastPollSuccessAt===null?'starting':
       age>=0 && age<=90_000?'healthy':'stale';
+    let lastIdleExit:{at:string;pid:number;elapsedMs:number;exitCode:75}|null=null;
+    try{
+      const record=JSON.parse(this.getMeta(`${source}.last_idle_exit`)??'null') as
+        {at?:unknown;pid?:unknown;elapsedMs?:unknown;exitCode?:unknown}|null;
+      if(record&&typeof record.at==='string'&&Number.isFinite(Date.parse(record.at))&&
+         Number.isSafeInteger(record.pid)&&Number.isSafeInteger(record.elapsedMs)&&
+         Number(record.elapsedMs)>=300_000&&record.exitCode===75)
+        lastIdleExit=record as {at:string;pid:number;elapsedMs:number;exitCode:75};
+    }catch{/* Malformed diagnostic data is not evidence of a restart cause. */}
     return {source,inboxCursor:Number(this.getMeta(`${source}.inbox_cursor`)||'0'),
       notificationsCursor:Number(this.getMeta(`${source}.notifications_cursor`)||'0'),
       lastEventId:this.maxEventId(),pendingReplies:pending,
       pollerPid:lease?.owner_pid??null,pollerPresent,
-      transportHealth,lastPollSuccessAt,
+      transportHealth,lastPollSuccessAt,lastIdleExit,
       drainRequested:this.channelDrainRequested(source)};
   }
 
@@ -750,6 +774,19 @@ export class Store {
     this.raw(id);
     return (this.db.prepare('SELECT * FROM events WHERE mission_id = ? ORDER BY id').all(id) as EventRow[])
       .map(x => ({ id: x.id, missionId: x.mission_id, createdAt: x.created_at, type: x.type, payload: JSON.parse(x.payload_json) as unknown }));
+  }
+  /** Count only durably observed Relay submissions in the current ChatGPT
+   * conversation. A verified new-tab migration resets the counter; ambiguous
+   * reservations never count as a completed turn. No new mutable cursor. */
+  piChatObservedTurns(id:string):number {
+    let count=0;
+    for(const event of this.events(id)) {
+      if(event.type==='chatgpt.browser_migrated'||event.type==='chatgpt.browser_rollover_recovered')
+        count=0;
+      if(['chatgpt.browser_observed','chatgpt.browser_turn_recovered',
+        'chatgpt.browser_rollover_recovered'].includes(event.type))count++;
+    }
+    return count;
   }
   private event(id: string, type: string, payload: unknown): void {
     this.db.prepare('INSERT INTO events(mission_id,created_at,type,payload_json) VALUES (?,?,?,?)')

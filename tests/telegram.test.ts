@@ -468,6 +468,26 @@ test('The single-process idle-stall watchdog respects time bounds and active wor
   assert.equal(stalledPollerMayExit(Number.NaN,old,false,true),false);
 });
 
+test('Voluntary idle-exit reason is durable, sanitized and refused without a safe lease',()=>{
+  const f=fixture();try{
+    const now=Date.now(),lastProgress=now-TELEGRAM_IDLE_STALL_EXIT_MS-500;
+    assert.equal(f.store.channelStatus('telegram').lastIdleExit,null);
+    assert.throws(()=>f.store.recordChannelIdleExit('telegram',lastProgress,now),/safely idle/);
+    const lease=f.store.acquireChannelLease('telegram');
+    f.store.setMeta('telegram.notifications_cursor',String(f.store.maxEventId()));
+    assert.throws(()=>f.store.recordChannelIdleExit('telegram',now-1000,now),/safely idle/);
+    f.store.recordChannelIdleExit('telegram',lastProgress,now);
+    assert.deepEqual(f.store.channelStatus('telegram').lastIdleExit,{
+      at:new Date(now).toISOString(),pid:process.pid,
+      elapsedMs:TELEGRAM_IDLE_STALL_EXIT_MS+500,exitCode:75,
+    });
+    assert.equal(f.store.maxEventId(),1,'An idle-exit diagnostic must not create a Mission event');
+    f.store.reserveChannelCommand('telegram','idle-diagnostic-pending',100);
+    assert.throws(()=>f.store.recordChannelIdleExit('telegram',lastProgress,now),/safely idle/);
+    f.store.releaseChannelLease('telegram',lease);
+  }finally{f.cleanup();}
+});
+
 test('Idle watchdog cannot exit with a reserved command, mission, browser Send or unsent notification',()=>{
   const f=fixture();try {
     const lease=f.store.acquireChannelLease('telegram');
