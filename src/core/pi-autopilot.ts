@@ -20,7 +20,11 @@ function nextPiBrowserPrompt(goal:string,plan:PiPlan):string {
     'This is a read-only research and planning task. Do not modify files, websites, accounts,',
     'external services, permissions or financial resources. Stop and report if human approval is needed.',
     'Provide checkable evidence and distinguish facts from assumptions.',
-    'Finish with a concise summary and one standalone [MISSION_RELAY:DONE] or [MISSION_RELAY:BLOCKED].',
+    'Finish with a concise summary and exactly one standalone marker:',
+    '[MISSION_RELAY:NEXT] if more authorized read-only work remains,',
+    '[MISSION_RELAY:HANDOFF] when the chat genuinely needs a new context,',
+    '[MISSION_RELAY:DONE] only if the exact owner goal is fully answered, or',
+    '[MISSION_RELAY:BLOCKED] for missing authorization, evidence or human input.',
     'PI, not this ChatGPT marker, determines whether another read-only turn remains.',
   ].join('\n');
 }

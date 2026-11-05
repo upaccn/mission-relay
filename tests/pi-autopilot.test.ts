@@ -7,11 +7,22 @@ import {createHash} from 'node:crypto';
 import type {Page} from 'playwriter';
 import {Store} from '../src/core/store.js';
 import {drivePiAutopilot,pauseFailedPiPlanning} from '../src/core/pi-autopilot.js';
+import {browserFreshTaskPrompt,browserNewChatPrompt} from '../src/core/browser-controller.js';
 import type {PiPlanner,PiTurnContext} from '../src/core/pi-planner.js';
 
 const SOURCE='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
 const DEST='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174001';
 const DEST2='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174002';
+
+test('initial and new-chat PI prompts admit all four completion/continuation markers',()=>{
+  const first=browserFreshTaskPrompt('Perform a three-stage, read-only audit');
+  const next=browserNewChatPrompt('Complete audit',['Check all stages'],'Prior evidence','Inspect next stage');
+  for(const prompt of [first,next]) {
+    for(const marker of ['NEXT','HANDOFF','DONE','BLOCKED'])
+      assert.ok(prompt.includes(`[MISSION_RELAY:${marker}]`));
+    assert.match(prompt,/read-only|without specific authorization/);
+  }
+});
 
 function fixture() {
   const dir=mkdtempSync(join(tmpdir(),'relay-pi-autopilot-'));
@@ -121,6 +132,8 @@ test('PI independently keeps ChatGPT running after model DONE, reviews queued ow
     assert.equal(f.results().sends,2);
     assert.equal(f.results().newPages,1);
     assert.match(f.results().latestPrompt,/Include VRF evidence/);
+    for(const marker of ['NEXT','HANDOFF','DONE','BLOCKED'])
+      assert.ok(f.results().latestPrompt.includes(`[MISSION_RELAY:${marker}]`));
     assert.equal(f.store.chatLink(end.id),DEST);
     assert.equal(f.store.pendingPiOwnerDirectives(end.id).length,0);
     assert.equal(f.store.piPlan(end.id)?.action,'DONE');

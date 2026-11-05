@@ -94,7 +94,10 @@ export function browserFreshTaskPrompt(goal:string):string {
     'Separate verifiable evidence from inference, and state what was not checked.',
     'If a requested action needs write permissions or further authorization, explain the boundary instead of acting.',
     'Finish with a Telegram-ready summary of up to six concise lines, then exactly one standalone marker:',
-    '[MISSION_RELAY:DONE] if the read-only task is answered, otherwise [MISSION_RELAY:BLOCKED].',
+    '[MISSION_RELAY:NEXT] if the owner goal has another concrete read-only stage to perform,',
+    '[MISSION_RELAY:HANDOFF] if a new conversation is necessary with a self-contained evidence handoff,',
+    '[MISSION_RELAY:DONE] only if the exact read-only task and its acceptance criteria are fully answered,',
+    '[MISSION_RELAY:BLOCKED] if the remaining work requires human input, new permissions or cannot be verified.',
     'The controller will independently record this answer; a DONE marker is not proof of business completion.',
   ].join('\n');
 }
@@ -116,7 +119,7 @@ export function browserNewChatPrompt(goal:string,acceptance:string[],handoff:str
     'Do not assume tools or authorizations from the previous ChatGPT conversation are transferable.',
     'Do not make destructive, financial, permission-raising or external writes without specific authorization.',
     'At the end summarize progress/evidence/blockers/next action in at most 8 short lines.',
-    'Finish with a standalone [MISSION_RELAY:NEXT], [MISSION_RELAY:DONE], or [MISSION_RELAY:BLOCKED].',
+    'Finish with exactly one standalone [MISSION_RELAY:NEXT], [MISSION_RELAY:HANDOFF], [MISSION_RELAY:DONE], or [MISSION_RELAY:BLOCKED].',
   ].join('\n');
 }
 
