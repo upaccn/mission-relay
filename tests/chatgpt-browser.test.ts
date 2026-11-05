@@ -9,7 +9,7 @@ import {Engine} from '../src/core/engine.js';
 import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUrl,
   tolerateRolloverNavigation,rolloverUrlClass,newChatBootstrapDelayMs,
   shouldReloadBlankNewChat,reloadBlankDirectNewChat,isFreshResponseLoadFailure,
-  canonicalVisibleUserPrompt,matchesSubmittedUserPrompt,
+  canonicalVisibleUserPrompt,matchesSubmittedUserPrompt,isNewAssistantReply,
   ACTIVE_REPLY_OBSERVATION_INTERVAL_MS,
   submitNewChatTurn,
   DEFAULT_BROWSER_TURN_TIMEOUT_MS,MAX_BROWSER_TURN_TIMEOUT_MS,type BrowserSession} from '../src/plugins/chatgpt-browser.js';
@@ -44,6 +44,21 @@ test('A later PI prompt quoting the full original cannot satisfy earlier Send co
   assert.equal(matchesSubmittedUserPrompt(hash(later),original),false);
   assert.equal(matchesSubmittedUserPrompt(null,original),false);
   assert.equal(matchesSubmittedUserPrompt(hash(original+' extra'),original),false);
+});
+test('Same assistant text counts as a new response only with changed message identity',()=>{
+  const old={url:'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',
+    assistantCount:2,userCount:2,composerReady:true,generating:false,
+    lastAssistant:'PHASE_TWO_CONFIRM\n[MISSION_RELAY:DONE]',
+    lastAssistantTurnId:'turn-002'};
+  assert.equal(isNewAssistantReply(old,{...old,assistantCount:3,userCount:3}),false,
+    'Changing counts or the latest user prompt cannot credit a prior assistant');
+  assert.equal(isNewAssistantReply(old,{...old,assistantCount:1,userCount:3,
+    lastAssistantTurnId:'turn-003'}),true,
+    'Virtualized counts may fall even when a distinct assistant turn is present');
+  assert.equal(isNewAssistantReply(old,{...old,userCount:3,
+    lastAssistantTurnId:null}),false,'Missing identity must fail closed for identical text');
+  assert.equal(isNewAssistantReply(old,{...old,userCount:3,
+    lastAssistant:'An actually different answer'}),true);
 });
 const URL='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
 const never:AgentAdapter={
@@ -384,7 +399,9 @@ class AccessibleChatPage extends SyntheticChatPage {
         last:()=>target,
         locator:(_selector:string)=>({innerText:async()=>isAssistant
           ? 'ChatGPT said:\n'+(this.sends?this.reply:'Previous answer')
-          : 'You said:\n'+this.prompt}),
+          : 'You said:\n'+this.prompt,
+          getAttribute:async(name:string)=>isAssistant&&
+            name==='data-content-search-unit-key'? 'assistant-turn-'+this.sends:null}),
       };
       return target;
     }
@@ -420,6 +437,24 @@ class MismatchedChatPage extends AccessibleChatPage {
     return locator;
   }
 }
+
+test('A second accessible assistant turn with identical text is observed once, not replayed',async()=>{
+  const f=fixture();try {
+    const fake=new AccessibleChatPage();
+    fake.reply='Previous answer'; // Deliberately identical to the pre-Send text.
+    const observed=await executeBrowserTurn({store:f.store,missionId:f.linked.id,
+      revision:f.linked.version,requestKey:'identical-answer-1',
+      page:fake as unknown as Page,url:URL,prompt:'Continue exact prior test',
+      timeoutMs:10000});
+    assert.equal(fake.sends,1);
+    assert.equal(observed.turnCount,1);
+    assert.equal(observed.assistantSha256,
+      createHash('sha256').update('Previous answer').digest('hex'));
+    assert.equal(f.store.chatBrowserTurn(f.linked.id)?.status,'observed');
+    assert.equal(f.store.events(f.linked.id)
+      .filter(event=>event.type==='chatgpt.browser_reserved').length,1);
+  }finally{f.cleanup();}
+});
 
 const NEXT_CHAT_URL='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614179999';
 class SyntheticNewChatPage extends SyntheticChatPage {

@@ -65,6 +65,8 @@ export interface ChatPageSnapshot {
   composerReady:boolean;
   generating:boolean;
   lastAssistant:string;
+  /** Visible turn identity, not the answer hash. A later turn can repeat text. */
+  lastAssistantTurnId?:string|null;
 }
 export interface BrowserReceipt extends ChatPageSnapshot {
   submitted:boolean;
@@ -164,10 +166,34 @@ export async function inspectChatPage(page:Page,expectedUrl:string):Promise<Chat
     : (await assistantHeadings(page).last().locator('xpath=..').innerText({timeout:5000}))
       .replace(/^ChatGPT said:\s*/,'')
     :'';
+  // ChatGPT can produce identical text in consecutive assistant turns. The
+  // accessible transcript exposes an identity for each message; do not use
+  // a count increase alone, because virtualization can change DOM counts.
+  const turn=legacyCount?assistant.last():count?
+    assistantHeadings(page).last().locator('xpath=..'):null;
+  let lastAssistantTurnId:string|null=null;
+  if(turn && typeof turn.getAttribute==='function') {
+    try {
+      lastAssistantTurnId=await turn.getAttribute('data-content-search-unit-key')||
+        await turn.getAttribute('data-message-id')||
+        await turn.getAttribute('data-turn-id');
+    }catch {/* Unsupported or changing DOM: stay conservative. */}
+  }
   // Preserve the complete visible answer internally so the observed SHA-256
   // covers the actual response, not just its last 4,000 characters. Caller
   // controls external disclosure (CLI probe and SQLite summaries stay brief).
-  return {url:current,assistantCount:count,userCount,composerReady,generating,lastAssistant};
+  return {url:current,assistantCount:count,userCount,composerReady,generating,
+    lastAssistant,lastAssistantTurnId};
+}
+
+/** A genuine new assistant message need not have different words. Never use
+ * DOM count alone as a substitute for a stable, changed message identity. */
+export function isNewAssistantReply(before:ChatPageSnapshot,
+  current:ChatPageSnapshot):boolean {
+  return Boolean(current.lastAssistant) && (
+    current.lastAssistant!==before.lastAssistant ||
+    Boolean(before.lastAssistantTurnId&&current.lastAssistantTurnId&&
+      before.lastAssistantTurnId!==current.lastAssistantTurnId));
 }
 
 function delay(ms:number):Promise<void> {return new Promise(resolve=>setTimeout(resolve,ms));}
@@ -261,7 +287,7 @@ export function isFreshResponseLoadFailure(before:ChatPageSnapshot,
   current:ChatPageSnapshot,newestUserMatchesPrompt:boolean):boolean {
   return newestUserMatchesPrompt&&!current.generating&&
     visibleChatResponseFailed(current.lastAssistant)&&
-    current.lastAssistant!==before.lastAssistant&&
+    isNewAssistantReply(before,current)&&
     (!visibleChatResponseFailed(before.lastAssistant)||
       current.assistantCount>before.assistantCount);
 }
@@ -288,7 +314,7 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
   await send.click({timeout:10000});
   // Sending may have succeeded even if the next read fails. Never click twice.
   const startedAt=Date.now(),deadline=startedAt+timeoutMs;
-  let last='';let stableSince=Date.now();
+  let last='',lastTurnId:string|null=null;let stableSince=Date.now();
   let failureSince:number|null=null;
   while(Date.now()<deadline) {
     const current=await inspectChatPage(page,targetUrl);
@@ -300,10 +326,14 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
         throw new Error('ChatGPT displayed a response-load failure; submission outcome is ambiguous');
     }else failureSince=null;
     let finalCandidate=false;
-    if(current.userCount>0 && current.assistantCount>0 && current.lastAssistant &&
-       current.lastAssistant!==before.lastAssistant &&
+    if(current.userCount>0 && current.assistantCount>0 &&
+       isNewAssistantReply(before,current) &&
        newestUserMatchesPrompt) {
-      if(current.lastAssistant!==last){last=current.lastAssistant;stableSince=Date.now();}
+      if(current.lastAssistant!==last||current.lastAssistantTurnId!==lastTurnId){
+        last=current.lastAssistant;
+        lastTurnId=current.lastAssistantTurnId??null;
+        stableSince=Date.now();
+      }
       finalCandidate=!current.generating && (!requireFinalMarker||finalMarker.test(current.lastAssistant.trim()));
       if(finalCandidate && Date.now()-stableSince>=2500) {
         return {...current,submitted:true,observedAt:new Date().toISOString()};
