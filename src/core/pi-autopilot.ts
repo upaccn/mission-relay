@@ -94,11 +94,12 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
   if(origin.turnCount>0){
     const last=store.chatBrowserTurn(missionId);
     const plan=store.piPlan(missionId);
-    if(origin.state!=='PAUSED'||origin.stopRequested||
-      last?.status!=='observed')
+    if(origin.state!=='PAUSED'||origin.stopRequested||!last||
+      !store.hasVerifiedPiBrowserCheckpoint(missionId))
       throw new Error('PI recovery refused: no exact, fully observed browser checkpoint');
     // Only recover a future new Send, never a reserved/uncertain old Send.
     if(plan?.round===origin.turnCount) {
+      if(['DONE','BLOCKED'].includes(plan.action))return;
       if(!['NEXT','HANDOFF'].includes(plan.action)||
         last.assistantSha256!==plan.responseSha256)
         throw new Error('PI recovery refused: the previous plan is terminal or does not match the browser receipt');
@@ -137,7 +138,8 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
       const previous=store.chatBrowserTurn(missionId);
       const snapshot=await inspectChatPage(page,url);
       const userSha=await lastVisibleUserPromptSha256(page);
-      if(!snapshot.composerReady||snapshot.generating||previous?.status!=='observed'||
+      if(!snapshot.composerReady||snapshot.generating||!previous||
+        !store.hasVerifiedPiBrowserCheckpoint(missionId)||
         createHash('sha256').update(snapshot.lastAssistant).digest('hex')!==nextPlan!.responseSha256||
         userSha!==previous.promptSha256)
         throw new Error('PI next browser Send refused: visible ChatGPT history differs from the last observed receipt');

@@ -1,5 +1,17 @@
 # Operations
 
+## Canonical development checkout and local execution node
+
+For the owner-operated AIOS/GMK deployment, the **durable AIOS Linux checkout is the only development source**. GitHub `main` is the reviewed, pushed release/synchronization record. The Windows GMK checkout is a **pull-only execution copy**, not an independent branch of product development. This does not make AIOS a Mission Provider or move the authoritative local browser-Mission SQLite database to the VPS.
+
+1. Inspect both checkouts' `git status`, `HEAD` and `origin/main`. Fast-forward a clean AIOS checkout to the verified upstream head before editing. Never overwrite a dirty tree or perform an implicit merge of competing histories.
+2. Edit and test in AIOS. Run TypeScript, privacy scan, the complete tests, build and `git diff --check`; review the diff for tokens, private URLs, credentials and platform assumptions before committing and pushing. Verify the remote commit by exact SHA. Prefer the existing CI on Ubuntu, Windows and macOS as a cross-platform release gate.
+3. The Windows node runs the **already authenticated, user-session Chrome/Playwriter/Telegram** bridge. Its local SQLite, DPAPI credentials and enabled Chrome tabs stay on Windows and must never be committed, uploaded to GitHub or transplanted to AIOS. PI inference may continue to run through the already configured tool-free SSH route.
+4. Promote only the exact reviewed GitHub commit to the Windows checkout by fast-forward. A locally modified or divergent Windows checkout is a deployment blocker; inspect and port any legitimate hotfix into AIOS first. Do not install a second foreground poller, modify the Chrome profile or reset local Mission records as part of a code upgrade.
+5. Before activating a new build, verify an idle Mission set, no queued Telegram delivery, and no reserved browser Send, then use the existing SQLite maintenance drain and the **same** enrolled Windows Telegram Scheduled Task to restart cooperatively. Recheck the new process, fresh Bot API `getUpdates` health, preserved cursors, watch profile and private Mission checkpoints. An interrupted deployment is not permission to resend the last ChatGPT request.
+
+**Windows dependency updates are separate from source sync.** Never run destructive `npm ci` against live `node_modules` containing a DLL held by the current worker or Playwriter. Build in a clean isolated checkout first, or arrange an explicitly idle/drained maintenance window. Normal source-only TypeScript changes can use the existing compatible dependencies, but the running worker still must be restarted to load the new `dist` files. Keep the rollback commit and original SQLite state intact until verification succeeds. Avoid automatic Windows-to-AIOS pushes, bidirectional file synchronization, another updater daemon or a second writable Mission database.
+
 ## Installation
 
 1. Use Node.js 24 LTS+ and run `npm ci && npm run build`.

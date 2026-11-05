@@ -6,6 +6,8 @@ An explicit `Agent: <task>` or `/agent <task>` uses an installed native executor
 
 **Local-first mission control and handoff for long-running AI work.** Open source under Apache-2.0.
 
+**Source/deployment discipline:** The owner deployment uses one durable Linux development checkout (AIOS), GitHub as the reviewed synchronization record, and a pull-only Windows Chrome/Telegram execution checkout (GMK). Runtime SQLite, ChatGPT profile authorization and DPAPI secrets remain on the Windows node. There is no bidirectional source synchronization or second Mission controller. See [operations](docs/operations.md#canonical-development-checkout-and-local-execution-node).
+
 Mission Relay turns a goal and explicit acceptance criteria into a durable mission. It uses an existing AI agent for work, saves checkpoints, determines whether another turn is needed, and independently verifies a candidate result **for supported native executors**. It does **not** reimplement an agent runtime, copy browser profiles, or extract ChatGPT credentials or internal APIs. The opt-in ChatGPT adapter reads visible UI text; a browser reply alone does not constitute independent mission verification.
 
 **Windows process lifecycle:** An optional interactive-user Scheduled Task can manage the single Telegram poller after one-time owner-only DPAPI credential enrollment. It offers bounded crash restart and a gated idle restart after a new build; no task is created by installing Mission Relay. Playwriter is an independent process. See [Telegram task lifecycle](docs/telegram.md#optional-windows-task-lifecycle-requires-local-owner-enrollment).

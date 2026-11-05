@@ -172,6 +172,39 @@ test('PI startup only resumes an exact observed NEXT checkpoint, with no replay 
   }finally{f.cleanup();}
 });
 
+test('Telegram PI startup reviews an independently recovered rollover with exact hashes and no duplicate Send',async()=>{
+  const f=rig({decide:async()=>({action:'DONE',summary:'Recovered final answer reviewed',nextPrompt:''})});
+  try{
+    const prompt='Original PI-authored prompt';
+    const answer='Synthetic complete answer\n[MISSION_RELAY:DONE]';
+    const sha=createHash('sha256').update(answer).digest('hex');
+    const promptSha=createHash('sha256').update(prompt).digest('hex');
+    const m=f.store.create({goal:'Review an already recovered PI task',
+      acceptance:['One verified answer'],workspace:'',sandbox:'read-only',
+      mode:'supervised',maxTurns:3,requestKey:'pi-telegram-recovered',checks:[]});
+    const linked=f.store.linkChat(m.id,SRC,m.version).mission;
+    const bound=f.store.bindChatBrowser(m.id,'install:Chrome:synthetic',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
+    f.store.reserveChatBrowserTurn(m.id,bound.version,'pi-telegram-recovered-1',promptSha);
+    f.store.finishChatBrowserTurn(m.id,'pi-telegram-recovered-1',{
+      kind:'uncertain',error:'Browser observer interrupted after Send',
+    });
+    f.store.recoverObservedBrowserRollover(m.id,f.store.get(m.id).version,{
+      requestPromptSha256:promptSha,newChatUrl:DEST,
+      assistantSha256:sha,summary:answer,
+    });
+    f.primeRecovered(prompt);
+    await (f.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>}).recoverObservedPiCheckpoint();
+    for(let i=0;i<100&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(f.state().closed,true);
+    assert.equal(f.state().sends,1); // Historical Send only; never replay it.
+    assert.equal(f.store.piPlan(m.id)?.action,'DONE');
+    assert.equal(f.store.get(m.id).lastError,null);
+    assert.equal(f.store.events(m.id).filter(e=>e.type==='pi.autopilot_finished').length,1);
+    assert.equal(f.store.events(m.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+  }finally{f.cleanup();}
+});
+
 test('PI startup refuses a changed last visible user prompt and never submits another browser turn',async()=>{
   const planner:PiPlanner={decide:async()=>{throw new Error('PI must not be called');}};
   const f=rig(planner);try{

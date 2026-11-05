@@ -135,6 +135,65 @@ test('PI safely reviews a fully observed but not yet PI-reviewed turn after a cr
   }finally{f.cleanup();}
 });
 
+test('PI accepts an independently inspected recovered rollover, without replay or false completion',async()=>{
+  const f=fixture();try{
+    const answer='First NetBox research answer\n[MISSION_RELAY:DONE]';
+    const promptSha='b'.repeat(64);
+    const sha=createHash('sha256').update(answer).digest('hex');
+    const reserved=f.store.reserveChatBrowserTurn(f.mission.id,f.mission.version,
+      'pi-recovered-rollover-1',promptSha);
+    f.store.finishChatBrowserTurn(reserved.id,'pi-recovered-rollover-1',{
+      kind:'uncertain',error:'Observer lost the browser after Send',
+    });
+    f.store.recoverObservedBrowserRollover(reserved.id,
+      f.store.get(reserved.id).version,{
+        requestPromptSha256:promptSha,newChatUrl:DEST,
+        assistantSha256:sha,summary:answer,
+      });
+    assert.equal(f.store.chatBrowserTurn(reserved.id)?.status,'reconciled');
+    assert.equal(f.store.hasVerifiedPiBrowserCheckpoint(reserved.id),true);
+    f.primeRecovered();
+    const planner:PiPlanner={decide:async input=>{
+      assert.equal(input.turnCount,1);
+      assert.equal(input.lastAssistant,answer);
+      return {action:'DONE',summary:'Recovered response reviewed',nextPrompt:''};
+    }};
+    await drivePiAutopilot({store:f.store,planner,missionId:reserved.id,
+      revision:f.store.get(reserved.id).version,requestPrefix:'pi-recovered-rollover',
+      page:f.fresh,url:DEST,recoveredAnswer:{responseSha256:sha,lastAssistant:answer},
+    });
+    assert.equal(f.results().sends,0);
+    assert.equal(f.store.piPlan(reserved.id)?.action,'DONE');
+    assert.equal(f.store.events(reserved.id).filter(x=>x.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(f.store.events(reserved.id).filter(x=>x.type==='pi.autopilot_finished').length,1);
+  }finally{f.cleanup();}
+});
+
+test('PI rejects an operator-acknowledged ambiguous Send without independently recovered answer evidence',async()=>{
+  const f=fixture();try{
+    const promptSha='b'.repeat(64);
+    const reserved=f.store.reserveChatBrowserTurn(f.mission.id,f.mission.version,
+      'pi-manual-only-1',promptSha);
+    f.store.finishChatBrowserTurn(reserved.id,'pi-manual-only-1',{
+      kind:'uncertain',error:'Original outcome unknown',
+    });
+    f.store.reconcileChatBrowserTurn(reserved.id);
+    assert.equal(f.store.chatBrowserTurn(reserved.id)?.status,'reconciled');
+    assert.equal(f.store.hasVerifiedPiBrowserCheckpoint(reserved.id),false);
+    assert.throws(()=>f.store.commitPiPlan(reserved.id,'a'.repeat(64),[],{
+      action:'DONE',summary:'Unsupported conclusion',nextPrompt:'',
+    }),/PI decision requires one matching/);
+    const planner:PiPlanner={decide:async()=>{throw new Error('PI must not infer');}};
+    await assert.rejects(drivePiAutopilot({store:f.store,planner,
+      missionId:reserved.id,revision:f.store.get(reserved.id).version,
+      requestPrefix:'pi-manual-only',page:f.fresh,url:DEST,
+      recoveredAnswer:{responseSha256:'a'.repeat(64),lastAssistant:'Unverified'},
+    }),/unstarted READY|fully observed browser checkpoint/);
+    assert.equal(f.results().sends,0);
+    assert.equal(f.store.events(reserved.id).filter(x=>x.type==='pi.decision').length,0);
+  }finally{f.cleanup();}
+});
+
 test('PI refuses recovery when the latest observed receipt is missing or uncertain',async()=>{
   const f=fixture();try{
     const planner:PiPlanner={decide:async()=>({action:'NEXT',summary:'continue',nextPrompt:'Check VRF'})};

@@ -364,7 +364,7 @@ export class TelegramBridge {
       const previous=this.store.chatBrowserTurn(m.id);
       const lastUserHash=await lastVisibleUserPromptSha256(session.page);
       if(!snapshot.composerReady||snapshot.generating||
-        !previous||previous.status!=='observed'||
+        !previous||!this.store.hasVerifiedPiBrowserCheckpoint(m.id)||
         createHash('sha256').update(snapshot.lastAssistant).digest('hex')!==previous.assistantSha256||
         lastUserHash!==previous.promptSha256)
         throw new Error('PI recovery refused: current Chrome user/assistant turns differ from the last durable receipt');

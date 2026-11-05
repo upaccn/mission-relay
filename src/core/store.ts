@@ -293,6 +293,25 @@ export class Store {
     const value=this.getMeta(this.browserTurnKey(id));
     return value?JSON.parse(value) as ChatBrowserTurn:null;
   }
+  /** A PI checkpoint may be a normally observed reply or a separately
+   * inspected recovery. Merely acknowledging ambiguous side effects is NOT
+   * equivalent to observing an answer and must never authorize PI continuation. */
+  hasVerifiedPiBrowserCheckpoint(id:string):boolean {
+    const receipt=this.chatBrowserTurn(id);
+    if(!receipt||!/^[0-9a-f]{64}$/.test(receipt.assistantSha256??''))return false;
+    if(receipt.status==='observed')return true;
+    if(receipt.status!=='reconciled')return false;
+    const round=this.get(id).turnCount;
+    return this.events(id).some(event=>{
+      if(!['chatgpt.browser_turn_recovered','chatgpt.browser_rollover_recovered'].includes(event.type))
+        return false;
+      const evidence=event.payload as {requestKey?:unknown;assistantSha256?:unknown;
+        round?:unknown;independentlyInspected?:unknown}|null;
+      return evidence?.requestKey===receipt.requestKey &&
+        evidence.assistantSha256===receipt.assistantSha256 &&
+        evidence.round===round && evidence.independentlyInspected===true;
+    });
+  }
   /** Initial adoption reads an existing human-written conversation; this is
    * evidence of a browser snapshot, NEVER evidence that Relay sent a turn.
    * No turn budget is consumed and no request key is reserved for dispatch. */
@@ -596,7 +615,7 @@ export class Store {
     return this.transaction(()=>{
       const m=this.get(id),receipt=this.chatBrowserTurn(id);
       if(m.state!=='PAUSED'||m.stopRequested||!receipt||
-         receipt.status!=='observed'||receipt.assistantSha256!==expectedSha)
+         !this.hasVerifiedPiBrowserCheckpoint(id)||receipt.assistantSha256!==expectedSha)
         throw new Error('PI decision requires one matching, fully observed and unpaused ChatGPT turn');
       const previous=this.piPlan(id);
       if(previous?.round===m.turnCount &&
