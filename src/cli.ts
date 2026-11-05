@@ -43,7 +43,7 @@ function option(f:Record<string,string[]>,name:string,defaultValue?:string):stri
   return values[0]!;
 }
 function help():void {
-  console.log(`Mission Relay v0.1 alpha
+  console.log(`Mission Relay v0.2 alpha
 Commands:
   doctor                Check installed optional executor, if any
   plugin-register --path <absolute .mjs/.js>  Register a trusted native executor plugin
