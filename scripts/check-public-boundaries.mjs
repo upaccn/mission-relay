@@ -1,9 +1,10 @@
 import {execFileSync} from 'node:child_process';
-import {readFileSync} from 'node:fs';
+import {readFileSync,existsSync} from 'node:fs';
 
 // Current tracked content only. This intentionally does not claim that old
 // GitHub SHA-addressable objects, logs, forks or clones have been purged.
-const names=execFileSync('git',['ls-files','-z']).toString('utf8').split('\0').filter(Boolean);
+const names=execFileSync('git',['ls-files','--cached','--others','--exclude-standard','-z'])
+  .toString('utf8').split('\0').filter((path,index,array)=>path&&array.indexOf(path)===index&&existsSync(path));
 const failures=[];
 for(const path of names) {
   if(!/\.(?:md|ts|mts|js|mjs|json|yml|yaml|txt)$/.test(path))continue;
@@ -26,4 +27,4 @@ if(failures.length){
   // Never print matched secret values or snippets in public CI logs.
   for(const {path,type} of failures.slice(0,20))console.error(`Public boundary violation: ${type} in ${path}`);
   process.exitCode=1;
-}else console.log(`Public boundary scan passed for ${names.length} tracked files.`);
+}else console.log(`Public boundary scan passed for ${names.length} current tracked/untracked source files.`);

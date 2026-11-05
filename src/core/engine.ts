@@ -30,7 +30,7 @@ export class Engine {
   }
 
   run(id: string, expectedVersion?: number): Promise<Mission> {
-    if(this.store.chatLink(id)) throw new Error('Mission is linked to an external ChatGPT conversation; use handoff instead of Codex run');
+    if(this.store.chatLink(id)) throw new Error('Mission is linked to an external ChatGPT conversation; use the browser adapter, not a native executor');
     // Claim synchronously so a command channel never acknowledges an unclaimed task.
     const claimed = this.store.acquire(id, expectedVersion);
     return this.runClaimed(claimed);

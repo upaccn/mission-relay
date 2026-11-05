@@ -60,13 +60,37 @@ async function reviewPiRound(
 export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
   const {store,planner,missionId,requestPrefix}=input;
   const origin=store.get(missionId);
-  if(origin.turnCount===0&&origin.state!=='READY')
-    throw new Error('New PI autopilot requires an unstarted READY Mission');
+  const adopted=store.chatAdoption(missionId);
+  if(origin.turnCount===0&&origin.state!==(adopted?'PAUSED':'READY'))
+    throw new Error('New PI autopilot requires an unstarted READY or adopted PAUSED Mission');
   if(origin.sandbox!=='read-only'||!store.chatBrowserBinding(missionId))
     throw new Error('PI autopilot requires the exact pinned read-only ChatGPT Mission');
   let page=input.page,url=input.url,revision=input.revision;
   let nextPlan:PiPlan|null=null;
   let latestBrowserAnswer=input.recoveredAnswer?.lastAssistant??null;
+  if(adopted&&origin.turnCount===0){
+    // This is a real *human* ChatGPT reply, not a dispatched Relay turn.
+    // Verify both last visible messages, including a stability read, before
+    // letting PI infer next actions from this existing conversation.
+    const first=await inspectChatPage(page,url);
+    const userSha=await lastVisibleUserPromptSha256(page);
+    if(first.generating||!first.composerReady||!first.lastAssistant.trim()||
+       userSha!==adopted.userSha256||
+       createHash('sha256').update(first.lastAssistant).digest('hex')!==adopted.assistantSha256)
+      throw new Error('Adopted ChatGPT tab changed since its recorded initial snapshot');
+    await new Promise(resolve=>setTimeout(resolve,3000));
+    const second=await inspectChatPage(page,url);
+    if(second.generating||second.lastAssistant!==first.lastAssistant||
+       await lastVisibleUserPromptSha256(page)!==adopted.userSha256)
+      throw new Error('Adopted ChatGPT reply did not remain stable');
+    latestBrowserAnswer=second.lastAssistant;
+    nextPlan=store.piPlan(missionId);
+    if(!nextPlan){
+      nextPlan=await reviewPiRound(store,planner,missionId,
+        adopted.assistantSha256,second.lastAssistant,0);
+    }
+    if(['DONE','BLOCKED'].includes(nextPlan.action))return;
+  }
   if(origin.turnCount>0){
     const last=store.chatBrowserTurn(missionId);
     const plan=store.piPlan(missionId);
@@ -92,8 +116,8 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
   for(let i=origin.turnCount;i<origin.maxTurns;i++){
     const before=store.get(missionId);
     if(before.stopRequested) return;
-    if(i>0&&!nextPlan)throw new Error('PI cannot continue without a durable next-step decision');
-    if(i>0){
+    if((i>0||adopted)&&!nextPlan)throw new Error('PI cannot continue without a durable next-step decision');
+    if(i>0||adopted){
       // If a new Telegram note arrived AFTER PI committed its last NEXT plan
       // but BEFORE browser dispatch, PI must review it before any new Send.
       // This also protects a recovered checkpoint after a foreground restart.
@@ -122,7 +146,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
     const payload={store,missionId,revision,requestKey,
       telegramBatch:{lastAuthorizedTurn:false,piManaged:true}};
     const received:BrowserTurnOutcome|(BrowserTurnOutcome&{page:Page;url:string})=
-      i===0?await executeBrowserRollover({
+      i===0&&!adopted?await executeBrowserRollover({
         ...payload,sourcePage:page,sourceUrl:url,
         prompt:browserFreshTaskPrompt(origin.goal),
       }):nextPlan!.action==='HANDOFF'?await executeBrowserRollover({

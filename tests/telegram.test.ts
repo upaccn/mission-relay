@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {createHash} from 'node:crypto';
 import { Store } from '../src/core/store.js';
 import { Engine } from '../src/core/engine.js';
-import { TelegramBridge, formatBrowserResultNotification, formatNativeMissionNotification, isolatedCodexHasMcpServers, type TelegramUpdate, type TelegramTransport } from '../src/plugins/telegram.js';
+import { TelegramBridge, formatBrowserResultNotification, formatNativeMissionNotification, type TelegramUpdate, type TelegramTransport } from '../src/plugins/telegram.js';
 import type { AgentAdapter, Decision, Mission, TurnInput, Verification } from '../src/core/types.js';
 import type { Page } from 'playwriter';
 
@@ -405,22 +406,22 @@ test('Native Codex final Telegram notification includes concise independently re
   }finally{f.cleanup();}
 });
 
-test('Repeated Codex natural-language message while the first is running reports its existing Mission without replay',async()=>{
+test('Repeated vendor-neutral Agent message while the first is running reports the active Mission without replay',async()=>{
   const f=fixture();try{
-    f.store.setMeta('telegram.codex.workspace',f.dir);
+    f.store.setMeta('telegram.agent.workspace',f.dir);
     let finish:(decision:Decision)=>void=()=>{};
     const gate=new Promise<Decision>(resolve=>{finish=resolve;});
     f.agent.execute=async()=>{f.agent.calls++;return gate;};
-    const prompt='Codex：只读检查 README.md 和 STATE.md 的差异';
+    const prompt='Agent：只读检查 README.md 和 STATE.md 的差异';
     f.transport.updates=[f.message(850,prompt),f.message(851,prompt)];
     await f.bridge.pollOnce(0);
     const missions=f.engine.list().filter(x=>x.goal.includes('README.md 和 STATE.md'));
     assert.equal(missions.length,1);
     assert.equal(f.agent.calls,1);
     assert.equal(f.engine.get(missions[0]!.id).state,'RUNNING');
-    const accepted=f.transport.sent.filter(x=>/Codex Mission .* accepted/.test(x));
+    const accepted=f.transport.sent.filter(x=>/Native Agent Mission .* accepted/.test(x));
     assert.equal(accepted.length,1);
-    assert.match(accepted[0]!,/Do not send the same task again/);
+    assert.match(accepted[0]!,/Status: \/status/);
     const duplicate=f.transport.sent.find(x=>/This task is already active/.test(x));
     assert.ok(duplicate);
     assert.match(duplicate,/No new execution was submitted/);
@@ -809,14 +810,14 @@ test('Natural-language new chat refuses an absent or nonmatching approved Chrome
   }finally{f.cleanup();}
 });
 
-test('Telegram /codex requires an approved workspace and runs only one read-only native turn',async()=>{
+test('Telegram /agent requires an approved workspace and runs one read-only native turn',async()=>{
   const f=fixture();try{
-    f.transport.updates=[f.message(504,'/codex Review the local project README')];
+    f.transport.updates=[f.message(504,'/agent Review the local project README')];
     await f.bridge.pollOnce(0);
-    assert.ok(f.transport.sent.some(x=>/No approved Codex workspace/.test(x)));
+    assert.ok(f.transport.sent.some(x=>/No approved native agent workspace/.test(x)));
     assert.equal(f.agent.calls,0);
-    f.store.setMeta('telegram.codex.workspace',f.dir);
-    f.transport.updates=[f.message(505,'/codex Review the local project README')];
+    f.store.setMeta('telegram.agent.workspace',f.dir);
+    f.transport.updates=[f.message(505,'/agent Review the local project README')];
     await f.bridge.pollOnce(0);
     for(let i=0;i<20&&f.agent.calls===0;i++)await new Promise(resolve=>setTimeout(resolve,10));
     const m=f.engine.list().find(x=>x.goal==='Review the local project README');
@@ -826,17 +827,17 @@ test('Telegram /codex requires an approved workspace and runs only one read-only
     assert.equal(m.maxTurns,1);
     assert.equal(f.agent.calls,1);
     await f.bridge.pollOnce(0);
-    assert.equal(f.transport.sent.filter(x=>/Codex Mission/.test(x)).length,1);
+    assert.equal(f.transport.sent.filter(x=>/Native Agent Mission/.test(x)).length,1);
   }finally{f.cleanup();}
 });
 
-test('Natural-language Codex: prefix deterministically selects the native executor, never Chrome',async()=>{
+test('Natural-language Agent: prefix deterministically selects the native executor, never Chrome',async()=>{
   const f=fixture();try{
-    f.store.setMeta('telegram.codex.workspace',f.dir);
+    f.store.setMeta('telegram.agent.workspace',f.dir);
     const bridge=new TelegramBridge(f.store,f.engine,f.transport,1001,2001,
       async()=>({ok:true,source:'default',message:'ready'}),
       async()=>{throw new Error('Chrome must not be contacted');});
-    f.transport.updates=[f.message(506,'Codex： Inspect current readme only')];
+    f.transport.updates=[f.message(506,'Agent： Inspect current readme only')];
     await bridge.pollOnce(0);
     const m=f.engine.list().find(x=>x.goal==='Inspect current readme only');
     assert.ok(m);assert.equal(m.sandbox,'read-only');
@@ -844,9 +845,34 @@ test('Natural-language Codex: prefix deterministically selects the native execut
   }finally{f.cleanup();}
 });
 
-test('Remote Codex rejects profile MCP server declarations instead of assuming read-only external tools',()=>{
-  assert.equal(isolatedCodexHasMcpServers('[model_providers.custom]\nfoo = true'),false);
-  assert.equal(isolatedCodexHasMcpServers('[mcp_servers.github]\ncommand = "server"'),true);
-  assert.equal(isolatedCodexHasMcpServers('  [mcp_servers]\n'),true);
-  assert.equal(isolatedCodexHasMcpServers('# [mcp_servers.write]\n[model]'),false);
+test('Legacy vendor-specific commands are not routed to a different Agent',async()=>{
+  const f=fixture();try{
+    f.store.setMeta('telegram.agent.workspace',f.dir);
+    f.transport.updates=[f.message(507,'/codex Inspect source')];
+    await f.bridge.pollOnce(0);
+    assert.equal(f.agent.calls,0);
+    assert.ok(f.transport.sent.some(x=>/Unknown command/.test(x)));
+    assert.equal(f.engine.list().length,1,'No Mission for an unrecognized vendor command');
+  }finally{f.cleanup();}
+});
+
+test('Telegram owner notes attach to a CLI-adopted PI Mission without launching a second task',async()=>{
+  const f=fixture();try{
+    const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
+    const adopted=f.store.adoptHumanChat({goal:'Continue human-started NetBox work',
+      acceptance:['Verify VRF handling'],workspace:'',sandbox:'read-only',
+      mode:'supervised',maxTurns:8,requestKey:'synthetic-adopted-telegram',checks:[]},
+      'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174099',
+      'install:Chrome:synthetic',{userSha256:hash('Human prompt'),
+        assistantSha256:hash('Human response'),summary:'Human response'});
+    f.store.setMeta(`pi.autopilot.enabled.${adopted.id}`,'1');
+    const count=f.engine.list().length;
+    f.transport.updates=[f.message(920,'Check duplicate IPs across VRFs in the next PI round')];
+    await f.bridge.pollOnce(0);
+    assert.equal(f.engine.list().length,count);
+    assert.equal(f.agent.calls,0);
+    assert.equal(f.store.pendingPiOwnerDirectives(adopted.id).length,1);
+    assert.ok(f.transport.sent.some(message=>message.includes(adopted.id)&&/queued/.test(message)));
+    assert.equal(f.store.get(adopted.id).turnCount,0);
+  }finally{f.cleanup();}
 });

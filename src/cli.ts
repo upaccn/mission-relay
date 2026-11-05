@@ -4,17 +4,18 @@ import { join, resolve } from 'node:path';
 import { statSync, readFileSync } from 'node:fs';
 import { Engine } from './core/engine.js';
 import { Store } from './core/store.js';
-import { PluginRegistry } from './core/plugins.js';
-import { CodexAdapter, codexPluginManifest } from './plugins/codex.js';
+import {LazyExecutor,registerExecutorPlugin,registeredExecutorPlugins,defaultExecutorId,
+  setDefaultExecutor,removeExecutorPlugin,executorPreflight} from './core/executor-plugins.js';
 import { TelegramBridge, TelegramHttpTransport } from './plugins/telegram.js';
-import { stateHome, initializeCodexHome } from './core/paths.js';
-import { codexPreflight } from './core/preflight.js';
+import { stateHome } from './core/paths.js';
 import { renderChatGPTHandoff, normalizeChatGPTUrl } from './core/chatgpt-handoff.js';
-import { connectChatPage, inspectChatPage, lastVisibleUserContainsPrompt, withBrowserSession } from './plugins/chatgpt-browser.js';
+import { connectChatPage, inspectChatPage, lastVisibleUserContainsPrompt, lastVisibleUserPrompt, lastVisibleUserPromptSha256, listConnectedChatCandidates, withBrowserSession } from './plugins/chatgpt-browser.js';
 import { executeBrowserTurn, driveChatConversation, browserDecision, browserNewChatPrompt, browserContinuationPrompt } from './core/browser-controller.js';
-import {validatePictlRemoteConfig} from './core/pi-planner.js';
+import {AiosPiPlanner,validatePictlRemoteConfig} from './core/pi-planner.js';
+import {adoptConnectedConversation} from './core/chat-adoption.js';
+import {watchedBrowser,enableBrowserWatch,disableBrowserWatch} from './core/browser-watch.js';
 import { listBrowsers } from 'playwriter';
-import type { AgentAdapter, CreateMission, Sandbox } from './core/types.js';
+import type { CreateMission, Sandbox } from './core/types.js';
 import type { VerificationCheck } from './core/types.js';
 
 function flags(argv: string[]): Record<string,string[]> {
@@ -44,11 +45,14 @@ function option(f:Record<string,string[]>,name:string,defaultValue?:string):stri
 function help():void {
   console.log(`Mission Relay v0.1 alpha
 Commands:
-  doctor                Check the configured local Codex bridge without starting a mission
-  codex-init            Create an isolated Codex config/auth directory (never copies credentials)
+  doctor                Check installed optional executor, if any
+  plugin-register --path <absolute .mjs/.js>  Register a trusted native executor plugin
+  plugin-list           List installed native executor (none required for ChatGPT)
+  plugin-default --id <executor.id>  Optional override when several plugins exist
+  plugin-remove --id <executor.id>   Remove one registration (no user files deleted)
   telegram              Run an optional Telegram channel in the foreground (owner allowlist)
   telegram-anchor <mission-id>|--clear  Locally approve/revoke the exact pinned new-chat source tab
-  telegram-codex-workspace --workspace <dir>|--clear  Locally approve/revoke the read-only Codex work directory
+  telegram-agent-workspace --workspace <dir>|--clear  Optional native executor workspace approval
   telegram-pi-config --ssh-host <alias> --project <remote-absolute-path> | --clear
                       Configure tool-free PI inference through the existing SSH connection
   telegram-identify     Inspect local /start sender IDs before owner authorization
@@ -63,8 +67,16 @@ Commands:
   link-chat <id> --url <ChatGPT conversation URL> --revision <version>
   chat-create --goal <text> --accept <criterion> --url <ChatGPT conversation URL>
              [--accept <criterion>...] [--request-key <stable key>]
+  chat-adopt --url <exact ChatGPT conversation URL> --browser-id <approved Chrome ID>
+             [--goal <text>] [--start true]
+             Register a stable existing human chat; optional PI continuation in SAME tab
+  chat-adopt-start <mission-id>    Start PI on an already-adopted idle human conversation
   handoff <id>          Show existing ChatGPT chat link and manual continuation prompt
   browser-list          List connected Playwriter browser IDs (no profile emails)
+  browser-candidates --browser-id <approved Chrome ID>   Read-only connected ChatGPT URL inventory
+  browser-watch --browser-id <approved Chrome ID>  Opt in to new Playwriter-connected ChatGPT chats
+  browser-watch --clear  Stop discovery and prevent watched Missions from further turns
+  browser-watch-status   Show the pinned profile and whether discovery is enabled
   browser-bind <id> --browser-id <id> --revision <n>   Pin a mission to one Chrome profile
   browser-probe <id> [--browser-id <id>]   Read a Playwriter-enabled ChatGPT tab
   browser-send <id> --revision <n> --request-key <key> --prompt-file <file>
@@ -80,11 +92,9 @@ Commands:
   pause <id> | resume <id> | cancel <id>
   reconcile <id> --acknowledge-side-effects
 
-Environment: MISSION_RELAY_HOME, MISSION_RELAY_CODEX_HOME, MISSION_RELAY_MODEL,
-MISSION_RELAY_CODEX_BASE_URL, MISSION_RELAY_TURN_TIMEOUT_MS,
-MISSION_RELAY_CODEX_PROXY (optional, applies to Codex child only),
-MISSION_RELAY_WINDOWS_SANDBOX (elevated default; unelevated fallback),
-MISSION_RELAY_TELEGRAM_BOT_TOKEN, MISSION_RELAY_TELEGRAM_USER_ID, MISSION_RELAY_TELEGRAM_CHAT_ID.
+Environment: MISSION_RELAY_HOME, MISSION_RELAY_TELEGRAM_BOT_TOKEN,
+MISSION_RELAY_TELEGRAM_USER_ID, MISSION_RELAY_TELEGRAM_CHAT_ID.
+Each optional native executor manages its own configuration and credentials.
 Telegram is an opt-in foreground channel. Playwriter requires the operator-enabled Chrome extension; no background service or PWA is installed.`);
 }
 
@@ -93,9 +103,7 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
   if (!command || ['help','--help','-h'].includes(command)) return help();
   const home = stateHome();
   const store = new Store(join(home,'missions.sqlite'));
-  const adapters = new PluginRegistry<AgentAdapter>();
-  adapters.register(codexPluginManifest,new CodexAdapter());
-  const engine = new Engine(store,adapters.get('executor.codex','executor'));
+  const engine = new Engine(store,new LazyExecutor(store));
   try {
     let result: unknown;
     if (command === 'create') {
@@ -129,6 +137,48 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       if(previous && previous!==url) throw new Error('Idempotency key already belongs to a different ChatGPT conversation');
       const linked=store.linkChat(mission.id,url,mission.version);
       result={...linked,handoff:renderChatGPTHandoff(linked.mission,linked.url)};
+    } else if (command === 'chat-adopt') {
+      const f=flags(argv.slice(1));
+      const url=normalizeChatGPTUrl(option(f,'url'));
+      const browserId=option(f,'browser-id');
+      const start=option(f,'start','false');
+      if(!['true','false'].includes(start))throw new Error('--start must be true or false');
+      const goal=f['--goal']?option(f,'goal'):undefined;
+      let planner:AiosPiPlanner|undefined;
+      if(start==='true'){
+        const sshHost=store.getMeta('telegram.pi.sshHost');
+        const project=store.getMeta('telegram.pi.project');
+        if(!sshHost||!project)throw new Error('PI route is not configured; no adoption performed');
+        planner=new AiosPiPlanner({sshHost,project});
+        await planner.preflight();
+      }
+      const session=await connectChatPage(url,{browserId});
+      result=await withBrowserSession(session,async page=>{
+        const recorded=await adoptConnectedConversation(store,page,url,browserId,{
+          goal,piEnabled:Boolean(planner),
+        });
+        return {missionId:recorded.missionId,state:store.get(recorded.missionId).state,
+          adoptedAnswerSha256:recorded.adoptedAnswerSha256,
+          nativeExecutorRequired:false,piQueued:Boolean(planner),
+          foregroundPollerPresent:store.channelStatus('telegram').pollerPresent,
+          note:planner?'Existing human reply recorded with zero sends; Telegram foreground controller will claim the queued PI Mission (no CLI browser writer).':
+            'Existing human reply was read, not submitted by Relay; zero turns credited.'};
+      });
+    } else if(command==='chat-adopt-start'&&id){
+      const m=store.get(id),adopted=store.chatAdoption(id);
+      const url=store.chatLink(id),browserId=store.chatBrowserBinding(id);
+      if(!adopted||m.turnCount!==0||m.state!=='PAUSED'||!url||!browserId||
+         store.piPlan(id)||m.stopRequested)
+        throw new Error('Mission must have an unreviewed, unstarted human ChatGPT adoption checkpoint');
+      const sshHost=store.getMeta('telegram.pi.sshHost');
+      const project=store.getMeta('telegram.pi.project');
+      if(!sshHost||!project)throw new Error('PI route is not configured; no browser Send attempted');
+      const planner=new AiosPiPlanner({sshHost,project});
+      await planner.preflight();
+      store.setMeta(`pi.autopilot.enabled.${id}`,'1');
+      result={missionId:id,state:m.state,piQueued:true,
+        foregroundPollerPresent:store.channelStatus('telegram').pollerPresent,
+        note:'The foreground Telegram controller is the sole PI/browser writer. It will verify the exact original tab and review the human answer before sending.'};
     } else if (command === 'telegram-anchor' && id === '--clear') {
       store.setMeta('telegram.chatgpt.anchorMissionId','');
       result={configured:false,note:'The Telegram fresh-chat launcher has been locally revoked.'};
@@ -143,16 +193,28 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       store.setMeta('telegram.chatgpt.anchorMissionId',id);
       result={configured:true,anchorMissionId:id,chatUrl:url,
         note:'Explicitly approved source tab only; future Telegram tasks create separate new tabs, never send in this old conversation.'};
-    } else if (command === 'telegram-codex-workspace' && id === '--clear') {
-      store.setMeta('telegram.codex.workspace','');
-      result={configured:false,note:'The Telegram remote Codex work directory has been locally revoked.'};
-    } else if (command === 'telegram-codex-workspace') {
+    } else if (command === 'telegram-agent-workspace' && id === '--clear') {
+      store.setMeta('telegram.agent.workspace','');
+      result={configured:false,note:'Native executor workspace authorization revoked.'};
+    } else if (command === 'telegram-agent-workspace') {
       const f=flags(argv.slice(1));
       const workspace=resolve(option(f,'workspace'));
-      if(!statSync(workspace).isDirectory())throw new Error('Approved Codex workspace must be an existing directory');
-      store.setMeta('telegram.codex.workspace',workspace);
+      if(!statSync(workspace).isDirectory())throw new Error('Approved native executor workspace must exist');
+      store.setMeta('telegram.agent.workspace',workspace);
       result={configured:true,workspace,mode:'read-only',
-        note:'Telegram /codex is limited to one supervised turn. This filesystem sandbox does not constrain external MCP permissions; use an isolated Codex profile without write-capable MCP tools.'};
+        note:'Native executor is optional; verify the selected plugin enforces read-only tools independently.'};
+    } else if (command === 'plugin-register') {
+      const f=flags(argv.slice(1));
+      result=await registerExecutorPlugin(store,option(f,'path'));
+    } else if (command === 'plugin-list') {
+      result={default:defaultExecutorId(store),installed:registeredExecutorPlugins(store)};
+    } else if (command === 'plugin-default') {
+      setDefaultExecutor(store,option(flags(argv.slice(1)),'id'));
+      result={default:defaultExecutorId(store)};
+    } else if (command === 'plugin-remove') {
+      const pluginId=option(flags(argv.slice(1)),'id');
+      removeExecutorPlugin(store,pluginId);
+      result={removed:pluginId,note:'Registration cleared, external files and prior mission bindings unchanged.'};
     } else if (command === 'telegram-pi-config' && id === '--clear') {
       store.setMeta('telegram.pi.sshHost','');
       store.setMeta('telegram.pi.project','');
@@ -166,9 +228,6 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       store.setMeta('telegram.pi.project',config.project);
       result={configured:true,route:config,
         note:'PI uses a fixed SSH → sudo pictl infer --stdin --json command with no tools. No credentials stored here; requires pre-authorized SSH and remote pictl.'};
-    } else if (command === 'codex-init') {
-      result={codexHome:initializeCodexHome(),
-        next:'Authorize this isolated CODEX_HOME using the official codex login command, then run mission-relay doctor.'};
     } else if (command === 'telegram-identify') {
       const token=process.env.MISSION_RELAY_TELEGRAM_BOT_TOKEN;
       if(!token) throw new Error('Set MISSION_RELAY_TELEGRAM_BOT_TOKEN privately in the local process environment');
@@ -180,7 +239,8 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       if(!token) throw new Error('MISSION_RELAY_TELEGRAM_BOT_TOKEN is required');
       const owner=Number(process.env.MISSION_RELAY_TELEGRAM_USER_ID);
       const chat=Number(process.env.MISSION_RELAY_TELEGRAM_CHAT_ID);
-      const bridge=new TelegramBridge(store,engine,new TelegramHttpTransport(token),owner,chat);
+      const bridge=new TelegramBridge(store,engine,new TelegramHttpTransport(token),owner,chat,
+        (missionId)=>executorPreflight(store,missionId));
       const controller=new AbortController();
       const shutdown=()=>controller.abort();
       process.once('SIGINT',shutdown);
@@ -193,13 +253,51 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
     } else if (command === 'channel-status') {
       result=store.channelStatus('telegram');
     } else if (command === 'doctor') {
-      result=await codexPreflight();
+      result=await executorPreflight(store);
       if (!(result as {ok:boolean}).ok) process.exitCode=2;
     }
     else if (command === 'list') result = engine.list();
     else if (command === 'browser-list') {
       const browsers=await listBrowsers();
       result=browsers.map(b=>({id:b.id,browser:b.browser,activeTabs:b.activeTabs,playwriterVersion:b.playwriterVersion}));
+    } else if (command==='browser-watch-status') {
+      result={enabled:Boolean(watchedBrowser(store)),browserId:watchedBrowser(store),
+        note:'Only Playwriter-enabled ChatGPT tabs in this profile are discoverable; no tab-group requirement.'};
+    } else if (command==='browser-watch'&&id==='--clear') {
+      const browserId=watchedBrowser(store);
+      const paused=store.atomic(()=>{
+        disableBrowserWatch(store);
+        let count=0;
+        for(const m of store.list()){
+          if(store.getMeta(`browser.watch.mission.${m.id}`)!==browserId||!browserId||
+             m.stopRequested||['CANCELLED','COMPLETED'].includes(m.state))continue;
+          if(!store.events(m.id).some(e=>e.type==='pi.autopilot_finished')){
+            store.update(m.id,m.version,{stopRequested:true},'mission.pause_requested',
+              {reason:'Chrome profile watch revoked'});
+            count++;
+          }
+        }
+        return count;
+      });
+      result={enabled:false,paused,note:'No new watched Mission will be adopted or sent after revocation.'};
+    } else if (command==='browser-watch') {
+      const browserId=option(flags(argv.slice(1)),'browser-id');
+      const browsers=await listBrowsers();
+      if(!browsers.some(browser=>browser.id===browserId))
+        throw new Error('The requested Chrome profile is not Playwriter-connected');
+      const sshHost=store.getMeta('telegram.pi.sshHost');
+      const project=store.getMeta('telegram.pi.project');
+      if(!sshHost||!project)throw new Error('Configure PI before enabling automatic Chrome adoption');
+      const planner=new AiosPiPlanner({sshHost,project});
+      await planner.preflight();
+      const candidates=await listConnectedChatCandidates(browserId);
+      const enabled=enableBrowserWatch(store,browserId,candidates);
+      result={enabled:true,...enabled,
+        note:'Existing connected conversations are baselined, not auto-started. The existing Telegram foreground controller watches newly changed Playwriter-enabled ChatGPT tabs.'};
+    } else if (command === 'browser-candidates') {
+      result={scope:'selected Playwriter-connected Chrome profile',
+        warning:'Only enabled tabs are observable; inventory does not require or imply any tab-group membership.',
+        candidates:await listConnectedChatCandidates(option(flags(argv.slice(1)),'browser-id'))};
     }
     else if (command === 'show' && id) result = engine.get(id);
     else if (command === 'events' && id) result = store.events(id);
@@ -365,8 +463,8 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
         note:'Reconciled after independent old/new page readback; prior request was not replayed.'};
     }
     else if (command === 'run' && id) {
-      if(store.chatLink(id)) throw new Error('Mission is linked to ChatGPT; use handoff, not Codex run');
-      const preflight=await codexPreflight();
+      if(store.chatLink(id)) throw new Error('Mission is linked to ChatGPT; use browser control, not a native executor');
+      const preflight=await executorPreflight(store,id);
       if(!preflight.ok) throw new Error(preflight.message);
       result = await engine.run(id);
     }

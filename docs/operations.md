@@ -3,18 +3,15 @@
 ## Installation
 
 1. Use Node.js 24 LTS+ and run `npm ci && npm run build`.
-2. Run `node dist/cli.js codex-init` to initialize an **isolated** Codex home outside the Git checkout. Use the official `codex login` with `CODEX_HOME` set to the path printed by `codex-init`, then verify `codex login status` with the same environment. Never copy browser cookies or print/paste authentication secrets. This one-time interactive step is required for ChatGPT login.
-   Mission Relay does **not** inherit the ordinary `~/.codex/config.toml`, its MCP servers, model routing or session files. You may explicitly set `MISSION_RELAY_MODEL` and `MISSION_RELAY_CODEX_BASE_URL` for this process only; these do not rewrite either Codex configuration. Confirm the endpoint supports your selected authentication method.
-
-   For example, in a Windows PowerShell 7 terminal, set `$env:CODEX_HOME = '<directory printed by codex-init>'`, run `codex login`, complete official browser authorization, and then run `codex login status`. This does not change your ordinary Codex profile. **Do not paste access tokens into commands or public issues.**
-3. Start with read-only missions in a throwaway Git repository.
+2. The default browser-first workflow only requires an already authenticated Chrome ChatGPT tab with the official Playwriter extension explicitly enabled. **No native coding-agent account is required.** For optional Codex native execution alone, install `examples/executors/codex` independently (`npm ci --prefix examples/executors/codex`), use its own `npm run init --prefix examples/executors/codex` to create an isolated profile, then authorize that profile through the official `codex login` flow. See its dedicated README; do not paste tokens or copy cookies into Mission Relay.
+3. Optional native executor plugins are independently installed trusted modules, registered with `plugin-register --path`. ChatGPT/PI/Telegram does not load them. Start with read-only missions in a throwaway Git repository.
 4. Store state outside the public checkout: the default platform user-data directory or a private `MISSION_RELAY_HOME`.
 
-Before running a mission, use `node dist/cli.js doctor`. This makes a bounded TCP readiness check **only** when an explicit `MISSION_RELAY_CODEX_BASE_URL` or the top-level Codex user configuration points to a local loopback endpoint. It never reads authentication secrets or starts a model turn. A missing local bridge blocks `run` while leaving the mission `READY`. Remote endpoint connectivity and authentication still require a real, explicitly requested Codex turn.
+Before running an **optional native** mission, use `node dist/cli.js doctor`. It checks the installed executor's `preflight` when provided; no coding-agent plugin is required for ChatGPT browser tasks. Preflight success is not proof of external tool isolation or model authentication.
 
-If Codex cannot open its WebSocket because the host routes internet connections through a local HTTP proxy, set `MISSION_RELAY_CODEX_PROXY=http://127.0.0.1:<your-proxy-port>` **only in the Mission Relay process**. Mission Relay validates it, checks that a local listener is present, and forwards `HTTP_PROXY`/`HTTPS_PROXY` to the Codex child. It never modifies Windows proxy, system settings, `~/.codex`, or the verification command environment. Do not put proxy credentials or a URL with username/password in this variable.
+For the separate optional Codex plugin, `MISSION_RELAY_CODEX_PROXY` supplies its SDK's HTTP(S) proxy setting. It does not modify Windows proxy or the standard verification environment. Other native plugins own their own network settings.
 
-For native Windows execution, Mission Relay explicitly selects Codex's officially recommended `windows.sandbox="elevated"` by default, without changing the per-mission `read-only` or `workspace-write` restriction. On a host where elevated sandbox provisioning fails, `MISSION_RELAY_WINDOWS_SANDBOX=unelevated` is an opt-in fallback with **weaker sandbox isolation**. Validate its behavior with the official `codex sandbox` helper before use; keep missions `read-only` until the sandbox and its write boundaries have been directly tested. Never replace this with unrestricted access as a workaround. `doctor` reports the selected backend and warns when `unelevated` is used; it does not certify sandbox isolation by itself.
+For the optional Codex plugin on Windows, `MISSION_RELAY_WINDOWS_SANDBOX=unelevated` is an opt-in fallback with **weaker sandbox isolation** than its default elevated backend. Native executor sandbox implementations differ; a generic `read-only` mission setting cannot certify third-party MCP/network tool restrictions.
 
 ## Deterministic verification
 

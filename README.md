@@ -1,18 +1,20 @@
 # Mission Relay
 
-**Telegram natural language (experimental PI autopilot):** With local `telegram-anchor` and `telegram-pi-config`, ordinary text, `ChatGPT: <task>` or `/auto <task>` starts a fresh ChatGPT Chrome tab. After every fully observed answer, AIOS PI Agent (called over the existing SSH connection using tool-free `pictl infer`) decides whether to continue, stop, request human intervention or hand off to a new tab. Authenticated owner notes arriving during the round are persisted in SQLite and reviewed before the next Send. This is limited to **8 read-only-prompt turns**, no new daemon or GMK PI installation. **ChatGPT connected apps are not technically sandboxed by those prompts.** Use `/new <task>` for the previous single-turn, no-PI ChatGPT path. `/codex` remains an explicit optional read-only native Codex SDK path. See [Telegram](docs/telegram.md).
+**Browser-first, vendor-neutral by default.** With local `telegram-anchor` and `telegram-pi-config`, ordinary Telegram text, `ChatGPT: <task>` or `/auto <task>` starts a fresh ChatGPT Chrome conversation. After each fully observed answer, tool-free PI proposes a bounded NEXT/DONE/BLOCKED/HANDOFF decision. Existing human-created conversations can now be explicitly **adopted** (see below) with zero artificial turns. No coding agent, Codex SDK or model-provider choice is required for this path. Native execution remains an optional, separately installed plugin. **ChatGPT connected apps are not technically sandboxed by these prompts.** See [Telegram](docs/telegram.md).
 
-Natural-language provider selection can also use `Codex: <task>` or `ChatGPT: <task>` (Chinese full-width colon supported). Plain text now defaults to PI-coordinated ChatGPT. Routing is deterministic; the second model, PI, is invoked only to review progress and select the following authorized ChatGPT turn, not to guess a provider.
+An explicit `Agent: <task>` or `/agent <task>` uses an installed native executor only if one has been configured. Plain Telegram text defaults to PI-coordinated ChatGPT. There are no vendor-specific command prefixes in Core.
 
 **Local-first mission control and handoff for long-running AI work.** Open source under Apache-2.0.
 
 Mission Relay turns a goal and explicit acceptance criteria into a durable mission. It uses an existing AI agent for work, saves checkpoints, determines whether another turn is needed, and independently verifies a candidate result **for supported native executors**. It does **not** reimplement an agent runtime, copy browser profiles, or extract ChatGPT credentials or internal APIs. The opt-in ChatGPT adapter reads visible UI text; a browser reply alone does not constitute independent mission verification.
 
-> **Status: early v0.1 development.** Native CLI, Codex adapter, Telegram and an optional Playwriter ChatGPT browser adapter exist. On the operator-enabled existing Chrome test conversation, **post-fix Telegram → Playwriter → ChatGPT → SQLite receipt** passed, including a final-answer SHA-256 match and no duplicate sends. Real bounded CLI multi-turn (NEXT → DONE), local relay restart/reconnect and ambiguous in-flight relay failure with manual reconciliation passed. **User-disabled/re-enabled Playwriter access on the exact test tab passed**, with a failed-closed probe while disabled and unchanged state after reconnect. The controller handles ChatGPT's virtualized DOM counts without prematurely acknowledging streamed replies. Browser reconciliation uses one SQLite transaction, with rollback/fail-closed tests; 60-second observation, fresh-tab rendering, final-only Telegram browser notifications and stale-load-error recovery passed **109 tests on GitHub Actions Ubuntu/Windows/macOS** (run `41839783004`), with a fresh 109-test Windows/Linux local recheck. General mobile remote browser gestures, browser-wide permission scope and unattended operations are **not verified**. PWA and external AIOS missions are not implemented. Do not use this version unattended on sensitive projects.
+> **Status: early alpha; v0.2 Chrome-profile watch passed two isolated real-Chrome pilot runs, but is not yet deployed to the production Telegram controller.** Each pilot created a fresh ChatGPT conversation, discovered and adopted its stable human-origin reply with zero Relay turns, then used the real tool-free AIOS PI planner to choose NEXT and DONE after exactly one Playwriter follow-up Send. The second pilot independently read back the complete final browser answer and matched its SHA-256 to SQLite. Notifications used a **fake in-memory Telegram transport**, not the production Bot API. Native coding-agent plugins have been separated from the default build. Only Playwriter-enabled ChatGPT tabs are visible, not every tab in Chrome. Restart recovery for the v0.2 watcher, real phone notifications after deployment, arbitrary browser gestures and unattended external writes remain unverified. See [STATE.md](STATE.md).
 
 **Attended acceptance and reliability history (2026-11-04):** The owner initiated a real Telegram command from a phone and confirmed receipt of the final notification after one authorized Chrome ChatGPT turn; the complete visible answer hash matched SQLite's reserved/observed/finished audit trail with no replay. At that *earlier verifier-timeout milestone*, the suite had 112 Linux tests / 111 Windows passes with one POSIX-only case skipped; these figures are **historical**, not the current test count. Operator-configured deterministic checks now have a hard failure deadline, including inherited-pipe hangs; POSIX uses a dedicated process group and Windows attempts native tree cleanup. This is **not** permission to run untrusted verifier commands or a guarantee that Windows can clean descendants of a parent that has already exited. Browser-observed model `DONE` remains distinct from independent business verification.
 
-**Primary direction:** Resume an existing ChatGPT conversation inside the operator's Chrome browser. `chat-create` / `link-chat` registers the conversation; `browser-bind` explicitly pins its approved Chrome instance before any browser probe, Send, Drive or Telegram continuation. Playwriter `browser-probe` reads the visible UI; `browser-send` / `browser-drive` submit bounded turns after explicit extension enablement. Telegram `/continue` routes a linked Mission to Playwriter instead of Codex, and `/instruct` supplies a one-turn owner instruction without sacrificing new instructions added during execution. Browser replies are observed using **one local DOM check per 60 seconds during normal generation** (35-minute default timeout, 45-minute maximum), not by calling the model again. New-tab URL initialization and final-response stability use separate short bounded checks. A `HANDOFF` flow signal can migrate a long conversation into a new Chrome tab, send a compact context handoff and atomically replace the registered conversation URL after verified reply observation. A Telegram-initiated browser continuation emits **one final compact decision summary per bounded batch**, not notifications for each intermediate turn; full per-turn receipts remain in SQLite. A pre-existing ChatGPT load-error reply is never treated as proof that the newly submitted turn failed; if a historical uncertain turn is later confirmed complete, `browser-recover-turn` independently checks the original prompt and stable reply, then commits one recovered turn with no new Send. Browser response observation is **not** independent acceptance verification. See [ChatGPT browser control](docs/playwriter-evaluation.md) and [ChatGPT handoff](docs/chatgpt-handoff.md).
+**Primary direction:** Resume an existing ChatGPT conversation inside the operator's Chrome browser. `chat-create` / `link-chat` registers the conversation; `browser-bind` pins the approved Chrome instance. Playwriter `browser-probe` reads visible UI, while `browser-send` / `browser-drive` submit bounded turns after explicit extension enablement. Telegram `/continue` routes a browser-linked Mission to Playwriter; a separately installed native Mission uses its configured executor plugin. `/instruct` supplies a one-turn owner instruction without losing updates made during execution.
+
+Browser replies use **one local DOM check every 60 seconds during normal generation** (35-minute default timeout, 45-minute maximum), not additional model calls. New-tab initialization and final-response stability use short bounded checks. `HANDOFF` may open a new Chrome tab and atomically update the Mission link after a complete observed response. A Telegram-initiated batch emits **one final compact summary** while retaining every turn receipt in SQLite. Pre-existing ChatGPT load errors do not prove a newly submitted turn failed; `browser-recover-turn` can re-observe a complete original-chat reply without resending. Browser observation is **not** independent business verification. See [ChatGPT browser control](docs/playwriter-evaluation.md) and [ChatGPT handoff](docs/chatgpt-handoff.md).
 
 **Evidence level:** The previous Telegram→Chrome one-shot instruction was verified live. A separate bounded real two-turn pilot demonstrated autonomous `HANDOFF`→new Chrome tab→new ChatGPT direct conversation→final `DONE` receipt with no replay, correct SHA-256 and atomic Mission link. When the new tab navigates through transient URLs or ChatGPT fails to load its answer, the controller waits briefly or fails conservatively. An explicit read-only `browser-recover-rollover` path can reconcile an already completed new-chat answer after independently verifying both source and destination; it never repeats the Send. Unattended production use remains out of scope.
 
@@ -24,9 +26,9 @@ Mission Relay turns a goal and explicit acceptance criteria into a durable missi
 
 - Node.js 24 LTS or newer (Node 24 and 26 are targeted). Local state uses Node's bundled `node:sqlite`, avoiding native addon builds.
 - A local project workspace, preferably a Git repository.
-- For real execution: a working official Codex authentication/configuration. `npm ci` installs the official SDK; the CLI's own authorization remains with Codex.
+- For native agent execution **only**: an operator-installed trusted executor plugin with its own authentication. The base `npm ci` no longer installs Codex.
 
-**Executor isolation:** Mission Relay uses its own private `CODEX_HOME` under the application state directory by default. Run `node dist/cli.js codex-init`, then authorize that directory via the official `codex login` process (see [operations](docs/operations.md)). This prevents importing your everyday Codex profile's custom model routes, MCP servers and tools. No credentials or sessions are copied from `~/.codex`.
+**Executor isolation:** The Mission state remains owned by SQLite. Native plugins use their own authentication and sandbox rules; installing a plugin does not confer extra Mission Relay permissions. An optional isolated Codex adapter is distributed under `examples/executors/codex`, not imported by the default CLI. See [plugin API](docs/plugin-api.md).
 
 ## Quick start
 
@@ -35,12 +37,9 @@ git clone https://github.com/upaccn/mission-relay.git
 cd mission-relay
 npm ci
 npm run build
-node dist/cli.js create --goal "Review the codebase and propose fixes" \
-  --accept "Written findings with specific evidence" --workspace /absolute/path/to/repo
+node dist/cli.js browser-list
+node dist/cli.js plugin-list  # no native executor needed
 node dist/cli.js list
-node dist/cli.js run <mission-id>
-node dist/cli.js show <mission-id>
-node dist/cli.js events <mission-id>
 ```
 
 To create a ChatGPT-linked Mission in one command **without starting Codex**:
@@ -48,6 +47,33 @@ To create a ChatGPT-linked Mission in one command **without starting Codex**:
 ```sh
 node dist/cli.js chat-create --goal "Continue the research" --accept "Verify conclusions" --url https://chatgpt.com/c/<conversation-id>
 ```
+
+To adopt a human-created ChatGPT conversation **without replacing it with a new tab**:
+
+```sh
+# Enable Playwriter on that exact Chrome tab before these read-only checks.
+node dist/cli.js browser-candidates --browser-id <approved-Chrome-id>
+node dist/cli.js chat-adopt --url https://chatgpt.com/c/<conversation-id> --browser-id <approved-Chrome-id>
+# After PI and a Telegram foreground controller are configured, queue
+# chat-adopt-start <returned-mission-id>, or pass --start true initially.
+```
+
+`chat-adopt` records the stable latest human user/assistant snapshot and credits **zero** Relay sends. With `--start true`, it queues the Mission for the **existing leased Telegram foreground controller**, which checks the actual answer, invokes PI, and only sends into that **same** tab if PI requests a continuation. A 3-second stable read and exact browser-ID and URL matching are required. The CLI never becomes a competing browser writer.
+
+To opt in to **Chrome-profile watch** (no tab-group restriction), first configure the existing foreground Telegram controller and tool-free PI route. Then use:
+
+```sh
+node dist/cli.js browser-list
+node dist/cli.js browser-watch --browser-id <approved-Chrome-id>
+node dist/cli.js browser-watch-status
+# Only newly connected/changed Playwriter-enabled ChatGPT chats are candidates.
+# To revoke discovery and stop future turns for watched Missions:
+node dist/cli.js browser-watch --clear
+```
+
+Enabling creates a baseline of all currently visible ChatGPT conversations and **does not automatically run those existing chats**. Subsequent newly visible chats or new human prompts are read twice for stability, adopted at zero Relay turns, and queued for PI through the **same Telegram foreground process**, one Mission at a time. Two tabs showing an identical URL are never silently selected. `browser-candidates` is read-only inventory, not evidence that all Chrome tabs are accessible: the user must still enable Playwriter on each tab they want controlled. This watcher is source-implemented and synthetic-tested, **not yet accepted against the live Chrome/Telegram runtime**. See [browser evaluation](docs/playwriter-evaluation.md).
+
+To install an optional native coding agent, install its package separately and register its trusted absolute JS module with `plugin-register --path`, then use `plugin-list`. Multiple plugins may be installed; the first registered is initially the default and existing native Missions remain pinned to their original executor. No agent selection is required for ChatGPT. See [plugin API](docs/plugin-api.md).
 
 Or link an already-existing Mission, using the current revision from `show`:
 
@@ -73,7 +99,7 @@ To permit `workspace-write` missions to reach `COMPLETED`, provide explicit **op
 
 The default execution sandbox is `read-only`. Explicitly opt in to `--sandbox workspace-write` at creation time for tasks that genuinely require code changes. Remote production actions and unrestricted system access are not supported by the built-in engine.
 
-`MISSION_RELAY_HOME` can change the state directory (default: OS user-data directory). The SQLite DB and local model execution history must remain private. Run `node dist/cli.js doctor` before an initial mission to check whether a configured local Codex bridge is listening.
+`MISSION_RELAY_HOME` changes the private state directory. Run `node dist/cli.js doctor` only when diagnosing an optional native executor. Browser-first ChatGPT and PI do not require a native plugin.
 
 ## Design boundaries
 
@@ -87,10 +113,10 @@ See [architecture](docs/architecture.md), [plugin API](docs/plugin-api.md), [ope
 
 ## Roadmap
 
-1. **v0.1** Native missions, SQLite, Codex adapter, durable CLI, Telegram and human-operated ChatGPT conversation handoff.
-2. **v0.2** Real Chrome Playwriter handshake, first live ChatGPT turn, bounded multi-turn recovery and Telegram acceptance on an operator-enabled conversation (**achieved for attended text-only pilots; not a general production release**).
-3. **v0.3** Harden browser session lifecycle, recovery notices and independent outcome verification; optional mobile UI/desktop handoff and native ChatGPT scheduling only where independently useful.
-4. **v0.4** External Mission Providers (including AIOS) and plugin contract tests; Playwriter tab permission stays operator-enabled, while bounded text-only ChatGPT HANDOFF already supports attended automatic new-tab migration.
+1. **v0.1** Existing experimental SQLite, Playwriter, Telegram and PI orchestration (attended text-only pilots).
+2. **v0.2** Browser-first human conversation adoption; **automatic tab-group membership discovery is pending an upstream-capability solution and real Chrome acceptance**.
+3. **v0.3** Simplify Telegram controls, restart/recovery lifecycle and mission-specific executor binding.
+4. **v0.4** Formalize optional native executor/other adapter packages, without requiring a coding agent for browser-first use.
 5. **v1.0** Cross-platform recovery, security and maintenance gates.
 
 Contributions welcome after the initial core stabilizes. See [CONTRIBUTING.md](CONTRIBUTING.md).

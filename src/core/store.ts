@@ -162,6 +162,28 @@ export class Store {
     this.raw(id);
     return this.getMeta(`chatgpt.browser.binding.${id}`);
   }
+  /** A native Mission must keep its originally chosen executor after restart,
+   * even if additional plugins are installed or the default later changes. */
+  bindNativeExecutor(id:string,pluginId:string):void {
+    if(!/^[a-z][a-z0-9]*(?:[.-][a-z][a-z0-9]*)+$/.test(pluginId))
+      throw new Error('Invalid executor plugin ID');
+    this.transaction(()=>{
+      const m=this.get(id);
+      if(this.chatLink(id))throw new Error('ChatGPT browser Mission cannot bind a native executor');
+      if(!['READY','RUNNING','VERIFYING','PAUSED'].includes(m.state))
+        throw new Error('Native executor binding requires an unfinished Mission');
+      const key=`executor.mission.${id}`;
+      const previous=this.getMeta(key);
+      if(previous&&previous!==pluginId)
+        throw new Error('Native Mission executor identity is immutable');
+      if(!previous){
+        if(m.threadId||m.turnCount>0)
+          throw new Error('Cannot bind an executor after unbound work has already started');
+        this.setMeta(key,pluginId);
+        this.event(id,'executor.plugin_bound',{pluginId});
+      }
+    });
+  }
   bindChatBrowser(id:string,browserId:string,expectedVersion:number):{mission:Mission;browserId:string} {
     if(!/^[A-Za-z0-9:._-]{1,200}$/.test(browserId)) throw new Error('Invalid Playwriter browser ID');
     if(!Number.isSafeInteger(expectedVersion)||expectedVersion<0) throw new Error('Expected revision must be a nonnegative integer');
@@ -209,6 +231,60 @@ export class Store {
     this.raw(id);
     const value=this.getMeta(this.browserTurnKey(id));
     return value?JSON.parse(value) as ChatBrowserTurn:null;
+  }
+  /** Initial adoption reads an existing human-written conversation; this is
+   * evidence of a browser snapshot, NEVER evidence that Relay sent a turn.
+   * No turn budget is consumed and no request key is reserved for dispatch. */
+  chatAdoption(id:string):{userSha256:string;assistantSha256:string}|null {
+    this.raw(id);
+    const item=this.getMeta(`chatgpt.browser.adoption.${id}`);
+    return item?JSON.parse(item) as {userSha256:string;assistantSha256:string}:null;
+  }
+  recordChatAdoption(id:string,revision:number,input:{userSha256:string;assistantSha256:string;summary:string}):Mission {
+    if(!/^[0-9a-f]{64}$/.test(input.userSha256)||
+      !/^[0-9a-f]{64}$/.test(input.assistantSha256)||!input.summary.trim())
+      throw new Error('Adoption requires a stable, nonempty ChatGPT answer and exact SHA-256s');
+    return this.transaction(()=>{
+      const m=this.get(id),url=this.chatLink(id);
+      if(m.version!==revision||m.state!=='READY'||m.turnCount!==0||!url||
+        !this.chatBrowserBinding(id)||this.chatBrowserTurn(id))
+        throw new Error('Initial browser adoption requires a new READY bound Mission without prior turns');
+      const current=this.list().filter(other=>other.id!==id&&
+        this.getMeta(`chatgpt.handoff.${other.id}`)===url&&
+        !['CANCELLED','COMPLETED'].includes(other.state));
+      if(current.length)throw new Error('Conversation is already linked to another active Mission');
+      const now=new Date().toISOString();
+      const urlHash=createHash('sha256').update(url).digest('hex');
+      if(this.getMeta(this.browserUrlLockKey(urlHash)))
+        throw new Error('Conversation is locked by another browser send');
+      const requestKey='initial-human-snapshot';
+      const record:ChatBrowserTurn={requestKey,promptSha256:input.userSha256,
+        urlHash,status:'observed',assistantSha256:input.assistantSha256,
+        createdAt:now,observedAt:now};
+      this.setMeta(this.browserTurnKey(id),JSON.stringify(record));
+      this.setMeta(`chatgpt.browser.adoption.${id}`,JSON.stringify({
+        userSha256:input.userSha256,assistantSha256:input.assistantSha256}));
+      this.db.prepare(`UPDATE missions SET state='PAUSED',version=version+1,
+        last_summary=?,updated_at=? WHERE id=? AND version=?`)
+        .run(input.summary.slice(-1000),now,id,m.version);
+      this.event(id,'chatgpt.browser_adopted',{
+        userSha256:input.userSha256,assistantSha256:input.assistantSha256,
+        humanOrigin:true,turnsSent:0});
+      return this.get(id);
+    });
+  }
+  /** Creation, canonical URL link, exact browser profile and human-origin
+   * snapshot are one all-or-nothing durable action. No orphan READY Mission
+   * remains if a later validation or audit insert fails. */
+  adoptHumanChat(input:CreateMission,url:string,browserId:string,evidence:{
+    userSha256:string;assistantSha256:string;summary:string;
+  }):Mission {
+    return this.transaction(()=>{
+      const created=this.create(input);
+      const linked=this.linkChat(created.id,url,created.version).mission;
+      const bound=this.bindChatBrowser(created.id,browserId,linked.version).mission;
+      return this.recordChatAdoption(created.id,bound.version,evidence);
+    });
   }
   reserveChatBrowserTurn(id:string,revision:number,requestKey:string,promptSha256:string):Mission {
     if(!/^[\w.-]{1,128}$/.test(requestKey)) throw new Error('Browser request key must be 1–128 safe characters');
@@ -526,10 +602,27 @@ export class Store {
     this.db.prepare("UPDATE channel_commands SET status='delivered' WHERE source=? AND external_id=? AND status='finished'")
       .run(source,externalId);
   }
+  private transactionDepth=0;
+  /** Compose several trusted local state changes into one atomic decision.
+   * This is an internal in-process API, never exposed to model/plugin inputs. */
+  atomic<T>(fn:()=>T):T {return this.transaction(fn);}
   private transaction<T>(fn:()=>T):T {
-    this.db.exec('BEGIN IMMEDIATE');
-    try { const result=fn(); this.db.exec('COMMIT'); return result; }
-    catch(error) { this.db.exec('ROLLBACK'); throw error; }
+    // SAVEPOINTs let a higher-level action compose already-tested mutations
+    // without exposing partially created Missions on an exception.
+    const level=this.transactionDepth++;
+    const savepoint=`relay_${level}`;
+    try {
+      this.db.exec(level===0?'BEGIN IMMEDIATE':`SAVEPOINT ${savepoint}`);
+      try {
+        const result=fn();
+        this.db.exec(level===0?'COMMIT':`RELEASE SAVEPOINT ${savepoint}`);
+        return result;
+      }catch(error){
+        if(level===0)this.db.exec('ROLLBACK');
+        else this.db.exec(`ROLLBACK TO SAVEPOINT ${savepoint}; RELEASE SAVEPOINT ${savepoint}`);
+        throw error;
+      }
+    }finally{this.transactionDepth--;}
   }
   private raw(id: string): MissionRow {
     const r = this.db.prepare('SELECT * FROM missions WHERE id = ?').get(id) as MissionRow | undefined;

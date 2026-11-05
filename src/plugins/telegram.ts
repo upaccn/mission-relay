@@ -1,13 +1,14 @@
 import type { PluginManifest } from '../core/plugins.js';
-import {readFileSync} from 'node:fs';
 import {createHash} from 'node:crypto';
-import {join} from 'node:path';
 import { Engine } from '../core/engine.js';
 import { Store } from '../core/store.js';
-import { codexPreflight, type PreflightResult } from '../core/preflight.js';
+import type {PreflightResult} from '../core/executor-plugins.js';
 import { renderChatGPTHandoff } from '../core/chatgpt-handoff.js';
-import {missionCodexHome} from '../core/paths.js';
-import {connectChatPage,inspectChatPage,lastVisibleUserPromptSha256,type BrowserSession} from './chatgpt-browser.js';
+import {connectChatPage,inspectChatPage,lastVisibleUserPromptSha256,listConnectedChatCandidates,type BrowserSession} from './chatgpt-browser.js';
+import {adoptConnectedConversation} from '../core/chat-adoption.js';
+import {watchedBrowser,nextBrowserWatchCandidate,acknowledgeBrowserWatchCandidate,
+  orderedBrowserWatchCandidates,recordBrowserWatchAttempt,
+  type ConnectedChatCandidate} from '../core/browser-watch.js';
 import {driveChatConversation,executeBrowserRollover,browserFreshTaskPrompt} from '../core/browser-controller.js';
 import {drivePiAutopilot,pauseFailedPiPlanning} from '../core/pi-autopilot.js';
 import {AiosPiPlanner,type PiPlanner} from '../core/pi-planner.js';
@@ -17,11 +18,6 @@ export const telegramPluginManifest:PluginManifest={
   id:'channel.telegram',version:'0.1.0',apiVersion:1,kind:'channel',
   capabilities:['receive-command','notify'],
 };
-
-/** This is a fail-closed capability boundary, not a full TOML policy parser. */
-export function isolatedCodexHasMcpServers(config:string):boolean {
-  return /^\s*\[mcp_servers(?:\.|\])/m.test(config);
-}
 
 export interface TelegramUpdate {
   update_id:number;
@@ -99,7 +95,7 @@ function compactTelegramText(value:string,maxLength:number):string {
   return cleaned.length<=maxLength?cleaned:`${cleaned.slice(0,maxLength-1)}…`;
 }
 
-/** A native Codex mission must surface the verified outcome, not just an
+/** A native executor Mission must surface the verified outcome, not just an
  * opaque status code. Verifier conclusions are separate model judgment, not
  * independently proven real-world facts or deterministic checks. */
 export function formatNativeMissionNotification(m:Mission,event:MissionEvent):string {
@@ -112,7 +108,7 @@ export function formatNativeMissionNotification(m:Mission,event:MissionEvent):st
       .filter((x):x is string=>typeof x==='string').slice(0,3):[];
     return [
       ...base,
-      'Codex result (model + independent model verifier; not deterministic proof):',
+      'Native agent result (model + independent model verifier; not deterministic proof):',
       `Summary: ${compactTelegramText(m.lastSummary??'No summary available',450)}`,
       ...evidence.map((x,i)=>`Evidence ${i+1}: ${compactTelegramText(x,235)}`),
       `Details: /status ${m.id}`,
@@ -185,16 +181,20 @@ export function formatBrowserResultNotification(m:Mission,event:MissionEvent):st
 export class TelegramBridge {
   private activeMission:string|null=null;
   private activeTask:Promise<void>|null=null;
+  private lastBrowserWatchAt=0;
   private readonly source='telegram';
   constructor(
     readonly store:Store, readonly engine:Engine, readonly transport:TelegramTransport,
     readonly userId:number,readonly chatId:number,
-    private readonly preflight:()=>Promise<PreflightResult>=codexPreflight,
+    private readonly preflight:(missionId?:string)=>Promise<PreflightResult>=async()=>({
+      ok:false,source:'default',message:'No native executor plugin configured',
+    }),
     private readonly browserConnector:(url:string,options?:{browserId?:string})=>Promise<BrowserSession>=connectChatPage,
     private readonly piPlanner:PiPlanner=new AiosPiPlanner({
       sshHost:store.getMeta('telegram.pi.sshHost')||'UNCONFIGURED',
       project:store.getMeta('telegram.pi.project')||'/srv',
     }),
+    private readonly watchCandidates:(browserId:string)=>Promise<ConnectedChatCandidate[]>=listConnectedChatCandidates,
   ) {
     if(!Number.isSafeInteger(userId)||userId<=0||!Number.isSafeInteger(chatId)||chatId<=0)
       throw new Error('Set numeric Telegram owner user and private chat IDs');
@@ -238,7 +238,24 @@ export class TelegramBridge {
       // next-step plan were durably observed. Never reconstruct an uncertain Send.
       await this.recoverObservedPiCheckpoint();
       while(!signal?.aborted) {
-        try {await this.pollOnce();backoff=1000;}
+        try {
+          await this.pollOnce();
+          // Adopted ChatGPT missions may be queued by an independent local
+          // CLI. Only this leased foreground controller drives PI/browser.
+          if(!this.activeTask)await this.recoverObservedPiCheckpoint();
+          if(!this.activeTask&&watchedBrowser(this.store)&&
+            Date.now()-this.lastBrowserWatchAt>=15_000) {
+            this.lastBrowserWatchAt=Date.now();
+            try {await this.scanBrowserWatchOnce();}
+            catch {
+              // Discovery is best-effort and never delays Telegram polling
+              // through its transport backoff when Chrome is disconnected.
+              console.error('Browser watch scan unavailable; Telegram controller stays online');
+            }
+            if(!this.activeTask)await this.recoverObservedPiCheckpoint();
+          }
+          backoff=1000;
+        }
         catch(error) {
           const message=error instanceof Error?error.message:'Telegram transport error';
           if(/HTTP (401|403|409)/.test(message)) throw new Error(message);
@@ -255,22 +272,69 @@ export class TelegramBridge {
     }
   }
 
+  /** One candidate per scan; existing Telegram foreground lease remains the
+   * only PI/browser writer. A changed existing human chat is merely observed
+   * until its stable answer is independently checked. No extra daemon. */
+  async scanBrowserWatchOnce():Promise<string|null> {
+    if(this.activeMission||this.activeTask)return null;
+    const browserId=watchedBrowser(this.store);
+    if(!browserId)return null;
+    const inventory=await this.watchCandidates(browserId);
+    const ordered=orderedBrowserWatchCandidates(this.store,browserId,inventory);
+    let candidate=nextBrowserWatchCandidate(this.store,browserId,ordered);
+    // An already linked conversation is never treated as a new Mission just
+    // because the user or another agent has continued its visible history.
+    // Skip all already-linked candidates in this inventory, so one frequently
+    // updated old chat cannot starve a newly opened eligible conversation.
+    while(candidate){
+      const item=candidate;
+      if(!this.store.list().some(m=>this.store.chatLink(m.id)===item.url))break;
+      acknowledgeBrowserWatchCandidate(this.store,browserId,item);
+      candidate=nextBrowserWatchCandidate(this.store,browserId,ordered);
+    }
+    if(!candidate)return null;
+    recordBrowserWatchAttempt(this.store,browserId,candidate);
+    if(this.piPlanner instanceof AiosPiPlanner)await this.piPlanner.preflight();
+    const session=await this.browserConnector(candidate.url,{browserId});
+    try {
+      const adopted=await adoptConnectedConversation(
+        this.store,session.page,candidate.url,browserId,{
+          piEnabled:true,
+          stillAuthorized:()=>watchedBrowser(this.store)===browserId,
+          // This runs in the same SQL transaction as Mission creation.
+          // A crash or concurrent watch revocation cannot leave a newly
+          // adopted Mission without PI enablement and watch attribution.
+          onAdopted:missionId=>{
+            this.store.setMeta(`browser.watch.mission.${missionId}`,browserId);
+            acknowledgeBrowserWatchCandidate(this.store,browserId,candidate);
+          },
+        });
+      return adopted.missionId;
+    }catch(error) {
+      // A partial or generating answer should be re-evaluated on the next
+      // scan, not marked seen and permanently lost.
+      if(!/Cannot adopt|changed before adoption|already belongs/.test(
+        error instanceof Error?error.message:''))throw error;
+      return null;
+    }finally {
+      try{await session.close();}catch{console.error('Browser watch session cleanup warning');}
+    }
+  }
+
   private async recoverObservedPiCheckpoint():Promise<void> {
+    if(this.activeMission||this.activeTask)return;
     const candidates=this.engine.list().filter(m=>
       this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1' &&
       m.state==='PAUSED'&&!m.stopRequested&&!m.lastError&&
-      m.turnCount>0&&m.turnCount<=m.maxTurns&&
+      (m.turnCount>0||this.store.chatAdoption(m.id)!==null)&&
+      m.turnCount<=m.maxTurns&&
       (this.store.piPlan(m.id)?.round!==m.turnCount||
         (m.turnCount<m.maxTurns&&
          ['NEXT','HANDOFF'].includes(this.store.piPlan(m.id)?.action??''))));
     if(!candidates.length)return;
-    if(candidates.length>1){
-      console.error('Multiple PI checkpoints need recovery; no automatic browser Send is permitted');
-      for(const candidate of candidates)
-        pauseFailedPiPlanning(this.store,candidate.id,'Multiple PI recovery candidates require operator inspection');
-      return;
-    }
-    const m=candidates[0]!;
+    // Queued adoptions are processed sequentially, not treated as conflicting
+    // writers. Per-conversation SQLite locks still prevent duplicate Sends.
+    const m=candidates.sort((a,b)=>a.createdAt.localeCompare(b.createdAt))[0]!;
     const url=this.store.chatLink(m.id),browserId=this.store.chatBrowserBinding(m.id);
     if(!url||!browserId){
       pauseFailedPiPlanning(this.store,m.id,'PI recovery source URL or bound Chrome profile is absent');
@@ -381,6 +445,8 @@ export class TelegramBridge {
       const finished=this.store.events(m.id).some(e=>e.type==='pi.autopilot_finished');
       return !finished;
     });
+    if(unresolved&&this.store.chatAdoption(unresolved.id)!==null)
+      return this.queuePiOwnerText(goal,commandId,unresolved.id);
     if(unresolved)
       throw new Error(`An earlier PI Mission ${unresolved.id} is not terminal (${unresolved.state}); inspect its exact Chrome/SQLite receipt before starting another. No browser Send was submitted.`);
     if(this.piPlanner instanceof AiosPiPlanner &&
@@ -426,14 +492,15 @@ export class TelegramBridge {
     }
   }
 
-  private queuePiOwnerText(text:string,commandId:string):string {
-    const id=this.activeMission!;
+  private queuePiOwnerText(text:string,commandId:string,missionId:string|null=this.activeMission):string {
+    const id=missionId;
+    if(!id)throw new Error('No PI Mission is currently available for owner instructions');
     if(this.store.getMeta(`pi.autopilot.enabled.${id}`)!=='1')
       return this.alreadyRunning(text);
     if(!text||text.length>1500)
       throw new Error('PI instruction must contain 1–1500 characters');
     const accepted=this.store.queuePiOwnerDirective(id,commandId,text);
-    return accepted?`Owner instruction queued for PI Mission ${id}.\nPI will integrate it after the current ChatGPT round before another Send.\nProgress: /status ${id}`
+      return accepted?`Owner instruction queued for PI Mission ${id}.\nPI will integrate it before the next ChatGPT Send (a paused Mission requires an active foreground controller).\nProgress: /status ${id}`
       :`Instruction already queued for PI Mission ${id}; no duplicate.\nProgress: /status ${id}`;
   }
 
@@ -483,39 +550,27 @@ export class TelegramBridge {
     }
   }
 
-  /** Codex tasks use the operator-approved local read-only workspace.
-   * There is no silent ChatGPT-to-Codex fallback or workspace selection by AI. */
-  private async startCodexTask(task:string,commandId:string):Promise<string> {
+  /** The native executor is an optional independently installed plugin.
+   * Neither the browser-first path nor this channel selects a vendor. */
+  private async startAgentTask(task:string,commandId:string):Promise<string> {
     if(this.activeMission)return this.alreadyRunning(task.trim());
     const goal=task.trim();
-    if(!goal||goal.length>1500)throw new Error('Codex task must be 1–1500 characters');
-    const workspace=this.store.getMeta('telegram.codex.workspace');
-    if(!workspace)throw new Error('No approved Codex workspace; configure telegram-codex-workspace locally first');
-    // Codex filesystem read-only does not govern external MCP tools. Deny a
-    // remotely launched task when MCP servers are configured in its isolated
-    // profile: their individual read/write capabilities cannot be inferred.
-    let config='';
-    try{config=readFileSync(join(missionCodexHome(),'config.toml'),'utf8');}
-    catch(error){
-      if((error as NodeJS.ErrnoException).code!=='ENOENT')throw new Error('Cannot inspect isolated Codex tool configuration');
-    }
-    if(isolatedCodexHasMcpServers(config))
-      throw new Error('Remote Codex task refused: isolated profile has external MCP servers with unverified write permissions');
-    const ready=await this.preflight();
-    if(!ready.ok)throw new Error(ready.message);
-    if(this.activeMission)return this.alreadyRunning(goal);
-    const m=this.engine.create({
-      goal,acceptance:['Provide evidence for the requested read-only project analysis; report unverified claims'],
+    if(!goal||goal.length>1500)throw new Error('Agent task must contain 1–1500 characters');
+    const workspace=this.store.getMeta('telegram.agent.workspace');
+    if(!workspace)throw new Error('No approved native agent workspace; configure telegram-agent-workspace locally');
+    const preflight=await this.preflight();
+    if(!preflight.ok)throw new Error(preflight.message);
+    const m=this.engine.create({goal,
+      acceptance:['Provide an evidence-based read-only result in the approved workspace'],
       workspace,sandbox:'read-only',mode:'supervised',maxTurns:1,
-      requestKey:`telegram-codex-${commandId}`,checks:[],
-    });
-    // Synchronously claim before acknowledging the command. No remote writes.
-    const taskPromise=this.engine.run(m.id,m.version);
+      requestKey:`telegram-agent-${commandId}`,checks:[]});
+    const execution=this.engine.run(m.id,m.version);
     this.activeMission=m.id;
-    this.activeTask=taskPromise.then(()=>{}).catch(error=>{
-      console.error(`Codex task ${m.id}: ${error instanceof Error?error.message:'unknown error'}`);
+    this.activeTask=execution.then(()=>{}).catch(error=>{
+      console.error(`Native agent Mission ${m.id}: ${error instanceof Error?error.message:'unknown error'}`);
     }).finally(()=>{this.activeMission=null;this.activeTask=null;});
-    return `Codex Mission ${m.id} accepted (one read-only turn, configured workspace).\nThe model is running; this is not a completion confirmation.\nFinal outcome will be delivered automatically. Do not send the same task again.\nProgress: /status ${m.id}`;
+    return `Native Agent Mission ${m.id} accepted (one supervised read-only turn).\n`+
+      `Executor plugin is locally configured. Final evidence follows separately.\nStatus: /status ${m.id}`;
   }
 
   private alreadyRunning(goal:string):string {
@@ -541,29 +596,31 @@ export class TelegramBridge {
       '/auto <task> — start PI-managed read-only ChatGPT autopilot',
       'While PI is working, send plain text to queue owner instructions for its next decision',
       '/new <task> — same as plain text, one new ChatGPT conversation',
-      '/codex <task> — one read-only Codex turn in a locally approved workspace',
-      'Codex: <task> or ChatGPT: <task> — natural-language provider prefixes',
+      '/agent <task> — optional installed native executor (no vendor required)',
+      'Agent: <task> or ChatGPT: <task> — route only when requested',
       '/status <mission-id> — shows current revision',
       '/handoff <mission-id> — link and manual prompt for existing ChatGPT chat',
-      '/continue <mission-id> v<revision> — Codex or linked ChatGPT Playwriter (up to 3 turns)',
+      '/continue <mission-id> v<revision> — native executor or linked ChatGPT (up to 3 turns)',
       '/pause <mission-id> — best-effort stop (no revision needed)',
       '/resume <mission-id> v<revision> — reopens a paused mission without running',
       '/instruct <mission-id> v<revision> <instruction>',
       '/cancel <mission-id> v<revision> — only an inactive mission',
       'Reconciliation, secrets and high-risk approvals are CLI-only.',
     ].join('\n');
-    if(/^codex\s*[:：]/i.test(clean))
-      return this.startCodexTask(clean.replace(/^codex\s*[:：]\s*/i,''),commandId);
+    if(/^agent\s*[:：]/i.test(clean))
+      return this.startAgentTask(clean.replace(/^agent\s*[:：]\s*/i,''),commandId);
     if(/^chatgpt\s*[:：]/i.test(clean))
       return this.startPiChat(clean.replace(/^chatgpt\s*[:：]\s*/i,''),commandId);
     if(cmd==='/auto')return this.startPiChat(clean.slice(5),commandId);
     if(cmd==='/new')return this.startFreshChat(clean.slice(4),commandId);
     if(!cmd.startsWith('/'))return this.startPiChat(clean,commandId);
-    if(cmd==='/codex')return this.startCodexTask(clean.slice(6),commandId);
+    if(cmd==='/agent')return this.startAgentTask(clean.slice(6),commandId);
     if(cmd==='/list') {
       const all=this.engine.list().slice(0,10);
       return all.length?all.map(m=>`${m.id} — ${m.state} v${m.version}: ${m.goal.slice(0,100)}`).join('\n'):'No missions yet.';
     }
+    if(!['/status','/handoff','/pause','/resume','/cancel','/instruct','/continue'].includes(cmd))
+      throw new Error('Unknown command. Send /help. Native agents use /agent, not a vendor-specific command.');
     if(!id || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Provide a complete mission UUID');
     const m=this.engine.get(id);
     if(cmd==='/status') return [`${m.id} [${m.state}] v${m.version}`,`Turn ${m.turnCount}/${m.maxTurns}`,
@@ -589,8 +646,6 @@ export class TelegramBridge {
       }
       return `Pause recorded: ${this.engine.pause(id).state}`;
     }
-    if(!['/pause','/resume','/cancel','/instruct','/continue'].includes(cmd))
-      throw new Error('Unknown command. Send /help.');
     const revision=words.shift();
     if(!revision || !/^v(0|[1-9]\d*)$/.test(revision) || !Number.isSafeInteger(Number(revision.slice(1))))
       throw new Error('Expected v<revision> from a fresh /status command (for example v3)');
@@ -609,8 +664,9 @@ export class TelegramBridge {
       const instruction=words.join(' ').trim();
       if(!instruction || instruction.length>1500) throw new Error('Instruction must contain 1–1500 characters');
       if(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'){
-        if(id!==this.activeMission)throw new Error('PI Mission is not currently active; no instruction was queued');
-        return this.queuePiOwnerText(instruction,commandId);
+        if(id!==this.activeMission&&this.store.chatAdoption(id)===null)
+          throw new Error('PI Mission is not currently active; no instruction was queued');
+        return this.queuePiOwnerText(instruction,commandId,id);
       }
       return `Instruction saved (state ${this.engine.instruct(id,instruction,expectedVersion).state}).`;
     }
@@ -650,7 +706,7 @@ export class TelegramBridge {
           throw error;
         }
       }
-      const preflight=await this.preflight();
+      const preflight=await this.preflight(id);
       if(!preflight.ok) throw new Error(preflight.message);
       // Preflight is async; reject commands made stale by another local operator.
       if(this.engine.get(id).version!==expectedVersion) throw new Error('Mission revision changed during preflight; run /status again');

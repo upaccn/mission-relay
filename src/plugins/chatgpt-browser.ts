@@ -42,20 +42,23 @@ export function canonicalVisibleUserPrompt(text:string,headingWrapper:boolean):s
   return withoutHeader.replace(/\n(?:…|\.\.\.)\s*\nShow more\s*$/u,'').trim();
 }
 
+/** User-authored last visible prompt, excluding ChatGPT accessibility labels.
+ * An adoption goal can be seeded from it without inventing a new task. */
+export async function lastVisibleUserPrompt(page:Page):Promise<string|null>{
+  const legacy=page.locator(USER_SELECTOR);
+  if(await legacy.count())return canonicalVisibleUserPrompt(
+    await legacy.last().innerText({timeout:5000}),false);
+  const headings=userHeadings(page);
+  if(!await headings.count())return null;
+  return canonicalVisibleUserPrompt(
+    await headings.last().locator('xpath=..').innerText({timeout:5000}),true);
+}
+
 /** Read-only recovery guard: match the last submitted prompt hash, never
  * assume that an unchanged assistant message means no human intervened. */
 export async function lastVisibleUserPromptSha256(page:Page):Promise<string|null> {
-  const legacy=page.locator(USER_SELECTOR);
-  let last:string;
-  let headingWrapper=false;
-  if(await legacy.count())last=await legacy.last().innerText({timeout:5000});
-  else {
-    const headings=userHeadings(page);
-    if(!await headings.count())return null;
-    last=await headings.last().locator('xpath=..').innerText({timeout:5000});
-    headingWrapper=true;
-  }
-  return createHash('sha256').update(canonicalVisibleUserPrompt(last,headingWrapper)).digest('hex');
+  const last=await lastVisibleUserPrompt(page);
+  return last===null?null:createHash('sha256').update(last).digest('hex');
 }
 
 export interface ChatPageSnapshot {
@@ -73,6 +76,36 @@ export interface BrowserReceipt extends ChatPageSnapshot {
 export interface BrowserSession {
   page:Page;
   close():Promise<void>;
+}
+
+/** Read-only inventory of Playwriter-enabled ChatGPT tabs in ONE pinned
+ * Chrome profile. Tab groups do not restrict this inventory. An unenabled
+ * Chrome tab is NOT exposed by the public Playwriter extension API. */
+export async function listConnectedChatCandidates(browserId:string):Promise<Array<{
+  url:string;urlSha256:string;duplicate:boolean;lastUserSha256:string|null
+}>> {
+  if(!/^[A-Za-z0-9:._-]{1,200}$/.test(browserId))
+    throw new Error('A pinned Chrome browser ID is required');
+  process.env.PLAYWRITER_AUTO_ENABLE='false';
+  process.env.PLAYWRITER_TELEMETRY ??='0';
+  const {connectViaExtension}=await import('playwriter');
+  const connection=await connectViaExtension({closeTabsOnEnd:false,tabGroup:'mission-relay',
+    selectBrowser:browsers=>browsers.find(browser=>browser.id===browserId)});
+  try {
+    const pages=connection.browser.contexts().flatMap(context=>context.pages())
+      .filter(page=>!page.isClosed())
+      .flatMap(page=>{try{return [{page,url:normalizeChatGPTUrl(page.url())}];}catch{return [];}});
+    const result:Array<{url:string;urlSha256:string;duplicate:boolean;lastUserSha256:string|null}>=[];
+    for(const {page,url} of pages) {
+      // One malformed/changed page cannot prevent discovery of other tabs.
+      let lastUserSha256:string|null=null;
+      try {lastUserSha256=await lastVisibleUserPromptSha256(page);}
+      catch {/* A loading, inaccessible or unsupported DOM is not adoptable. */}
+      result.push({url,urlSha256:createHash('sha256').update(url).digest('hex'),
+        duplicate:pages.filter(item=>item.url===url).length!==1,lastUserSha256});
+    }
+    return result;
+  }finally{await closeWithoutMaskingFailure(()=>connection.close());}
 }
 
 /** Cleanup is best-effort: an interrupted relay must not replace the more useful

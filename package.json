@@ -19,7 +19,6 @@
     "start": "node dist/cli.js"
   },
   "dependencies": {
-    "@openai/codex-sdk": "0.166.0",
     "playwriter": "0.9.0"
   },
   "devDependencies": {

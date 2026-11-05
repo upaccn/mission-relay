@@ -13,11 +13,13 @@ The Telegram adapter is a single-user **foreground process**. It uses the offici
 
 From another terminal you can run `node dist/cli.js channel-status` to verify the poller's process is present, the last durable Telegram update cursor and the last notification event cursor **without printing the Bot Token**.
 
-If the computer uses a local HTTP proxy for Codex's WebSocket traffic, first set `MISSION_RELAY_CODEX_PROXY` in this same terminal (for example `http://127.0.0.1:20808`). The Telegram process forwards it **only** to its Codex subprocess. Restarting the foreground Telegram channel is necessary after changing this setting; no system-wide proxy change is needed.
+Native coding-agent plugins configure their own network and authentication. The base Telegram controller does not install or configure a Codex subprocess, require its SDK or set a system-wide proxy.
 
 Do not enable a startup service or publish credentials before an end-to-end mobile test. The current bridge is opt-in, not an unattended-production setup.
 
 ## Supported commands
+
+The vendor-neutral optional native route is `/agent <task>` or `Agent: <task>`, and requires an independently installed executor plugin plus a locally approved `telegram-agent-workspace`. Plain text and `ChatGPT:` remain browser-first without native executor selection. Vendor-specific aliases (`/codex`, `Codex:`) are **not** supported by the new CLI; they were used in earlier prototypes. See [plugin API](plugin-api.md).
 
 `/list`, `/status <uuid>`, `/handoff <uuid>`, `/continue <uuid> v<revision>`, `/pause <uuid>`, `/resume <uuid> v<revision>`, `/instruct <uuid> v<revision> <text>`, `/cancel <uuid> v<revision>`.
 
@@ -44,28 +46,43 @@ The route is persisted **only in local SQLite** and can be revoked with `node .\
 
 The first browser dispatch also requires a successful bounded, non-model `pictl doctor --json` preflight over the same SSH path. This checks health but **does not** certify the subsequent model call or every future network request. Each PI inference is separately bounded (120-second remote inference, 135-second SSH deadline). PI is a coordinator, not an independent tool-based verifier of external business outcomes.
 
+### Optional Chrome-profile adoption watch (v0.2 development)
+
+The operator may locally authorize all **Playwriter-enabled ChatGPT tabs in one exact Chrome profile**, without any Chrome tab-group or tag requirement:
+
+```powershell
+node .\dist\cli.js browser-list
+node .\dist\cli.js browser-watch --browser-id <approved-Chrome-id>
+node .\dist\cli.js browser-watch-status
+node .\dist\cli.js browser-watch --clear
+```
+
+The first enable establishes a local baseline and does **not** launch earlier conversations. The existing leased Telegram foreground poller then checks for newly connected ChatGPT conversations or newly submitted human prompts about every 15 seconds when no other Mission is active. It checks for duplicate URLs and a stable existing answer before a zero-Send adoption. PI reviews that original human response, and only PI NEXT may authorize an additional ChatGPT Send in the same tab. Multiple eligible chats are serialized; a paused or uncertain Send is never repeated.
+
+Disabling the watch also requests a stop before subsequent turns on watch-created Missions. Chrome disconnects are isolated from the Telegram transport: they should not prevent the bot from accepting pause or status messages. This workflow remains **unverified on live Chrome with the revised code**. Playwriter's public extension API exposes only enabled tabs, not every ordinary Chrome tab; a new tab that was never enabled cannot be detected merely from profile-level authorization.
+
 While the PI Mission is active, ordinary Telegram text is queued as authenticated owner guidance **for PI**, not sent into an in-progress ChatGPT response. The controller persists every update ID and includes queued notes in the next PI decision; if a new note arrives while PI is thinking, the controller re-plans before the next browser Send. `/status <id>` reports the PI decision and pending note count. `/pause <id>` prevents further turns; if you explicitly want to handle the next step yourself, tell PI in natural language or issue `/pause` for deterministic stopping. `/continue` and native `/resume` cannot bypass PI planning on a PI-owned Mission.
 
-After a foreground restart, a PI Mission with a **fully observed** prior ChatGPT response is recovered only after checking the exact approved tab's latest user-prompt SHA and full assistant-answer SHA against SQLite. A durable PI `NEXT` decision can then resume the next unsent turn; if the previous response was observed but PI had not finished evaluating it, PI reviews that response without another ChatGPT Send. Any missing tab, changed history, ambiguous Send, unavailable PI, or missing authorization **fails closed** and informs the owner; there is no automatic replay. After a crash, inspect `/status` and do not submit the original task again.
+After a foreground restart, a PI Mission with a **fully observed** prior ChatGPT response, including an explicitly adopted zero-Send human conversation, is recovered only after checking the exact approved tab's latest user-prompt SHA and full assistant-answer SHA against SQLite. A durable PI `NEXT` decision can then resume the next unsent turn; if PI had not yet reviewed the initial answer, it reviews the existing human reply first without a synthetic browser Send. Any missing tab, changed history, ambiguous Send, unavailable PI, or missing authorization **fails closed** and informs the owner; there is no automatic replay. After a crash, inspect `/status` and do not submit the original task again.
 
 The ChatGPT read-only restriction is **prompt-level**, not a technical sandbox for connectors already installed in the owner's ChatGPT account. Mission Relay does not invoke external connector writes itself, but cannot independently constrain what tools ChatGPT may have available in that conversation. Keep write-capable connected apps disabled or separately approval-gated for high-risk use. A model-produced `DONE` marker is an observed response, not an independently verified real-world result.
 
-To revoke the owner-approved source, run `node .\dist\cli.js telegram-anchor --clear` locally. The same principle applies to Codex workspaces: `node .\dist\cli.js telegram-codex-workspace --clear`. Disabling Playwriter on the original tab also prevents the new-chat operation from proceeding.
+To revoke the owner-approved source, run `node .\dist\cli.js telegram-anchor --clear` locally. The optional native executor workspace can be revoked with `telegram-agent-workspace --clear`. Disabling Playwriter on the original tab also prevents the new-chat operation from proceeding.
 
-For the already installed **Codex SDK** executor, locally authorize one workspace using:
+For an independently installed **native executor plugin**, locally authorize one workspace using:
 
 ```powershell
-node .\dist\cli.js telegram-codex-workspace --workspace 'C:\path\to\approved\project'
+node .\dist\cli.js telegram-agent-workspace --workspace 'C:\path\to\approved\project'
 node .\dist\cli.js doctor
 ```
 
-Then `/codex <natural-language task>` runs one supervised, read-only native Codex turn, without opening Chrome or silently switching providers. The isolated Codex `CODEX_HOME` requires separate user authorization/login; `doctor` does **not** prove the model is authenticated or reachable. A read-only filesystem sandbox does not constrain external write-capable MCP connectors; keep this dedicated Codex profile restricted to read-only tools. Other AI models require an explicit, scoped `AgentAdapter`, not merely a natural-language model name.
+Then `/agent <natural-language task>` runs one supervised, read-only native turn, without opening Chrome or silently switching providers. The plugin must handle authentication and enforce its own read-only tools; `doctor` does **not** prove that external connectors cannot write. An agent runtime and its model provider are separate choices.
 
-For conversational input without a slash command, the explicit leading prefixes `Codex: <task>` (also `Codex：`) and `ChatGPT: <task>` select the route deterministically. Plain text defaults to PI-managed ChatGPT, while `Codex:` continues to use the independent native Codex path. The system does not use another model just to guess the route.
+For conversational input without a slash command, `Agent: <task>` and `ChatGPT: <task>` select native plugin or browser-first routes. Plain text defaults to PI-managed ChatGPT; unrecognized vendor-specific slash commands fail closed.
 
 After updating code, `npm run build` and restart the existing foreground Telegram session to load these commands. No new server or Telegram webhook is required.
 
-`/handoff` returns a locally linked ChatGPT conversation URL and a manual continuation prompt. `/continue` on a linked Mission executes an optional **Playwriter browser continuation** (up to three turns) in that exact operator-enabled Chrome tab; on an unlinked Mission, it uses the existing Codex executor. There is never silent fallback between the two. **Before remote browser continuation, bind the intended Chrome profile locally using `browser-list` then `browser-bind`; an unbound Mission is rejected without querying Chrome.** See [ChatGPT browser control](playwriter-evaluation.md).
+`/handoff` returns a locally linked ChatGPT conversation URL and a manual continuation prompt. `/continue` on a linked Mission executes a **Playwriter browser continuation** (up to three turns) in that exact operator-enabled Chrome tab; on an unlinked Mission, it requires a separately installed native executor plugin. There is never silent fallback. **Before browser continuation, bind the intended Chrome profile locally using `browser-list` then `browser-bind`.** See [ChatGPT browser control](playwriter-evaluation.md).
 
 **Revision required:** All mutating commands **except emergency `/pause`** require the current mission revision (for example, `/continue 123e4567-e89b-42d3-a456-426614174000 v0`). First issue `/status <uuid>`; it prints the current revision as `v0`, `v1`, etc. After any state/event change, retrieve the latest revision again. A stale or missing revision is rejected, rather than reinterpreted against a changed mission. `/list` also shows the current revision. `/pause <uuid>` intentionally remains revision-free so a stop request works even while turn events are advancing the revision. This is an intentional protocol change from the initial phone acceptance trial; upgrade the foreground poller before using the new syntax.
 

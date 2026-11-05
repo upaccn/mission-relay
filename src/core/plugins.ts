@@ -14,7 +14,7 @@ export class PluginRegistry<T> {
   private readonly plugins = new Map<string, {manifest: PluginManifest; adapter: T}>();
   register(manifest: PluginManifest, adapter: T): void {
     if (manifest.apiVersion !== PROTOCOL_VERSION) throw new Error(`Unsupported plugin API version: ${manifest.apiVersion}`);
-    if (!/^[a-z][a-z0-9]*(?:[.-][a-z][a-z0-9]*)+$/.test(manifest.id)) throw new Error('Plugin id must be namespaced, such as executor.codex');
+    if (!/^[a-z][a-z0-9]*(?:[.-][a-z][a-z0-9]*)+$/.test(manifest.id)) throw new Error('Plugin id must be namespaced, such as executor.example');
     if (!/^\d+\.\d+\.\d+/.test(manifest.version)) throw new Error('Plugin version must use semver');
     if (new Set(manifest.capabilities).size !== manifest.capabilities.length) throw new Error('Duplicate plugin capabilities');
     if (this.plugins.has(manifest.id)) throw new Error(`Plugin already registered: ${manifest.id}`);
