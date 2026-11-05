@@ -25,11 +25,19 @@ pwsh -NoProfile -File .\scripts\windows\telegram-task.ps1 -Action Status
 # the token once, without typing the token into a command or ChatGPT.
 pwsh -NoProfile -File .\scripts\windows\telegram-task.ps1 -Action Enroll
 
+# If direct Node.js HTTPS is unavailable after disabling a host TUN,
+# set only this Telegram worker's local HTTP proxy (no system-wide changes):
+pwsh -NoProfile -File .\scripts\windows\telegram-task.ps1 -Action SetProxy -ProxyUrl 'http://127.0.0.1:20808'
+
 # Later, after a tested build and when Missions are idle:
 pwsh -NoProfile -File .\scripts\windows\telegram-task.ps1 -Action Restart
 ```
 
 `Enroll` keeps the token **only in a Windows-user DPAPI-encrypted local file** under `%LOCALAPPDATA%\MissionRelay\telegram-task`, stores the numeric owner allowlist locally, and registers one limited-privilege **interactive-logon** task. It then starts the poller and checks the SQLite lease. The task uses Node LTS through the Scoop `current` path and restarts on unexpected exit at most three times with a one-minute interval; it does not restart forever, run when no user is logged on, or grant browser permissions. Task state is observable through `-Action Status` and Windows Task Scheduler. `-Action Start` starts an inactive enrolled task; `-Action Remove` unregisters the task but leaves encrypted credentials intact for intentional re-enrollment. Credentials must be rotated or removed separately when retiring the bot.
+
+`SetProxy` requires an already-enrolled task and only accepts a numeric-port, loopback `http://127.0.0.1:<port>` endpoint. It changes a local non-secret field in the owner's protected settings; the token is not read or rewritten. A subsequent gated `Restart` loads `HTTP_PROXY`, `HTTPS_PROXY`, `NODE_USE_ENV_PROXY=1`, and `NO_PROXY=localhost,127.0.0.1,::1` for the **Telegram worker process only**. This uses Node 24+ built-in environment-proxy handling, without an HTTP client dependency or host-wide proxy setting. It does not alter the Playwriter relay, Chrome or SSH route. Keep the local proxy available whenever the task is running. If it is late to start after login, the existing Telegram transport retries transient network failures with exponential backoff capped at 30 seconds; it will not silently fall back to a blocked direct route. Task Scheduler's separate bounded crash retries apply only if the process exits. A running task and an established proxy TCP connection do not, by themselves, prove Bot API authentication or message receipt.
+
+If direct HTTPS later becomes available without the proxy, `-Action ClearProxy` removes only that local proxy setting; run the same idle-gated `-Action Restart` to activate the change. Neither command changes the DPAPI token or the owner allowlist.
 
 `Restart` checks that no Mission is RUNNING/VERIFYING, no Telegram reply is undelivered and no browser request remains `reserved`. It refuses a non-task poller or other detected unsafe state; it does not reissue Telegram commands or ChatGPT browser Sends. This is an **idle-only gate**, not an atomic drain lock: do not schedule `Restart` concurrently with a new incoming Telegram command or an automatic watched-browser dispatch. A further maintenance/drain protocol would be needed for strictly race-free unattended rolling upgrades. Automatic task crash restart is distinct from installing new compiled code; only a controlled `Restart` activates a newly built CLI.
 

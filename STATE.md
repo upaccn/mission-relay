@@ -2,6 +2,13 @@
 
 Updated: 2026-11-05
 
+## 2026-11-05 Telegram Windows task enrollment and TUN-off proxy
+
+- The owner completed one-time private Windows enrollment. Direct GMK3 readback showed the `MissionRelay-Telegram` Scheduled Task RUNNING, valid SQLite single-poller lease and zero pending replies. The previous credential-less foreground process was absent.
+- With v2rayN TUN disabled, **direct Node.js HTTPS to public `api.telegram.org` timed out** (`UND_ERR_CONNECT_TIMEOUT`); Node 26 using `--use-env-proxy` and `http://127.0.0.1:20808` returned HTTP 200. The proxy also responded to cURL. Added optional local-only `SetProxy` to the existing user-scoped Scheduled Task, using process-level Node environment-proxy variables and a loopback bypass rather than system-wide proxy changes.
+- On the owner GMK3 host the new private proxy setting was applied, the idle restart preflight passed, and the Scheduled Task restarted **once** successfully from PID 40920 to PID 6884. PID 6884 had an established TCP connection to `127.0.0.1:20808`; `channel-status` reported `pollerPresent: true`, zero pending replies. The separately running Playwriter relay retained its local listener and connected Chrome client; the profile watch remained enabled.
+- **Evidence limits:** The attempt to perform an authenticated Telegram Bot API readback was not available through the remote tooling, so `getMe`, actual private incoming updates, outgoing `sendMessage`, scheduled crash recovery and browser-continuation acceptance after this proxy change are not independently verified. No Telegram message was sent as part of this maintenance.
+
 ## 2026-11-05 Windows Telegram lifecycle preparation (not activated)
 
 - Direct GMK3 inspection found `channel-status` with `pollerPresent: false` and `pendingReplies: 0`; no Telegram Scheduled Task/service was registered. The running project-owned Playwriter relay (separate from Telegram) held the Sharp DLL that blocked `npm ci`.

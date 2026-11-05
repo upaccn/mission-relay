@@ -1,8 +1,9 @@
 # Optional Windows interactive-user lifecycle for the Mission Relay Telegram poller.
 # No task or credentials are created until the owner runs -Action Enroll locally.
 param(
-    [ValidateSet('Enroll','Worker','Status','Start','Restart','Remove')]
-    [string]$Action = 'Status'
+    [ValidateSet('Enroll','Worker','Status','Start','Restart','SetProxy','ClearProxy','Remove')]
+    [string]$Action = 'Status',
+    [string]$ProxyUrl = ''
 )
 
 Set-StrictMode -Version Latest
@@ -16,6 +17,14 @@ $cli = Join-Path $root 'dist\cli.js'
 $privateDir = Join-Path $env:LOCALAPPDATA 'MissionRelay\telegram-task'
 $tokenFile = Join-Path $privateDir 'bot-token.dpapi'
 $settingsFile = Join-Path $privateDir 'owner.json'
+
+function Assert-LocalProxy([string]$url) {
+    if ($url -notmatch '^http://127\.0\.0\.1:([0-9]{1,5})$') {
+        throw 'Proxy must be a local HTTP endpoint such as http://127.0.0.1:20808'
+    }
+    $port = [int]$Matches[1]
+    if ($port -lt 1 -or $port -gt 65535) { throw 'Invalid local proxy port' }
+}
 
 function Assert-Prerequisites {
     if (-not $IsWindows) { throw 'Windows required' }
@@ -72,6 +81,16 @@ switch ($Action) {
         if ($owner.userId -notmatch '^[1-9]\d*$' -or $owner.chatId -notmatch '^[1-9]\d*$') {
             throw 'Invalid owner allowlist'
         }
+        $configuredProxy = [string]($owner.PSObject.Properties['proxyUrl']?.Value)
+        if ($configuredProxy) {
+            Assert-LocalProxy $configuredProxy
+            # Node.js built-in fetch honors these when NODE_USE_ENV_PROXY=1
+            # on supported Node 24+ releases. Loopback browser relay remains direct.
+            $env:HTTP_PROXY = $configuredProxy
+            $env:HTTPS_PROXY = $configuredProxy
+            $env:NO_PROXY = 'localhost,127.0.0.1,::1'
+            $env:NODE_USE_ENV_PROXY = '1'
+        }
         $secure = (Get-Content -LiteralPath $tokenFile -Raw -Encoding utf8).Trim() | ConvertTo-SecureString
         $pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
         try { $env:MISSION_RELAY_TELEGRAM_BOT_TOKEN = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer) }
@@ -86,6 +105,9 @@ switch ($Action) {
             Remove-Item Env:MISSION_RELAY_TELEGRAM_BOT_TOKEN -ErrorAction SilentlyContinue
             Remove-Item Env:MISSION_RELAY_TELEGRAM_USER_ID -ErrorAction SilentlyContinue
             Remove-Item Env:MISSION_RELAY_TELEGRAM_CHAT_ID -ErrorAction SilentlyContinue
+            if ($configuredProxy) {
+                Remove-Item Env:HTTP_PROXY,Env:HTTPS_PROXY,Env:NO_PROXY,Env:NODE_USE_ENV_PROXY -ErrorAction SilentlyContinue
+            }
         }
         # Unexpected normal process exit is also a failure, eligible for bounded task restart.
         if ($exitCode -ne 0) { exit $exitCode }
@@ -142,7 +164,27 @@ switch ($Action) {
         $channel = Get-ChannelStatus
         [pscustomobject]@{ installed=[bool]$task; taskState=if($task){[string]$task.State}else{'Absent'};
             pollerPresent=$channel.pollerPresent; pollerPid=$channel.pollerPid;
-            pendingReplies=$channel.pendingReplies; credentialsEnrolled=((Test-Path $tokenFile) -and (Test-Path $settingsFile)) }
+            pendingReplies=$channel.pendingReplies; credentialsEnrolled=((Test-Path $tokenFile) -and (Test-Path $settingsFile));
+            proxyUrl=if(Test-Path $settingsFile){ [string]((Get-Content $settingsFile -Raw -Encoding utf8 | ConvertFrom-Json).PSObject.Properties['proxyUrl']?.Value) }else{''} }
+    }
+    'SetProxy' {
+        Assert-Prerequisites
+        $null = Assert-OurTask
+        Assert-LocalProxy $ProxyUrl
+        if (-not (Test-Path -LiteralPath $settingsFile)) { throw 'Owner enrollment is incomplete' }
+        $owner=Get-Content -LiteralPath $settingsFile -Raw -Encoding utf8 | ConvertFrom-Json
+        $owner | Add-Member -NotePropertyName proxyUrl -NotePropertyValue $ProxyUrl -Force
+        $owner | ConvertTo-Json -Compress | Set-Content -LiteralPath $settingsFile -Encoding utf8
+        Write-Output 'Private Telegram worker proxy configured; restart the task after the idle preflight to apply it.'
+    }
+    'ClearProxy' {
+        Assert-Prerequisites
+        $null = Assert-OurTask
+        if (-not (Test-Path -LiteralPath $settingsFile)) { throw 'Owner enrollment is incomplete' }
+        $owner=Get-Content -LiteralPath $settingsFile -Raw -Encoding utf8 | ConvertFrom-Json
+        $owner.PSObject.Properties.Remove('proxyUrl')
+        $owner | ConvertTo-Json -Compress | Set-Content -LiteralPath $settingsFile -Encoding utf8
+        Write-Output 'Private Telegram worker proxy removed; restart the task after the idle preflight to apply it.'
     }
     'Start' {
         Assert-Prerequisites

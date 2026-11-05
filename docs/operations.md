@@ -11,6 +11,8 @@ On Windows, **do not run `npm ci` in a checkout while a Telegram poller or Playw
 
 For an operator-enrolled interactive Windows Telegram task, use `scripts/windows/telegram-task.ps1 -Action Status|Restart` rather than asking the owner to repeatedly re-enter private credentials. The task's restart gate refuses observed in-flight operations; do not confuse it with a race-free production drain. This **optional task is not installed automatically**, and it does not manage the separate Playwriter server. See [Telegram task lifecycle](telegram.md#optional-windows-task-lifecycle-requires-local-owner-enrollment).
 
+After disabling a VPN/TUN on a host where Node HTTPS cannot connect directly, verify a local HTTP proxy with `curl.exe -x http://127.0.0.1:<port> https://api.telegram.org` and Node's built-in `--use-env-proxy` before changing the worker. The optional Windows task supports `-Action SetProxy -ProxyUrl 'http://127.0.0.1:<port>'` followed by an idle-gated `-Action Restart`. Inspect the new PID and its outbound loopback connection; neither process liveness nor public Telegram endpoint access confirms authenticated Bot API delivery. Do not set global `HTTP_PROXY` for unrelated processes.
+
 Before running an **optional native** mission, use `node dist/cli.js doctor`. It checks the installed executor's `preflight` when provided; no coding-agent plugin is required for ChatGPT browser tasks. Preflight success is not proof of external tool isolation or model authentication.
 
 For the separate optional Codex plugin, `MISSION_RELAY_CODEX_PROXY` supplies its SDK's HTTP(S) proxy setting. It does not modify Windows proxy or the standard verification environment. Other native plugins own their own network settings.
