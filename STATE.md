@@ -2,6 +2,12 @@
 
 Updated: 2026-11-05
 
+## 2026-11-05 Windows Telegram lifecycle preparation (not activated)
+
+- Direct GMK3 inspection found `channel-status` with `pollerPresent: false` and `pendingReplies: 0`; no Telegram Scheduled Task/service was registered. The running project-owned Playwriter relay (separate from Telegram) held the Sharp DLL that blocked `npm ci`.
+- Added an opt-in Windows interactive-user Scheduled Task installer/worker with DPAPI user-bound local credentials, single-task `IgnoreNew`, bounded crash retries and an SQLite-based idle restart preflight. It **does not** create a task, store a token, start Telegram or restart a live process unless the owner explicitly runs enrollment on the local terminal. The separate Playwriter relay is deliberately untouched. The idle gate is not an atomic drain during concurrent arrivals.
+- The four synthetic SQLite restart-gate tests passed, Windows task-principal/trigger/settings object construction succeeded without registration, and read-only task status reported not installed / credentials not enrolled. Production task startup, post-crash recovery, phone Bot API acceptance and credential enrollment **remain unverified**.
+
 ## 2026-11-05 v0.2 adoption / executor decoupling development (newer than historical entries below)
 
 - **2026-11-05 public Git + owner-host deployment readback:** Feature commit `a0d5f74` and macOS canonical temporary-path test fix `e1a86ca` are pushed to public `main`. GitHub Actions run `41957833658` passed Ubuntu, Windows and macOS Node 24, including install, privacy scan, TypeScript, complete tests and build. The owner Windows canonical repository was fast-forwarded to `e1a86ca`, and production-source TypeScript/build/privacy checks passed. The profile-scoped watch was explicitly configured against the previously approved Playwriter Chrome profile and baselined **four** currently connected ChatGPT conversations. **Important: the already-running Telegram foreground process predates this build, does not hot-reload, and must be restarted by the owner in the original credential-bearing terminal before the new watcher executes.** The existing process is still live with zero pending replies; no fresh production watcher Mission has been dispatched. The current management shell has no Telegram Bot credentials and must not start a competing poller. Do not claim that production end-to-end delivery is complete until post-restart private Bot acceptance.

@@ -13,6 +13,28 @@ The Telegram adapter is a single-user **foreground process**. It uses the offici
 
 From another terminal you can run `node dist/cli.js channel-status` to verify the poller's process is present, the last durable Telegram update cursor and the last notification event cursor **without printing the Bot Token**.
 
+### Optional Windows task lifecycle (requires local owner enrollment)
+
+On a Windows host with an interactive user Chrome/Playwriter session, the **existing Telegram poller** can instead be run by one user-scoped Windows Scheduled Task, with no additional daemon, webhook or bot poller. This is opt-in and is **not activated by cloning or building** the project. From a local PowerShell 7 terminal under the same Windows user who owns Chrome:
+
+```powershell
+# Read-only: see whether a foreground poller or a task is present.
+pwsh -NoProfile -File .\scripts\windows\telegram-task.ps1 -Action Status
+
+# After ensuring the old poller is stopped: locally enter owner/chat IDs and
+# the token once, without typing the token into a command or ChatGPT.
+pwsh -NoProfile -File .\scripts\windows\telegram-task.ps1 -Action Enroll
+
+# Later, after a tested build and when Missions are idle:
+pwsh -NoProfile -File .\scripts\windows\telegram-task.ps1 -Action Restart
+```
+
+`Enroll` keeps the token **only in a Windows-user DPAPI-encrypted local file** under `%LOCALAPPDATA%\MissionRelay\telegram-task`, stores the numeric owner allowlist locally, and registers one limited-privilege **interactive-logon** task. It then starts the poller and checks the SQLite lease. The task uses Node LTS through the Scoop `current` path and restarts on unexpected exit at most three times with a one-minute interval; it does not restart forever, run when no user is logged on, or grant browser permissions. Task state is observable through `-Action Status` and Windows Task Scheduler. `-Action Start` starts an inactive enrolled task; `-Action Remove` unregisters the task but leaves encrypted credentials intact for intentional re-enrollment. Credentials must be rotated or removed separately when retiring the bot.
+
+`Restart` checks that no Mission is RUNNING/VERIFYING, no Telegram reply is undelivered and no browser request remains `reserved`. It refuses a non-task poller or other detected unsafe state; it does not reissue Telegram commands or ChatGPT browser Sends. This is an **idle-only gate**, not an atomic drain lock: do not schedule `Restart` concurrently with a new incoming Telegram command or an automatic watched-browser dispatch. A further maintenance/drain protocol would be needed for strictly race-free unattended rolling upgrades. Automatic task crash restart is distinct from installing new compiled code; only a controlled `Restart` activates a newly built CLI.
+
+The task manages **Telegram only**, not the separate Playwriter relay server. A Sharp DLL held by Playwriter can still prevent `npm ci`; stop/reconnect that specific relay under a separate safe preflight, or install dependencies in an isolated checkout. Do not use a global `taskkill /IM node.exe`.
+
 Native coding-agent plugins configure their own network and authentication. The base Telegram controller does not install or configure a Codex subprocess, require its SDK or set a system-wide proxy.
 
 Do not enable a startup service or publish credentials before an end-to-end mobile test. The current bridge is opt-in, not an unattended-production setup.
