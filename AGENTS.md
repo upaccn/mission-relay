@@ -21,6 +21,9 @@ This is an independent, public, local-first open-source project. It does not dep
 
 ## Development
 
+- The single Telegram process may voluntarily exit after five minutes without loop progress only with its current SQLite lease and no active Missions, reserved browser Sends, undelivered commands/notifications or drain; the existing Windows repeating Task restarts it. Never start another watchdog daemon or auto-kill an active/ambiguous browser operation. A blocked JS event loop cannot self-recover.
+- An explicitly interrupted PAUSED PI Mission with no reserved or uncertain Send must not monopolize the owner new-task route. Preserve its original error, audit and request identity without auto-replay. Unresolved Sends and unreviewed complete responses remain blockers.
+
 - For the owner deployment, maintain and commit source from the durable AIOS Linux project checkout. GitHub `main` is the promotion boundary; GMK's Windows clone is a pull-only runtime deployment. Do not develop independent competing GMK commits or synchronize private SQLite, DPAPI credentials or browser profiles across machines. Use the existing Windows drain/task for controlled activation after Linux and cross-platform checks; see `docs/operations.md`.
 - A recovered browser turn can be a valid PI checkpoint only with its exact original request key, complete answer SHA-256 and independently inspected recovery event. A manual side-effect acknowledgement without an observed answer is not a PI checkpoint. Neither case permits blind Send replay.
 

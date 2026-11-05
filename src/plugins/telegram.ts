@@ -19,6 +19,16 @@ export const telegramPluginManifest:PluginManifest={
   capabilities:['receive-command','notify'],
 };
 
+/** A recoverable asynchronous stall, not a slow ChatGPT turn or a temporary
+ * Telegram network outage. No extra watchdog process or scheduled task. */
+export const TELEGRAM_IDLE_STALL_EXIT_MS=5*60_000;
+export function stalledPollerMayExit(now:number,lastLoopProgressAt:number,
+  activeMission:boolean,safeCheckpoint:boolean):boolean {
+  return Number.isFinite(now)&&Number.isFinite(lastLoopProgressAt)&&
+    now-lastLoopProgressAt>=TELEGRAM_IDLE_STALL_EXIT_MS &&
+    !activeMission&&safeCheckpoint;
+}
+
 export interface TelegramUpdate {
   update_id:number;
   message?:{
@@ -237,6 +247,22 @@ export class TelegramBridge {
   async run(signal?:AbortSignal):Promise<void> {
     const lease=this.store.acquireChannelLease(this.source);
     let backoff=1000;
+    let lastLoopProgressAt=Date.now();
+    // If an awaited Chrome/transport operation hangs while no Mission is in
+    // flight, voluntarily exit this ONE worker so its existing scheduled task
+    // can restart it. This timer cannot recover a blocked JS event loop.
+    const watchdog=setInterval(()=>{
+      if(Date.now()-lastLoopProgressAt<TELEGRAM_IDLE_STALL_EXIT_MS||
+         this.activeMission||this.activeTask)return;
+      try {
+        if(stalledPollerMayExit(Date.now(),lastLoopProgressAt,false,
+          this.store.canAbandonStalledChannel(this.source))) {
+          console.error('Telegram idle control loop stalled; exiting worker for task-managed recovery (no Mission replay)');
+          process.exit(75);
+        }
+      }catch{ /* Unreadable SQLite state must never authorize self-termination. */ }
+    },30_000);
+    watchdog.unref();
     try {
       // Recover ONLY a PI decision whose previous browser response and
       // next-step plan were durably observed. Never reconstruct an uncertain Send.
@@ -253,6 +279,7 @@ export class TelegramBridge {
         }
         try {
           await this.pollOnce();
+          lastLoopProgressAt=Date.now();
           if(this.store.channelDrainRequested(this.source))continue;
           // Adopted ChatGPT missions may be queued by an independent local
           // CLI. Only this leased foreground controller drives PI/browser.
@@ -272,16 +299,19 @@ export class TelegramBridge {
               await this.recoverObservedPiCheckpoint();
           }
           backoff=1000;
+          lastLoopProgressAt=Date.now();
         }
         catch(error) {
           const message=error instanceof Error?error.message:'Telegram transport error';
           if(/HTTP (401|403|409)/.test(message)) throw new Error(message);
           console.error(`Telegram channel transient failure: ${message}`);
           await new Promise(resolve=>setTimeout(resolve,backoff));
+          lastLoopProgressAt=Date.now();
           backoff=Math.min(backoff*2,30000);
         }
       }
     } finally {
+      clearInterval(watchdog);
       // Finish the current turn before closing its authoritative SQLite store.
       // A transport exit must not silently kill an in-flight external action.
       if(this.activeTask) await this.activeTask;
@@ -459,6 +489,14 @@ export class TelegramBridge {
       if(['RUNNING','VERIFYING','NEEDS_RECONCILIATION','READY'].includes(m.state))
         return true;
       if(m.state!=='PAUSED')return false;
+      // A prior PI failure that is durably paused is not an active writer.
+      // Preserve its original error/receipts for explicit recovery, but do
+      // not let it monopolize all future owner-originated ChatGPT requests.
+      // A leftover reserved or uncertain browser Send remains a global gate.
+      const receipt=this.store.chatBrowserTurn(m.id);
+      if(receipt&&['reserved','uncertain'].includes(receipt.status))return true;
+      if(m.lastError&&this.store.events(m.id).some(
+        event=>event.type==='pi.autopilot_interrupted'))return false;
       const finished=this.store.events(m.id).some(e=>e.type==='pi.autopilot_finished');
       return !finished;
     });
@@ -645,6 +683,7 @@ export class TelegramBridge {
       ...(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'
         ?[`PI coordinator: ${this.store.piPlan(id)?.action??'analyzing / awaiting the first answer'}`,
           `Pending owner instructions: ${this.store.pendingPiOwnerDirectives(id).length}`]:[]),
+      ...(m.lastError?[`Last controller error: ${compactTelegramText(m.lastError,250)}`]:[]),
       `Last summary: ${(m.lastSummary ?? 'none').slice(0,1000)}`].join('\n');
     if(cmd==='/handoff') {
       if(words.length) throw new Error('Use /handoff <mission-id>');

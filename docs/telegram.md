@@ -51,6 +51,10 @@ Native coding-agent plugins configure their own network and authentication. The 
 
 Do not enable a startup service or publish credentials before an end-to-end mobile test. The current bridge is opt-in, not an unattended-production setup.
 
+### In-process idle-stall recovery (v0.2)
+
+The existing Node controller checks ordinary control-loop progress every 30 seconds. After five minutes without progress it exits code 75 **only** when its own SQLite lease is current, there are no RUNNING/VERIFYING Missions, reserved browser Sends, pending Telegram replies or notifications, and no maintenance drain. The enrolled repeating Windows Scheduled Task then restarts this same single controller; no additional task, watcher or daemon is installed. Bounded transport-error retries and active long ChatGPT turns do not qualify. This does not fix an entirely blocked JavaScript event loop, which cannot execute its own timer. The fail-closed logic has synthetic tests; naturally occurring production stalls remain unverified.
+
 ## Supported commands
 
 The vendor-neutral optional native route is `/agent <task>` or `Agent: <task>`, and requires an independently installed executor plugin plus a locally approved `telegram-agent-workspace`. Plain text and `ChatGPT:` remain browser-first without native executor selection. Vendor-specific aliases (`/codex`, `Codex:`) are **not** supported by the new CLI; they were used in earlier prototypes. See [plugin API](plugin-api.md).
@@ -58,6 +62,8 @@ The vendor-neutral optional native route is `/agent <task>` or `Agent: <task>`, 
 `/list`, `/status <uuid>`, `/handoff <uuid>`, `/continue <uuid> v<revision>`, `/pause <uuid>`, `/resume <uuid> v<revision>`, `/instruct <uuid> v<revision> <text>`, `/cancel <uuid> v<revision>`.
 
 ### Natural-language tasks and fresh ChatGPT tabs
+
+An older PI Mission that is PAUSED with a durable `pi.autopilot_interrupted` error no longer blocks **new independent** owner tasks when there is no reserved or uncertain browser Send. Its prior request, evidence and error remain unchanged; the old Mission is never replayed. An ambiguous prior Send or a fully observed response awaiting its first PI decision still blocks the new-task route. `/status <id>` shows the recorded controller error, while recovery of that old Mission still requires exact-checkpoint validation.
 
 An owner may send **ordinary text**, `ChatGPT: <task>` or `/auto <task>` for PI-controlled automatic continuation (maximum **8** bounded read-only ChatGPT turns). The first turn creates one fresh Chrome ChatGPT tab from the explicitly approved anchor; the original anchor is not sent any message. On each complete observed reply, Mission Relay sends the result and pending authenticated owner notes to AIOS PI using **tool-free** `pictl infer`, then validates PI's strict `NEXT/DONE/BLOCKED/HANDOFF` decision before considering another browser Send. A ChatGPT `DONE` marker is not itself the PI verdict. Telegram receives a **bounded progress notification for each PI NEXT/HANDOFF**, and one final PI result on DONE/BLOCKED/turn-budget exhaustion; the full intermediate ChatGPT responses/hashes remain in the authorized conversation and SQLite receipts. `/new <task>` preserves the previous **one-turn without PI** path.
 

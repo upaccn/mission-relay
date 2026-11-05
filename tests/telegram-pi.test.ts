@@ -8,6 +8,7 @@ import type {Page} from 'playwriter';
 import {Store} from '../src/core/store.js';
 import {Engine} from '../src/core/engine.js';
 import {TelegramBridge,type TelegramUpdate,type TelegramTransport} from '../src/plugins/telegram.js';
+import {pauseFailedPiPlanning} from '../src/core/pi-autopilot.js';
 import type {PiPlanner,PiTurnContext} from '../src/core/pi-planner.js';
 import type {AgentAdapter} from '../src/core/types.js';
 
@@ -247,5 +248,80 @@ test('PI-owned missions fail closed rather than falling back to legacy /continue
     assert.equal(f.store.events(mission.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
     for(let i=0;i<100&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
     assert.equal(f.state().sends,1);
+  }finally{f.cleanup();}
+});
+
+test('A durably interrupted old PI task does not block unrelated new owner work or replay its Send',async()=>{
+  const f=rig({decide:async()=>({action:'DONE',summary:'New independent task reviewed',nextPrompt:''})});
+  try{
+    const oldUrl='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174008';
+    const old=f.store.create({goal:'Old task with a failed PI checkpoint',
+      acceptance:['Preserve checkpoint'],workspace:'',sandbox:'read-only',
+      mode:'supervised',maxTurns:3,requestKey:'old-stopped-pi',checks:[]});
+    const link=f.store.linkChat(old.id,oldUrl,old.version).mission;
+    const bound=f.store.bindChatBrowser(old.id,'install:Chrome:synthetic',link.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${old.id}`,'1');
+    f.store.reserveChatBrowserTurn(old.id,bound.version,'old-stopped-pi-1','b'.repeat(64));
+    f.store.finishChatBrowserTurn(old.id,'old-stopped-pi-1',{
+      kind:'observed',assistantSha256:'a'.repeat(64),summary:'Previous browser reply',
+      telegramBatch:{terminal:false,flowSignal:'DONE',piManaged:true},
+    });
+    pauseFailedPiPlanning(f.store,old.id,'PI inference unavailable');
+    const oldVersion=f.store.get(old.id).version;
+    assert.equal(f.store.get(old.id).state,'PAUSED');
+    f.setUpdates([f.message(991,'A new separate read-only task')]);
+    await f.bridge.pollOnce(0);
+    assert.ok(f.sent.some(text=>text.includes('PI-coordinated ChatGPT Mission')));
+    for(let i=0;i<110&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(f.state().sends,1); // Only the new task sent a new prompt.
+    assert.equal(f.store.get(old.id).version,oldVersion);
+    assert.equal(f.store.events(old.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.match(f.store.get(old.id).lastError??'',/PI inference unavailable/);
+    f.setUpdates([f.message(992,`/status ${old.id}`)]);
+    await f.bridge.pollOnce(0);
+    assert.ok(f.sent.some(text=>text.includes('Last controller error: PI inference unavailable')));
+  }finally{f.cleanup();}
+});
+
+test('An uncertain old PI Send still prevents new work while its side effects are unresolved',async()=>{
+  const f=rig({decide:async()=>{throw new Error('PI must not be invoked');}});
+  try{
+    const old=f.store.create({goal:'Uncertain old owner task',acceptance:['No duplicate'],
+      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:3,
+      requestKey:'old-uncertain-pi',checks:[]});
+    const linked=f.store.linkChat(old.id,DEST,old.version).mission;
+    const bound=f.store.bindChatBrowser(old.id,'install:Chrome:synthetic',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${old.id}`,'1');
+    f.store.reserveChatBrowserTurn(old.id,bound.version,'old-uncertain-pi-1','b'.repeat(64));
+    f.store.finishChatBrowserTurn(old.id,'old-uncertain-pi-1',{
+      kind:'uncertain',error:'Browser Send may have succeeded',
+    });
+    f.setUpdates([f.message(993,'New task must not bypass uncertain browser request')]);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.state().sends,0);
+    assert.ok(f.sent.some(text=>/earlier PI Mission.*not terminal/.test(text)));
+    assert.equal(f.store.get(old.id).state,'NEEDS_RECONCILIATION');
+  }finally{f.cleanup();}
+});
+
+test('A paused PI response awaiting its first decision is not mistaken for a terminal interruption',async()=>{
+  const f=rig({decide:async()=>{throw new Error('PI must not be invoked');}});
+  try{
+    const old=f.store.create({goal:'Unreviewed PI checkpoint',acceptance:['Review first'],
+      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:3,
+      requestKey:'old-unreviewed-pi',checks:[]});
+    const linked=f.store.linkChat(old.id,DEST,old.version).mission;
+    const bound=f.store.bindChatBrowser(old.id,'install:Chrome:synthetic',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${old.id}`,'1');
+    f.store.reserveChatBrowserTurn(old.id,bound.version,'old-unreviewed-pi-1','b'.repeat(64));
+    f.store.finishChatBrowserTurn(old.id,'old-unreviewed-pi-1',{
+      kind:'observed',assistantSha256:'a'.repeat(64),summary:'Awaiting PI review',
+      telegramBatch:{terminal:false,flowSignal:'DONE',piManaged:true},
+    });
+    f.setUpdates([f.message(994,'New task must wait for the unreviewed checkpoint')]);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.state().sends,0);
+    assert.ok(f.sent.some(text=>/earlier PI Mission.*not terminal/.test(text)));
+    assert.equal(f.store.get(old.id).lastError,null);
   }finally{f.cleanup();}
 });

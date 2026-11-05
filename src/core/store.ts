@@ -129,23 +129,46 @@ export class Store {
   releaseChannelLease(source:string,key:string):void {
     this.db.prepare('DELETE FROM channel_leases WHERE source=? AND lease_key=?').run(source,key);
   }
+  private channelHasInFlightWork(source:string):boolean {
+    const active=(this.db.prepare(
+      "SELECT COUNT(*) AS count FROM missions WHERE state IN ('RUNNING','VERIFYING')"
+    ).get() as {count:number}).count;
+    const pending=(this.db.prepare(
+      "SELECT COUNT(*) AS count FROM channel_commands WHERE source=? AND status!='delivered'"
+    ).get(source) as {count:number}).count;
+    const turns=this.db.prepare(
+      "SELECT value FROM meta WHERE key LIKE 'chatgpt.browser.active.%'"
+    ).all() as {value:string}[];
+    const reserved=turns.some(({value})=>{
+      const receipt:unknown=JSON.parse(value);
+      if(!receipt||typeof receipt!=='object'||Array.isArray(receipt))
+        throw new Error('Invalid browser turn receipt; maintenance must fail closed');
+      const status=(receipt as {status?:unknown}).status;
+      if(!['reserved','observed','uncertain','reconciled'].includes(String(status)))
+        throw new Error('Unknown browser turn state; maintenance must fail closed');
+      return status==='reserved';
+    });
+    return Boolean(active||pending||reserved);
+  }
+  /** Only the CURRENT local lease owner may abandon a stalled, fully idle
+   * channel. No drain is created: a task-managed restart must not inherit a
+   * persistent maintenance fence. Malformed receipts fail closed. */
+  canAbandonStalledChannel(source:string):boolean {
+    const owner=this.db.prepare('SELECT owner_pid,owner_host FROM channel_leases WHERE source=?')
+      .get(source) as {owner_pid:number;owner_host:string}|undefined;
+    if(!owner||owner.owner_pid!==process.pid||owner.owner_host!==hostname()||
+       this.channelDrainRequested(source)||this.channelHasInFlightWork(source))return false;
+    const cursor=this.getMeta(`${source}.notifications_cursor`);
+    if(cursor===null||!/^(0|[1-9]\d*)$/.test(cursor)||
+       !Number.isSafeInteger(Number(cursor))||Number(cursor)<this.maxEventId())return false;
+    return true;
+  }
   /** A local, transactionally fenced maintenance request. No remote caller may set it. */
   requestChannelDrain(source:string):string {
     return this.transaction(()=>{
       const key=`${source}.maintenance.drain`;
       if(this.getMeta(key))throw new Error('Channel maintenance drain already requested');
-      const active=(this.db.prepare(
-        "SELECT COUNT(*) AS count FROM missions WHERE state IN ('RUNNING','VERIFYING')"
-      ).get() as {count:number}).count;
-      const pending=(this.db.prepare(
-        "SELECT COUNT(*) AS count FROM channel_commands WHERE source=? AND status!='delivered'"
-      ).get(source) as {count:number}).count;
-      const turns=this.db.prepare(
-        "SELECT value FROM meta WHERE key LIKE 'chatgpt.browser.active.%'"
-      ).all() as {value:string}[];
-      const reserved=turns.some(({value})=>
-        (JSON.parse(value) as {status?:string}).status==='reserved');
-      if(active||pending||reserved)
+      if(this.channelHasInFlightWork(source))
         throw new Error('Maintenance deferred: active Mission, pending reply or reserved browser Send');
       const drainId=randomUUID();
       this.setMeta(key,drainId);

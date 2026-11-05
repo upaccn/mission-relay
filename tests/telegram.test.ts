@@ -6,7 +6,9 @@ import { join } from 'node:path';
 import {createHash} from 'node:crypto';
 import { Store } from '../src/core/store.js';
 import { Engine } from '../src/core/engine.js';
-import { TelegramBridge, formatBrowserResultNotification, formatNativeMissionNotification, type TelegramUpdate, type TelegramTransport } from '../src/plugins/telegram.js';
+import { TelegramBridge, formatBrowserResultNotification, formatNativeMissionNotification,
+  stalledPollerMayExit,TELEGRAM_IDLE_STALL_EXIT_MS,
+  type TelegramUpdate, type TelegramTransport } from '../src/plugins/telegram.js';
 import type { AgentAdapter, Decision, Mission, TurnInput, Verification } from '../src/core/types.js';
 import type { Page } from 'playwriter';
 
@@ -451,6 +453,71 @@ test('Telegram transport failure never fabricates a successful API poll',async()
     await assert.rejects(f.bridge.pollOnce(0),/synthetic transport timeout/);
     assert.equal(f.store.channelStatus('telegram').transportHealth,'starting');
     assert.equal(f.store.channelStatus('telegram').lastPollSuccessAt,null);
+    f.store.releaseChannelLease('telegram',lease);
+  }finally{f.cleanup();}
+});
+
+test('The single-process idle-stall watchdog respects time bounds and active work',()=>{
+  const now=1_000_000;
+  const old=now-TELEGRAM_IDLE_STALL_EXIT_MS;
+  assert.equal(stalledPollerMayExit(now,now-TELEGRAM_IDLE_STALL_EXIT_MS+1,false,true),false);
+  assert.equal(stalledPollerMayExit(now,old,true,true),false);
+  assert.equal(stalledPollerMayExit(now,old,false,false),false);
+  assert.equal(stalledPollerMayExit(now,old,false,true),true);
+  assert.equal(stalledPollerMayExit(now+30_000,now,false,true),false);
+  assert.equal(stalledPollerMayExit(Number.NaN,old,false,true),false);
+});
+
+test('Idle watchdog cannot exit with a reserved command, mission, browser Send or unsent notification',()=>{
+  const f=fixture();try {
+    const lease=f.store.acquireChannelLease('telegram');
+    assert.equal(f.store.canAbandonStalledChannel('telegram'),false);
+    f.store.setMeta('telegram.notifications_cursor',String(f.store.maxEventId()));
+    assert.equal(f.store.canAbandonStalledChannel('telegram'),true);
+
+    f.store.reserveChannelCommand('telegram','777',778);
+    assert.equal(f.store.canAbandonStalledChannel('telegram'),false);
+    f.store.completeChannelCommand('telegram','777','accepted');
+    assert.equal(f.store.canAbandonStalledChannel('telegram'),false);
+    f.store.markChannelDelivered('telegram','777');
+    assert.equal(f.store.canAbandonStalledChannel('telegram'),true);
+
+    const running=f.store.update(f.m.id,f.store.get(f.m.id).version,
+      {state:'RUNNING'},'synthetic.running',{});
+    assert.equal(f.store.canAbandonStalledChannel('telegram'),false);
+    f.store.update(running.id,running.version,{state:'PAUSED'},'synthetic.paused',{});
+    assert.equal(f.store.canAbandonStalledChannel('telegram'),false); // New audit event not yet delivered.
+    f.store.setMeta('telegram.notifications_cursor',String(f.store.maxEventId()));
+    assert.equal(f.store.canAbandonStalledChannel('telegram'),true);
+
+    const url='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174009';
+    const linked=f.store.linkChat(f.m.id,url,f.store.get(f.m.id).version).mission;
+    const bound=f.store.bindChatBrowser(f.m.id,'install:Chrome:synthetic',linked.version).mission;
+    f.store.setMeta('telegram.notifications_cursor',String(f.store.maxEventId()));
+    f.store.reserveChatBrowserTurn(f.m.id,bound.version,'stalled-browser-1','b'.repeat(64));
+    assert.equal(f.store.canAbandonStalledChannel('telegram'),false);
+
+    f.store.releaseChannelLease('telegram',lease);
+    assert.equal(f.store.canAbandonStalledChannel('telegram'),false);
+  }finally{f.cleanup();}
+});
+
+test('Idle watchdog refuses a maintenance drain, foreign or missing lease and corrupt browser receipt',()=>{
+  const f=fixture();try {
+    f.store.setMeta('telegram.notifications_cursor',String(f.store.maxEventId()));
+    assert.equal(f.store.canAbandonStalledChannel('telegram'),false);
+    const lease=f.store.acquireChannelLease('telegram');
+    const drain=f.store.requestChannelDrain('telegram');
+    assert.equal(f.store.canAbandonStalledChannel('telegram'),false);
+    f.store.releaseChannelDrain('telegram',drain);
+    assert.equal(f.store.canAbandonStalledChannel('telegram'),true);
+    f.store.setMeta('chatgpt.browser.active.invalid','not-json');
+    assert.throws(()=>f.store.canAbandonStalledChannel('telegram'),/JSON/);
+    f.store.setMeta('chatgpt.browser.active.invalid','{"status":"invented"}');
+    assert.throws(()=>f.store.canAbandonStalledChannel('telegram'),/Unknown browser turn state/);
+    f.store.setMeta('chatgpt.browser.active.invalid','{"status":"observed"}');
+    f.store.setMeta('telegram.notifications_cursor','90071992547409999');
+    assert.equal(f.store.canAbandonStalledChannel('telegram'),false);
     f.store.releaseChannelLease('telegram',lease);
   }finally{f.cleanup();}
 });

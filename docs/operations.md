@@ -12,6 +12,10 @@ For the owner-operated AIOS/GMK deployment, the **durable AIOS Linux checkout is
 
 **Windows dependency updates are separate from source sync.** Never run destructive `npm ci` against live `node_modules` containing a DLL held by the current worker or Playwriter. Build in a clean isolated checkout first, or arrange an explicitly idle/drained maintenance window. Normal source-only TypeScript changes can use the existing compatible dependencies, but the running worker still must be restarted to load the new `dist` files. Keep the rollback commit and original SQLite state intact until verification succeeds. Avoid automatic Windows-to-AIOS pushes, bidirectional file synchronization, another updater daemon or a second writable Mission database.
 
+### Existing worker's bounded soft-stall watchdog
+
+The Telegram worker has a 30-second unreferenced in-process watchdog. After five minutes without ordinary control-loop progress, it may exit code 75 for the already-enrolled repeating Windows Scheduled Task to restart it. Its SQLite fail-closed read requires ownership of the current lease, no running Mission or reserved browser Send, no undelivered command reply or event notification and no maintenance drain. It does not kill another process, resubmit a ChatGPT prompt or introduce another daemon/task. This handles recoverable asynchronous stalls, not blocked JS execution, OS hangs or active side-effect uncertainty. Restart capability is synthetically tested, not yet naturally observed under a hung live controller.
+
 ## Installation
 
 1. Use Node.js 24 LTS+ and run `npm ci && npm run build`.
