@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync,writeFileSync} from 'node:fs';
+import {mkdtempSync,rmSync,writeFileSync,realpathSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Store} from '../src/core/store.js';
@@ -19,7 +19,10 @@ test('Native executor has no mandatory provider; registering an explicit trusted
     const path=join(dir,'example.mjs');
     writeFileSync(path,`export const manifest={id:'executor.fake',version:'1.0.0',apiVersion:1,kind:'executor',capabilities:['execute-turn','verify-read-only']};
 export const createExecutor=()=>({execute:async()=>({status:'continue',summary:'ok',next_instruction:'',evidence:[]}),verify:async()=>({accepted:true,reason:'ok',evidence:[]})});`);
-    assert.deepEqual(await registerExecutorPlugin(store,path),{id:'executor.fake',path});
+    // macOS tempdir() may return /var/..., but realpathSync resolves it to
+    // /private/var/.... The plugin deliberately stores the canonical path.
+    assert.deepEqual(await registerExecutorPlugin(store,path),
+      {id:'executor.fake',path:realpathSync(path)});
     assert.equal((await configuredExecutor(store))?.manifest.id,'executor.fake');
     assert.equal((await executorPreflight(store)).ok,true);
     assert.equal((await agent.execute({mission:first,prompt:'test',onThreadStarted:()=>{}})).summary,'ok');
