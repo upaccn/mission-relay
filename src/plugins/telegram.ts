@@ -210,6 +210,9 @@ export class TelegramBridge {
     const updates=await this.transport.getUpdates(offset,timeoutSeconds);
     if(!Array.isArray(updates)) throw new Error('Telegram getUpdates did not return an array');
     this.store.recordChannelPollSuccess(this.source);
+    // A concurrent maintenance request must not acknowledge freshly fetched
+    // Bot API updates. Telegram will return them after the replacement starts.
+    if(this.store.channelDrainRequested(this.source))return;
     // Never let an out-of-order transport response apply commands out of sequence.
     const ordered=[...updates].sort((a,b)=>(a?.update_id ?? -1)-(b?.update_id ?? -1));
     for(const update of ordered) {
@@ -237,14 +240,26 @@ export class TelegramBridge {
     try {
       // Recover ONLY a PI decision whose previous browser response and
       // next-step plan were durably observed. Never reconstruct an uncertain Send.
-      await this.recoverObservedPiCheckpoint();
+      if(!this.store.channelDrainRequested(this.source))
+        await this.recoverObservedPiCheckpoint();
       while(!signal?.aborted) {
+        if(this.store.channelDrainRequested(this.source)) {
+          // A previously accepted browser/PI task is authoritative and must
+          // finish. If the operator cancels the drain during that task,
+          // continue normal polling rather than exiting unexpectedly.
+          if(this.activeTask)await this.activeTask;
+          if(this.store.channelDrainRequested(this.source))break;
+          continue;
+        }
         try {
           await this.pollOnce();
+          if(this.store.channelDrainRequested(this.source))continue;
           // Adopted ChatGPT missions may be queued by an independent local
           // CLI. Only this leased foreground controller drives PI/browser.
-          if(!this.activeTask)await this.recoverObservedPiCheckpoint();
-          if(!this.activeTask&&watchedBrowser(this.store)&&
+          if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
+            await this.recoverObservedPiCheckpoint();
+          if(!this.activeTask&&!this.store.channelDrainRequested(this.source)&&
+            watchedBrowser(this.store)&&
             Date.now()-this.lastBrowserWatchAt>=15_000) {
             this.lastBrowserWatchAt=Date.now();
             try {await this.scanBrowserWatchOnce();}
@@ -253,7 +268,8 @@ export class TelegramBridge {
               // through its transport backoff when Chrome is disconnected.
               console.error('Browser watch scan unavailable; Telegram controller stays online');
             }
-            if(!this.activeTask)await this.recoverObservedPiCheckpoint();
+            if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
+              await this.recoverObservedPiCheckpoint();
           }
           backoff=1000;
         }
@@ -323,7 +339,7 @@ export class TelegramBridge {
   }
 
   private async recoverObservedPiCheckpoint():Promise<void> {
-    if(this.activeMission||this.activeTask)return;
+    if(this.activeMission||this.activeTask||this.store.channelDrainRequested(this.source))return;
     const candidates=this.engine.list().filter(m=>
       this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1' &&
       m.state==='PAUSED'&&!m.stopRequested&&!m.lastError&&

@@ -51,6 +51,9 @@ Commands:
   plugin-default --id <executor.id>  Optional override when several plugins exist
   plugin-remove --id <executor.id>   Remove one registration (no user files deleted)
   telegram              Run an optional Telegram channel in the foreground (owner allowlist)
+  channel-drain-request  Request a local SQLite-fenced, idle-only Telegram maintenance drain
+  channel-drain-status   Inspect the local maintenance receipt for failed-launch recovery
+  channel-drain-release --id <drain-id>  Release only the matching maintenance fence
   telegram-anchor <mission-id>|--clear  Locally approve/revoke the exact pinned new-chat source tab
   telegram-agent-workspace --workspace <dir>|--clear  Optional native executor workspace approval
   telegram-pi-config --ssh-host <alias> --project <remote-absolute-path> | --clear
@@ -250,6 +253,16 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
         process.removeListener('SIGINT',shutdown);process.removeListener('SIGTERM',shutdown);
       }
       return;
+    } else if (command === 'channel-drain-request') {
+      result={drainId:store.requestChannelDrain('telegram'),requested:true};
+    } else if (command === 'channel-drain-status') {
+      result={drainId:store.channelDrainId('telegram'),
+        requested:store.channelDrainRequested('telegram'),
+        pollerPresent:store.channelStatus('telegram').pollerPresent};
+    } else if (command === 'channel-drain-release') {
+      const drainId=option(flags(argv.slice(1)),'id');
+      store.releaseChannelDrain('telegram',drainId);
+      result={released:true};
     } else if (command === 'channel-status') {
       result=store.channelStatus('telegram');
     } else if (command === 'doctor') {

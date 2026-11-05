@@ -129,6 +129,44 @@ export class Store {
   releaseChannelLease(source:string,key:string):void {
     this.db.prepare('DELETE FROM channel_leases WHERE source=? AND lease_key=?').run(source,key);
   }
+  /** A local, transactionally fenced maintenance request. No remote caller may set it. */
+  requestChannelDrain(source:string):string {
+    return this.transaction(()=>{
+      const key=`${source}.maintenance.drain`;
+      if(this.getMeta(key))throw new Error('Channel maintenance drain already requested');
+      const active=(this.db.prepare(
+        "SELECT COUNT(*) AS count FROM missions WHERE state IN ('RUNNING','VERIFYING')"
+      ).get() as {count:number}).count;
+      const pending=(this.db.prepare(
+        "SELECT COUNT(*) AS count FROM channel_commands WHERE source=? AND status!='delivered'"
+      ).get(source) as {count:number}).count;
+      const turns=this.db.prepare(
+        "SELECT value FROM meta WHERE key LIKE 'chatgpt.browser.active.%'"
+      ).all() as {value:string}[];
+      const reserved=turns.some(({value})=>
+        (JSON.parse(value) as {status?:string}).status==='reserved');
+      if(active||pending||reserved)
+        throw new Error('Maintenance deferred: active Mission, pending reply or reserved browser Send');
+      const drainId=randomUUID();
+      this.setMeta(key,drainId);
+      return drainId;
+    });
+  }
+  channelDrainRequested(source:string):boolean {
+    return Boolean(this.getMeta(`${source}.maintenance.drain`));
+  }
+  /** Local-only diagnostic for recovering a stalled maintenance launcher. */
+  channelDrainId(source:string):string|null {
+    return this.getMeta(`${source}.maintenance.drain`);
+  }
+  releaseChannelDrain(source:string,drainId:string):void {
+    this.transaction(()=>{
+      const key=`${source}.maintenance.drain`;
+      if(!drainId||this.getMeta(key)!==drainId)
+        throw new Error('Channel maintenance lease mismatch: no change made');
+      this.db.prepare('DELETE FROM meta WHERE key=?').run(key);
+    });
+  }
   /** Record a successful provider response without saving message contents or credentials. */
   recordChannelPollSuccess(source:string):void {
     this.setMeta(`${source}.poll_success`,JSON.stringify({
@@ -140,6 +178,7 @@ export class Store {
     pendingReplies:number;pollerPid:number|null;pollerPresent:boolean;
     transportHealth:'offline'|'starting'|'healthy'|'stale';
     lastPollSuccessAt:string|null;
+    drainRequested:boolean;
   } {
     const lease=this.db.prepare('SELECT owner_pid,owner_host FROM channel_leases WHERE source=?').get(source) as
       {owner_pid:number;owner_host:string}|undefined;
@@ -166,7 +205,8 @@ export class Store {
       notificationsCursor:Number(this.getMeta(`${source}.notifications_cursor`)||'0'),
       lastEventId:this.maxEventId(),pendingReplies:pending,
       pollerPid:lease?.owner_pid??null,pollerPresent,
-      transportHealth,lastPollSuccessAt};
+      transportHealth,lastPollSuccessAt,
+      drainRequested:this.channelDrainRequested(source)};
   }
 
   getMeta(key:string):string|null {
@@ -301,6 +341,8 @@ export class Store {
     userSha256:string;assistantSha256:string;summary:string;
   }):Mission {
     return this.transaction(()=>{
+      if(this.channelDrainRequested('telegram'))
+        throw new Error('Telegram maintenance drain active; new ChatGPT adoption is refused');
       const created=this.create(input);
       const linked=this.linkChat(created.id,url,created.version).mission;
       const bound=this.bindChatBrowser(created.id,browserId,linked.version).mission;
@@ -311,6 +353,8 @@ export class Store {
     if(!/^[\w.-]{1,128}$/.test(requestKey)) throw new Error('Browser request key must be 1–128 safe characters');
     if(!/^[0-9a-f]{64}$/.test(promptSha256)) throw new Error('Expected SHA-256 of browser prompt');
     return this.transaction(()=>{
+      if(this.channelDrainRequested('telegram'))
+        throw new Error('Telegram maintenance drain active; new browser Sends are refused');
       const m=this.get(id);
       const url=this.chatLink(id);
       if(!url) throw new Error('Mission has no linked ChatGPT conversation');
@@ -596,6 +640,8 @@ export class Store {
   /** Reserve before side effects. A reserved command is NEVER silently re-executed. */
   reserveChannelCommand(source:string,externalId:string,nextCursor:number):boolean {
     return this.transaction(()=>{
+      if(this.channelDrainRequested(source))
+        throw new Error('Channel maintenance drain active; incoming updates remain unacknowledged');
       const existing=this.db.prepare('SELECT 1 FROM channel_commands WHERE source=? AND external_id=?').get(source,externalId);
       if(existing) return false;
       this.db.prepare('INSERT INTO channel_commands(source,external_id,status,reply,received_at) VALUES(?,?,?,?,?)')

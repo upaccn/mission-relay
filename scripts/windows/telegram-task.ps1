@@ -1,7 +1,7 @@
 # Optional Windows interactive-user lifecycle for the Mission Relay Telegram poller.
 # No task or credentials are created until the owner runs -Action Enroll locally.
 param(
-    [ValidateSet('Enroll','Worker','Status','Start','Restart','SetProxy','ClearProxy','Remove')]
+    [ValidateSet('Enroll','Worker','Status','Start','Restart','UpgradeSchedule','SetProxy','ClearProxy','Remove')]
     [string]$Action = 'Status',
     [string]$ProxyUrl = ''
 )
@@ -42,6 +42,20 @@ function Get-Task {
     return Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
 }
 
+function New-RecoveryTriggers {
+    $identity=[Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $logon=New-ScheduledTaskTrigger -AtLogOn -User $identity
+    # A repeating DAILY trigger is intentional: unlike RestartOnFailure,
+    # a recurring trigger can recover a task whose action exited nonzero.
+    # IgnoreNew prevents another instance while the controller is running.
+    $daily=New-ScheduledTaskTrigger -Daily -At '00:00'
+    $template=New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) `
+        -RepetitionInterval (New-TimeSpan -Minutes 2) `
+        -RepetitionDuration (New-TimeSpan -Days 1)
+    $daily.Repetition=$template.Repetition
+    return @($logon,$daily)
+}
+
 function Assert-OurTask {
     $task = Get-Task
     if (-not $task) { throw 'Task not installed; use Enroll in the local interactive PowerShell session' }
@@ -71,6 +85,19 @@ function Wait-ForChannel([bool]$expected, [int]$seconds = 40) {
         if ($expected -and $status.pollerPresent -and $status.transportHealth -eq 'healthy') { return }
     }
     throw "Telegram poller did not reach expected state with successful Bot API polling: $expected"
+}
+
+function Request-ChannelDrain {
+    $raw = (& $node $cli channel-drain-request | Out-String)
+    if ($LASTEXITCODE -ne 0) { throw 'Failed to reserve Telegram maintenance drain' }
+    $result = $raw | ConvertFrom-Json
+    if ([string]$result.drainId -notmatch '^[0-9a-f-]{36}$') { throw 'Invalid maintenance drain receipt' }
+    return [string]$result.drainId
+}
+
+function Release-ChannelDrain([string]$drainId) {
+    $null = & $node $cli channel-drain-release --id $drainId
+    if ($LASTEXITCODE -ne 0) { throw 'Maintenance drain could not be released: do not start another worker' }
 }
 
 switch ($Action) {
@@ -112,6 +139,9 @@ switch ($Action) {
             }
         }
         # Unexpected normal process exit is also a failure, eligible for bounded task restart.
+        # A cooperative, explicitly fenced maintenance exit must be successful,
+        # so Task Scheduler will not immediately restart the old compiled CLI.
+        if ($exitCode -eq 0 -and (Get-ChannelStatus).drainRequested) { exit 0 }
         if ($exitCode -ne 0) { exit $exitCode }
         exit 1
     }
@@ -119,6 +149,7 @@ switch ($Action) {
         Assert-Prerequisites
         if (Get-Task) { throw 'Task already exists; refusing duplicate enrollment' }
         if ((Get-ChannelStatus).pollerPresent) { throw 'A Telegram poller is already running; stop it before enrolling' }
+        if ((Get-ChannelStatus).drainRequested) { throw 'Clear the previous maintenance drain before enrolling' }
         if ((Test-Path $tokenFile) -xor (Test-Path $settingsFile)) {
             throw 'Incomplete credential enrollment; inspect the private folder before retrying'
         }
@@ -149,7 +180,7 @@ switch ($Action) {
         $actionSpec = New-ScheduledTaskAction -Execute $pwsh -Argument $actionArgs -WorkingDirectory $root
         $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
         $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
-        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
+        $trigger = @(New-RecoveryTriggers)
         $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -RestartCount 3 `
             -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero) `
             -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
@@ -168,7 +199,27 @@ switch ($Action) {
             pollerPresent=$channel.pollerPresent; pollerPid=$channel.pollerPid;
             pendingReplies=$channel.pendingReplies; credentialsEnrolled=((Test-Path $tokenFile) -and (Test-Path $settingsFile));
             transportHealth=$channel.transportHealth; lastPollSuccessAt=$channel.lastPollSuccessAt;
+            recoverySchedule=if($task){ [bool](@($task.Triggers | Where-Object { $_.Repetition.Interval -eq 'PT2M' }).Count) }else{$false};
             proxyUrl=if(Test-Path $settingsFile){ [string]((Get-Content $settingsFile -Raw -Encoding utf8 | ConvertFrom-Json).PSObject.Properties['proxyUrl']?.Value) }else{''} }
+    }
+    'UpgradeSchedule' {
+        Assert-Prerequisites
+        $task=Assert-OurTask
+        $before=Get-ChannelStatus
+        if (@($task.Triggers | Where-Object {$_.Repetition.Interval -eq 'PT2M'}).Count -eq 0) {
+            Set-ScheduledTask -TaskName $taskName -Trigger @(New-RecoveryTriggers) | Out-Null
+        }
+        $updated=Assert-OurTask
+        if (@($updated.Triggers | Where-Object {$_.Repetition.Interval -eq 'PT2M'}).Count -ne 1 -or
+            $updated.Settings.MultipleInstances.ToString() -ne 'IgnoreNew') {
+            throw 'Recovery schedule readback failed'
+        }
+        $after=Get-ChannelStatus
+        if ($before.pollerPresent -and
+            ((-not $after.pollerPresent) -or $after.pollerPid -ne $before.pollerPid)) {
+            throw 'Task schedule update unexpectedly changed the live poller'
+        }
+        Write-Output 'Daily repeating retry trigger is active; enrolled Telegram poller unchanged.'
     }
     'SetProxy' {
         Assert-Prerequisites
@@ -193,6 +244,7 @@ switch ($Action) {
         Assert-Prerequisites
         $null = Assert-OurTask
         if ((Get-ChannelStatus).pollerPresent) { throw 'Telegram poller already present: no second instance started' }
+        if ((Get-ChannelStatus).drainRequested) { throw 'Previous maintenance drain still held; inspect channel-drain-status' }
         Start-ScheduledTask -TaskName $taskName
         Wait-ForChannel $true
         Write-Output 'Telegram poller started and lease verified.'
@@ -201,15 +253,43 @@ switch ($Action) {
         Assert-Prerequisites
         $null = Assert-OurTask
         Assert-SafeRestart
+        $exitMode = 'previously stopped'
         if ((Get-Task).State -eq 'Running') {
-            Stop-ScheduledTask -TaskName $taskName
-            Wait-ForChannel $false
+            $drainId = Request-ChannelDrain
+            $exitMode = 'cooperative'
+            try {
+                # Newer workers exit cooperatively after finishing any accepted
+                # work. During the first upgrade from an older worker, only the
+                # specifically enrolled Scheduled Task may require Stop.
+                for ($i = 0; $i -lt 25; $i++) {
+                    if (-not (Get-ChannelStatus).pollerPresent) { break }
+                    Start-Sleep -Seconds 1
+                }
+                if ((Get-ChannelStatus).pollerPresent) {
+                    Assert-SafeRestart
+                    $exitMode = 'task-scoped fallback for older worker'
+                    Stop-ScheduledTask -TaskName $taskName
+                    Wait-ForChannel $false
+                }
+                for ($i = 0; $i -lt 12; $i++) {
+                    if ((Get-Task).State -ne 'Running') { break }
+                    Start-Sleep -Seconds 1
+                }
+                if ((Get-Task).State -eq 'Running') {
+                    throw 'Old Telegram task has not exited; new worker will not start'
+                }
+            } finally {
+                Release-ChannelDrain $drainId
+            }
         } elseif ((Get-ChannelStatus).pollerPresent) {
             throw 'A non-task Telegram poller is running; refusing to terminate it'
+        } elseif ((Get-ChannelStatus).drainRequested) {
+            throw 'Another maintenance drain remains active; do not start worker'
         }
         Start-ScheduledTask -TaskName $taskName
         Wait-ForChannel $true
-        Write-Output 'Telegram task restarted; new PID and SQLite lease verified.'
+        Write-Output ('Telegram task restarted; new PID and healthy Bot API poll verified. Exit mode: ' +
+            $exitMode)
     }
     'Remove' {
         $null = Assert-OurTask

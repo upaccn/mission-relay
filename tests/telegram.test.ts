@@ -338,6 +338,72 @@ test('Channel poller lease rejects duplicates and is recoverable on clean releas
   }finally{f.cleanup();}
 });
 
+test('Maintenance drain fences Telegram intake and browser reservations until matching release',()=>{
+  const f=fixture();try{
+    const drainId=f.store.requestChannelDrain('telegram');
+    assert.match(drainId,/^[0-9a-f-]{36}$/);
+    assert.equal(f.store.channelStatus('telegram').drainRequested,true);
+    assert.throws(()=>f.store.requestChannelDrain('telegram'),/already requested/);
+    assert.throws(()=>f.store.reserveChannelCommand('telegram','55',56),/maintenance drain/);
+    assert.equal(f.store.getMeta('telegram.inbox_cursor'),null);
+    assert.throws(()=>f.store.reserveChatBrowserTurn(f.m.id,f.m.version,'test-reserve','a'.repeat(64)),
+      /maintenance drain/);
+    assert.throws(()=>f.store.releaseChannelDrain('telegram','wrong'),/lease mismatch/);
+    assert.equal(f.store.channelDrainRequested('telegram'),true);
+    f.store.releaseChannelDrain('telegram',drainId);
+    assert.equal(f.store.channelDrainRequested('telegram'),false);
+    assert.equal(f.store.reserveChannelCommand('telegram','55',56),true);
+  }finally{f.cleanup();}
+});
+
+test('Maintenance drain refuses in-flight Mission, pending reply or reserved browser request',()=>{
+  const f=fixture();try{
+    f.store.db.prepare("UPDATE missions SET state='RUNNING' WHERE id=?").run(f.m.id);
+    assert.throws(()=>f.store.requestChannelDrain('telegram'),/Maintenance deferred/);
+    f.store.db.prepare("UPDATE missions SET state='READY' WHERE id=?").run(f.m.id);
+    assert.equal(f.store.reserveChannelCommand('telegram','100',101),true);
+    assert.throws(()=>f.store.requestChannelDrain('telegram'),/Maintenance deferred/);
+    f.store.completeChannelCommand('telegram','100','ok');
+    f.store.markChannelDelivered('telegram','100');
+    f.store.setMeta('chatgpt.browser.active.synthetic',JSON.stringify({status:'reserved'}));
+    assert.throws(()=>f.store.requestChannelDrain('telegram'),/Maintenance deferred/);
+    f.store.setMeta('chatgpt.browser.active.synthetic',JSON.stringify({status:'observed'}));
+    const key=f.store.requestChannelDrain('telegram');
+    f.store.releaseChannelDrain('telegram',key);
+  }finally{f.cleanup();}
+});
+
+test('A drain acquired during getUpdates leaves fetched Telegram messages unacknowledged',async()=>{
+  const f=fixture();try{
+    const update=f.message(900,`/status ${f.m.id}`);
+    let drainId='';
+    f.transport.getUpdates=async()=>{drainId=f.store.requestChannelDrain('telegram');return [update];};
+    await f.bridge.pollOnce(0);
+    assert.equal(f.store.getMeta('telegram.inbox_cursor'),null);
+    assert.equal(f.transport.sent.length,0);
+    f.store.releaseChannelDrain('telegram',drainId);
+    f.transport.getUpdates=async()=>[update];
+    await f.bridge.pollOnce(0);
+    assert.equal(f.store.getMeta('telegram.inbox_cursor'),'901');
+    assert.equal(f.transport.sent.length,1);
+  }finally{f.cleanup();}
+});
+
+test('A leased Telegram loop cooperatively exits on a drain and does not replay a command',async()=>{
+  const f=fixture();try {
+    let drainId='';
+    f.transport.getUpdates=async()=>{
+      drainId=f.store.requestChannelDrain('telegram');
+      return [f.message(991,`/pause ${f.m.id}`)];
+    };
+    await f.bridge.run();
+    assert.equal(f.store.channelStatus('telegram').pollerPresent,false);
+    assert.equal(f.store.getMeta('telegram.inbox_cursor'),null);
+    assert.equal(f.engine.get(f.m.id).state,'READY');
+    f.store.releaseChannelDrain('telegram',drainId);
+  }finally{f.cleanup();}
+});
+
 test('Channel status reveals no token and reports durable inbox and active poller',()=>{
   const f=fixture();try{
     const lease=f.store.acquireChannelLease('telegram');
