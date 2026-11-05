@@ -209,6 +209,7 @@ export class TelegramBridge {
     const offset=Number(this.store.getMeta('telegram.inbox_cursor') ?? '0');
     const updates=await this.transport.getUpdates(offset,timeoutSeconds);
     if(!Array.isArray(updates)) throw new Error('Telegram getUpdates did not return an array');
+    this.store.recordChannelPollSuccess(this.source);
     // Never let an out-of-order transport response apply commands out of sequence.
     const ordered=[...updates].sort((a,b)=>(a?.update_id ?? -1)-(b?.update_id ?? -1));
     for(const update of ordered) {

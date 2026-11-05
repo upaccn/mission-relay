@@ -11,7 +11,7 @@ The Telegram adapter is a single-user **foreground process**. It uses the offici
 4. Set `MISSION_RELAY_TELEGRAM_USER_ID` and `MISSION_RELAY_TELEGRAM_CHAT_ID` to those numbers. Ensure no other bot poller is running.
 5. Run `node dist/cli.js telegram` in a terminal. Keep the terminal/session running. Use `/help` in the private Telegram bot chat.
 
-From another terminal you can run `node dist/cli.js channel-status` to verify the poller's process is present, the last durable Telegram update cursor and the last notification event cursor **without printing the Bot Token**.
+From another terminal you can run `node dist/cli.js channel-status` to verify the poller's process, last durable Telegram update cursor, notification event cursor, and **successful Bot API polling heartbeat** without printing the Bot Token. The `transportHealth` field is `healthy` only when the current leased PID has successfully received a well-formed `getUpdates` result within the last 90 seconds. Otherwise it is `starting`, `stale`, or `offline`; `lastPollSuccessAt` is the UTC timestamp or null. This status proves successful polling, not that any particular owner message was delivered or that ChatGPT/PI execution has finished.
 
 ### Optional Windows task lifecycle (requires local owner enrollment)
 
@@ -39,7 +39,7 @@ pwsh -NoProfile -File .\scripts\windows\telegram-task.ps1 -Action Restart
 
 If direct HTTPS later becomes available without the proxy, `-Action ClearProxy` removes only that local proxy setting; run the same idle-gated `-Action Restart` to activate the change. Neither command changes the DPAPI token or the owner allowlist.
 
-`Restart` checks that no Mission is RUNNING/VERIFYING, no Telegram reply is undelivered and no browser request remains `reserved`. It refuses a non-task poller or other detected unsafe state; it does not reissue Telegram commands or ChatGPT browser Sends. This is an **idle-only gate**, not an atomic drain lock: do not schedule `Restart` concurrently with a new incoming Telegram command or an automatic watched-browser dispatch. A further maintenance/drain protocol would be needed for strictly race-free unattended rolling upgrades. Automatic task crash restart is distinct from installing new compiled code; only a controlled `Restart` activates a newly built CLI.
+`Restart` checks that no Mission is RUNNING/VERIFYING, no Telegram reply is undelivered and no browser request remains `reserved`. It refuses a non-task poller or other detected unsafe state; it does not reissue Telegram commands or ChatGPT browser Sends. After a start/restart, it additionally requires an actual fresh successful `getUpdates` heartbeat before declaring success (up to 40 seconds). This is an **idle-only gate**, not an atomic drain lock: do not schedule `Restart` concurrently with a new incoming Telegram command or an automatic watched-browser dispatch. A further maintenance/drain protocol would be needed for strictly race-free unattended rolling upgrades. Automatic task crash restart is distinct from installing new compiled code; only a controlled `Restart` activates a newly built CLI.
 
 The task manages **Telegram only**, not the separate Playwriter relay server. A Sharp DLL held by Playwriter can still prevent `npm ci`; stop/reconnect that specific relay under a separate safe preflight, or install dependencies in an isolated checkout. Do not use a global `taskkill /IM node.exe`.
 

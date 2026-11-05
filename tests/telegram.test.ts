@@ -345,10 +345,47 @@ test('Channel status reveals no token and reports durable inbox and active polle
     const status=f.store.channelStatus('telegram');
     assert.equal(status.inboxCursor,42);
     assert.equal(status.pollerPresent,true);
+    assert.equal(status.transportHealth,'starting');
+    assert.equal(status.lastPollSuccessAt,null);
     assert.equal(status.lastEventId,f.store.maxEventId());
     assert.equal('token' in status,false);
     f.store.releaseChannelLease('telegram',lease);
     assert.equal(f.store.channelStatus('telegram').pollerPresent,false);
+    assert.equal(f.store.channelStatus('telegram').transportHealth,'offline');
+  }finally{f.cleanup();}
+});
+
+test('Telegram transport health follows successful polling, staleness and current lease identity',async()=>{
+  const f=fixture();try {
+    const lease=f.store.acquireChannelLease('telegram');
+    assert.equal(f.store.channelStatus('telegram').transportHealth,'starting');
+    await f.bridge.pollOnce(0);
+    const healthy=f.store.channelStatus('telegram');
+    assert.equal(healthy.transportHealth,'healthy');
+    assert.ok(healthy.lastPollSuccessAt && Number.isFinite(Date.parse(healthy.lastPollSuccessAt)));
+    f.store.setMeta('telegram.poll_success',JSON.stringify({
+      pid:process.pid,at:new Date(Date.now()-180_000).toISOString(),
+    }));
+    assert.equal(f.store.channelStatus('telegram').transportHealth,'stale');
+    f.store.setMeta('telegram.poll_success',JSON.stringify({
+      pid:process.pid+1,at:new Date().toISOString(),
+    }));
+    assert.equal(f.store.channelStatus('telegram').transportHealth,'starting');
+    f.store.setMeta('telegram.poll_success','not-json');
+    assert.equal(f.store.channelStatus('telegram').transportHealth,'starting');
+    f.store.releaseChannelLease('telegram',lease);
+    assert.equal(f.store.channelStatus('telegram').transportHealth,'offline');
+  }finally{f.cleanup();}
+});
+
+test('Telegram transport failure never fabricates a successful API poll',async()=>{
+  const f=fixture();try {
+    const lease=f.store.acquireChannelLease('telegram');
+    f.transport.getUpdates=async()=>{throw new Error('synthetic transport timeout');};
+    await assert.rejects(f.bridge.pollOnce(0),/synthetic transport timeout/);
+    assert.equal(f.store.channelStatus('telegram').transportHealth,'starting');
+    assert.equal(f.store.channelStatus('telegram').lastPollSuccessAt,null);
+    f.store.releaseChannelLease('telegram',lease);
   }finally{f.cleanup();}
 });
 

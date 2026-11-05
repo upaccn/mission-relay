@@ -129,9 +129,17 @@ export class Store {
   releaseChannelLease(source:string,key:string):void {
     this.db.prepare('DELETE FROM channel_leases WHERE source=? AND lease_key=?').run(source,key);
   }
+  /** Record a successful provider response without saving message contents or credentials. */
+  recordChannelPollSuccess(source:string):void {
+    this.setMeta(`${source}.poll_success`,JSON.stringify({
+      pid:process.pid,at:new Date().toISOString(),
+    }));
+  }
   channelStatus(source:string):{
     source:string;inboxCursor:number;notificationsCursor:number;lastEventId:number;
     pendingReplies:number;pollerPid:number|null;pollerPresent:boolean;
+    transportHealth:'offline'|'starting'|'healthy'|'stale';
+    lastPollSuccessAt:string|null;
   } {
     const lease=this.db.prepare('SELECT owner_pid,owner_host FROM channel_leases WHERE source=?').get(source) as
       {owner_pid:number;owner_host:string}|undefined;
@@ -142,10 +150,23 @@ export class Store {
     }
     const pending=(this.db.prepare("SELECT COUNT(*) AS count FROM channel_commands WHERE source=? AND status!='delivered'")
       .get(source) as {count:number}).count;
+    let lastPollSuccessAt:string|null=null;
+    if(pollerPresent) {
+      try {
+        const entry=JSON.parse(this.getMeta(`${source}.poll_success`)??'null') as
+          {pid?:number;at?:string}|null;
+        if(entry && entry.pid===lease?.owner_pid && typeof entry.at==='string' &&
+           Number.isFinite(Date.parse(entry.at)))lastPollSuccessAt=entry.at;
+      }catch { /* Malformed health metadata must never imply transport success. */ }
+    }
+    const age=lastPollSuccessAt===null?Infinity:Date.now()-Date.parse(lastPollSuccessAt);
+    const transportHealth=!pollerPresent?'offline':lastPollSuccessAt===null?'starting':
+      age>=0 && age<=90_000?'healthy':'stale';
     return {source,inboxCursor:Number(this.getMeta(`${source}.inbox_cursor`)||'0'),
       notificationsCursor:Number(this.getMeta(`${source}.notifications_cursor`)||'0'),
       lastEventId:this.maxEventId(),pendingReplies:pending,
-      pollerPid:lease?.owner_pid??null,pollerPresent};
+      pollerPid:lease?.owner_pid??null,pollerPresent,
+      transportHealth,lastPollSuccessAt};
   }
 
   getMeta(key:string):string|null {

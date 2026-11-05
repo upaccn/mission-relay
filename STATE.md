@@ -2,6 +2,14 @@
 
 Updated: 2026-11-05
 
+## 2026-11-05 Telegram true transport health after private Bot acceptance
+
+- The owner independently confirmed that the private Telegram Bot replied after the v2rayN TUN-off proxy migration. Local SQLite readback showed `telegram.inboxCursor` advance from **130126958 to 130126959**, one enrolled Windows Scheduled Task and one live Telegram PID. This establishes real inbound processing and user-attested Bot reply; exact per-message content/receipt was not copied into this report.
+- Improved `channel-status` to distinguish **recent real Bot API `getUpdates` success** from simple process liveness. `transportHealth` is `healthy` only when the current leased PID has a successful poll in the last 90 seconds, otherwise `starting`, `stale` or `offline`. The new local health record stores only timestamp and PID, not message text or Bot credentials. Windows scheduled task `Start`/`Restart` now waits for genuine poll health (40-second bound).
+- Focused Windows Telegram tests passed **40/40**, including new injected transport failure, stale timestamp, changed PID and malformed metadata; TypeScript, privacy scan and build also passed. A gated live task restart was run after idle SQLite preflight: PID changed from **6884 to 36404**, `pollerPresent: true`, `transportHealth: healthy`, last successful `getUpdates` at **2026-11-05T04:30:07.760Z**, and no pending replies. Playwriter remained listening on port 19988.
+- **Final Windows full-suite regression:** 145 total tests, **144 pass, 1 existing platform-specific skip, 0 fail**. TypeScript typecheck, privacy boundary scan and build succeeded, and `git diff --check` passed. Post-test production readback still showed the same Telegram PID **36404**, a newer healthy successful poll at **2026-11-05T04:33:36.807Z**, zero pending replies, and **one connected Chrome profile with four Playwriter-enabled tabs**. No ChatGPT Send or Telegram test message was initiated during this regression.
+- **Remaining:** An automatic post-crash Windows Task Scheduler restart and a strict atomic maintenance/drain protocol remain untested/unimplemented respectively. The current idle preflight has an acknowledged race with new incoming work; it is not a license for unattended deployment upgrades.
+
 ## 2026-11-05 Telegram Windows task enrollment and TUN-off proxy
 
 - The owner completed one-time private Windows enrollment. Direct GMK3 readback showed the `MissionRelay-Telegram` Scheduled Task RUNNING, valid SQLite single-poller lease and zero pending replies. The previous credential-less foreground process was absent.

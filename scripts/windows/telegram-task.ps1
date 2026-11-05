@@ -63,12 +63,14 @@ function Assert-SafeRestart {
     if ($LASTEXITCODE -ne 0) { throw 'A Mission is active or has an unresolved browser Send; restart deferred' }
 }
 
-function Wait-ForChannel([bool]$expected, [int]$seconds = 12) {
+function Wait-ForChannel([bool]$expected, [int]$seconds = 40) {
     for ($i = 0; $i -lt $seconds; $i++) {
         Start-Sleep -Seconds 1
-        if ([bool](Get-ChannelStatus).pollerPresent -eq $expected) { return }
+        $status=Get-ChannelStatus
+        if (-not $expected -and -not $status.pollerPresent) { return }
+        if ($expected -and $status.pollerPresent -and $status.transportHealth -eq 'healthy') { return }
     }
-    throw "Telegram poller did not reach expected state: $expected"
+    throw "Telegram poller did not reach expected state with successful Bot API polling: $expected"
 }
 
 switch ($Action) {
@@ -156,7 +158,7 @@ switch ($Action) {
         Write-Output 'User-scoped Telegram task installed. Starting and checking its SQLite lease.'
         Start-ScheduledTask -TaskName $taskName
         Wait-ForChannel $true
-        Get-ChannelStatus | Select-Object source,pollerPresent,pollerPid,pendingReplies
+        Get-ChannelStatus | Select-Object source,pollerPresent,pollerPid,transportHealth,lastPollSuccessAt,pendingReplies
     }
     'Status' {
         Assert-Prerequisites
@@ -165,6 +167,7 @@ switch ($Action) {
         [pscustomobject]@{ installed=[bool]$task; taskState=if($task){[string]$task.State}else{'Absent'};
             pollerPresent=$channel.pollerPresent; pollerPid=$channel.pollerPid;
             pendingReplies=$channel.pendingReplies; credentialsEnrolled=((Test-Path $tokenFile) -and (Test-Path $settingsFile));
+            transportHealth=$channel.transportHealth; lastPollSuccessAt=$channel.lastPollSuccessAt;
             proxyUrl=if(Test-Path $settingsFile){ [string]((Get-Content $settingsFile -Raw -Encoding utf8 | ConvertFrom-Json).PSObject.Properties['proxyUrl']?.Value) }else{''} }
     }
     'SetProxy' {
