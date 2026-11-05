@@ -77,7 +77,7 @@ node dist/cli.js browser-watch-status
 node dist/cli.js browser-watch --clear
 ```
 
-Enabling creates a baseline of all currently visible ChatGPT conversations and **does not automatically run those existing chats**. Subsequent newly visible chats or new human prompts are read twice for stability, adopted at zero Relay turns, and queued for PI through the **same Telegram foreground process**, one Mission at a time. Two tabs showing an identical URL are never silently selected. `browser-candidates` is read-only inventory, not evidence that all Chrome tabs are accessible: the user must still enable Playwriter on each tab they want controlled. This watcher is source-implemented and synthetic-tested, **not yet accepted against the live Chrome/Telegram runtime**. See [browser evaluation](docs/playwriter-evaluation.md).
+Enabling creates a baseline of all currently visible ChatGPT conversations and **does not automatically run those existing chats**. Subsequent newly visible chats or new human prompts are read twice for stability, adopted at zero Relay turns, and queued for PI through the **same Telegram controller**, one Mission at a time. Two tabs showing an identical URL are never silently selected. `browser-candidates` is read-only inventory, not evidence that all Chrome tabs are accessible: the user must still enable Playwriter on each tab they want controlled. **Live acceptance:** a bounded production Chrome-watch → real tool-free PI → browser continuation → Telegram notification-cursor pilot passed on 2026-11-05; its original Send observer race led to an exact-latest-prompt SHA-256 fix that passed local regressions and was deployed, but has **not** been independently re-exercised with a post-fix live browser Send. This is not certification of arbitrary browser actions, connector writes, unattended operation or phone notification display. See [browser evaluation](docs/playwriter-evaluation.md).
 
 To install an optional native coding agent, install its package separately and register its trusted absolute JS module with `plugin-register --path`, then use `plugin-list`. Multiple plugins may be installed; the first registered is initially the default and existing native Missions remain pinned to their original executor. No agent selection is required for ChatGPT. See [plugin API](docs/plugin-api.md).
 
@@ -119,10 +119,9 @@ See [architecture](docs/architecture.md), [plugin API](docs/plugin-api.md), [ope
 
 ## Roadmap
 
-1. **v0.1** Existing experimental SQLite, Playwriter, Telegram and PI orchestration (attended text-only pilots).
-2. **v0.2** Browser-first human conversation adoption; **automatic tab-group membership discovery is pending an upstream-capability solution and real Chrome acceptance**.
-3. **v0.3** Simplify Telegram controls, restart/recovery lifecycle and mission-specific executor binding.
-4. **v0.4** Formalize optional native executor/other adapter packages, without requiring a coding agent for browser-first use.
-5. **v1.0** Cross-platform recovery, security and maintenance gates.
+1. **Current alpha (implemented):** SQLite Mission authority, profile-pinned Playwriter, browser-first zero-Send human-chat adoption, PI orchestration, Telegram commands and opted-in profile-scoped watch. No tab-group membership requirement. A bounded production text-only pilot passed; the stricter prompt-correlation fix has automated regression and deployment evidence, but no separate post-fix live Send pilot.
+2. **Next reliability gates:** Deterministic post-fix browser observation acceptance, recovery from a genuinely exited production controller, hung-process detection strategy, and stronger evidence of notification delivery; do not run disruptive tests against an active Mission.
+3. **Optional extension:** Further native executor adapters and narrowly approved browser gestures only where a real user case requires them. No built-in vendor chooser or plugin marketplace is needed for the browser-first workflow.
+4. **v1.0:** Cross-platform restart/recovery, security and operational maintenance gates with real evidence, not just synthetic fixtures.
 
 Contributions welcome after the initial core stabilizes. See [CONTRIBUTING.md](CONTRIBUTING.md).
