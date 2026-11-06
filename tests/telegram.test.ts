@@ -158,6 +158,10 @@ test('Telegram list does not inherit the 20-row pi-health diagnostic cap',async(
       f.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
       checkpoints.push(m);
     }
+    // Force an identical timestamp: wall-clock millisecond precision must not
+    // determine which Mission appears on the last page after a restart.
+    const tie=f.store.db.prepare('UPDATE missions SET created_at=? WHERE id=?');
+    for(const m of checkpoints)tie.run('2026-01-01T00:00:00.000Z',m.id);
     assert.equal(f.store.piHealth().totalOutstanding,24);
     assert.equal(f.store.piHealth().missions.length,20);
     f.transport.updates=[f.message(1,'/list 4')];

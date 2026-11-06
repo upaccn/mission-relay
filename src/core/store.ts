@@ -998,7 +998,10 @@ export class Store {
     return r;
   }
   get(id: string): Mission { return fromRow(this.raw(id)); }
-  list(): Mission[] { return (this.db.prepare('SELECT * FROM missions ORDER BY created_at DESC').all() as MissionRow[]).map(fromRow); }
+  // Millisecond timestamps can tie during batched Mission creation. SQLite
+  // insertion rowid provides a deterministic newest-first tie breaker so
+  // stable Telegram pages do not duplicate or omit Missions between reads.
+  list(): Mission[] { return (this.db.prepare('SELECT * FROM missions ORDER BY created_at DESC, rowid DESC').all() as MissionRow[]).map(fromRow); }
   /** Archiving removes old settled tasks from the daily inbox, not the audit.
    * Never archive an ambiguous Send, an active PI checkpoint or a paused error. */
   isMissionArchived(id:string):boolean {
