@@ -262,6 +262,65 @@ export class Store {
       drainRequested:this.channelDrainRequested(source)};
   }
 
+  /** Operator-safe PI liveness readback. Never expose prompt/answer bodies,
+   * browser links, Chrome IDs, token material or user-owned instructions.
+   * Reservation age is not a heartbeat: an in-flight ChatGPT answer may run
+   * for hours, and a live Bot API poll alone cannot prove browser progress. */
+  piHealth(now=Date.now()):{
+    observedAt:string;totalOutstanding:number;truncated:boolean;
+    missions:Array<{
+      id:string;state:Mission['state'];turnCount:number;maxTurns:number;
+      currentChatObservedTurns:number;piDecision:string|null;
+      piDecisionRound:number|null;browserReceipt:string|null;
+      browserReservedAt:string|null;browserReservationAgeSeconds:number|null;
+      receiptHasFullAnswerHash:boolean;lastEvent:string|null;
+      lastEventAt:string|null;pendingOwnerNotes:number;
+      ownerProcessMatchesPoller:boolean;phase:string;
+    }>;
+  } {
+    if(!Number.isFinite(now)||now<0)throw new Error('PI health requires a valid observation time');
+    const channel=this.channelStatus('telegram');
+    const active=this.list().filter(m=>{
+      if(this.getMeta(`pi.autopilot.enabled.${m.id}`)!=='1')return false;
+      if(['READY','RUNNING','VERIFYING','NEEDS_RECONCILIATION'].includes(m.state))return true;
+      if(m.state!=='PAUSED'||m.stopRequested)return false;
+      const plan=this.piPlan(m.id);
+      return (m.turnCount<m.maxTurns&&(!plan||['NEXT','HANDOFF'].includes(plan.action)))||
+        !!m.lastError;
+    });
+    const priority=(m:Mission):number=>m.state==='RUNNING'||m.state==='VERIFYING'?0:
+      m.state==='NEEDS_RECONCILIATION'?1:m.state==='READY'?2:3;
+    active.sort((a,b)=>priority(a)-priority(b)||b.createdAt.localeCompare(a.createdAt));
+    const selected=active.slice(0,20).map(m=>{
+      const receipt=this.chatBrowserTurn(m.id),plan=this.piPlan(m.id);
+      const events=this.events(m.id),last=events.at(-1);
+      const reservationTime=receipt?.status==='reserved'?Date.parse(receipt.createdAt):NaN;
+      const age=Number.isFinite(reservationTime)?Math.max(0,Math.floor((now-reservationTime)/1000)):null;
+      const phase=m.state==='NEEDS_RECONCILIATION'?'reconciliation_required_do_not_resend':
+        receipt?.status==='reserved'?'browser_answer_pending_do_not_resend':
+        m.state==='READY'?'awaiting_controller_dispatch':
+        m.state==='PAUSED'&&m.lastError?'controller_interrupted':
+        receipt&&['observed','reconciled'].includes(receipt.status)&&
+        plan?.round!==m.turnCount?'awaiting_pi_review':
+        m.state==='PAUSED'?'pi_checkpoint_ready':
+        'controller_active_browser_progress_unverified';
+      return {id:m.id,state:m.state,turnCount:m.turnCount,maxTurns:m.maxTurns,
+        currentChatObservedTurns:this.piChatObservedTurns(m.id),
+        piDecision:plan?.action??null,piDecisionRound:plan?.round??null,
+        browserReceipt:receipt?.status??null,
+        browserReservedAt:Number.isFinite(reservationTime)?receipt!.createdAt:null,
+        browserReservationAgeSeconds:age,
+        receiptHasFullAnswerHash:!!receipt?.assistantSha256&&/^[0-9a-f]{64}$/.test(receipt.assistantSha256),
+        lastEvent:last?.type??null,lastEventAt:last?.createdAt??null,
+        pendingOwnerNotes:this.pendingPiOwnerDirectives(m.id).length,
+        ownerProcessMatchesPoller:channel.pollerPresent&&m.ownerPid!==null&&
+          m.ownerPid===channel.pollerPid,
+        phase};
+    });
+    return {observedAt:new Date(now).toISOString(),totalOutstanding:active.length,
+      truncated:active.length>selected.length,missions:selected};
+  }
+
   getMeta(key:string):string|null {
     const item=this.db.prepare('SELECT value FROM meta WHERE key=?').get(key) as {value:string}|undefined;
     return item?.value ?? null;

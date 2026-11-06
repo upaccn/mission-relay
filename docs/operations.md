@@ -26,6 +26,10 @@ The owner-authorized text-only two-stage post-fix test on 2026-11-05 used a **ne
 
 ## Installation
 
+### Read-only PI long-task diagnostics
+
+Run `node dist/cli.js pi-health` in the **existing GMK checkout** to see bounded, secret-free in-flight PI Mission IDs, observed browser rounds, current-chat 8-turn budget, PI decision/round, request reservation age and an explicit request phase. The same phase and request age appear in authenticated Telegram `/status <mission-id>` after activation of this version. `pi-health` does not attach to Playwriter, inspect conversations, read credentials, change SQLite, send messages or start a second worker. It deliberately omits owner goals, raw prompts, response text, browser URLs, Chrome identities and SHA values. A `browser_answer_pending_do_not_resend` phase means a request is still reserved and its final answer **has not been credited**, not that the browser is frozen or that a resend is permitted. A healthy Telegram `getUpdates` heartbeat proves transport connectivity only. When the phase becomes `reconciliation_required_do_not_resend`, independently inspect the exact original request and browser answer before any acknowledged recovery. Do not bypass the existing channel-drain maintenance gate for deployment.
+
 1. Use Node.js 24 LTS+ and run `npm ci && npm run build`.
 2. The default browser-first workflow only requires an already authenticated Chrome ChatGPT tab with the official Playwriter extension explicitly enabled. **No native coding-agent account is required.** For optional Codex native execution alone, install `examples/executors/codex` independently (`npm ci --prefix examples/executors/codex`), use its own `npm run init --prefix examples/executors/codex` to create an isolated profile, then authorize that profile through the official `codex login` flow. See its dedicated README; do not paste tokens or copy cookies into Mission Relay.
 3. Optional native executor plugins are independently installed trusted modules, registered with `plugin-register --path`. ChatGPT/PI/Telegram does not load them. Start with read-only missions in a throwaway Git repository.

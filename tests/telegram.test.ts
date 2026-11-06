@@ -48,6 +48,83 @@ const fixture=()=>{
     cleanup:()=>{store.close();rmSync(dir,{force:true,recursive:true});}};
 };
 
+test('pi-health reports exact browser/PI progress without revealing private goals or messages',()=>{
+  const f=fixture();try{
+    const linked=f.store.linkChat(f.m.id,'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',f.m.version).mission;
+    const bound=f.store.bindChatBrowser(f.m.id,'install:Chrome:private',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${f.m.id}`,'1');
+    const sha=createHash('sha256').update('private submitted user prompt').digest('hex');
+    f.store.reserveChatBrowserTurn(f.m.id,bound.version,'private-request-1',sha);
+    const original=f.store.chatBrowserTurn(f.m.id)!;
+    const before=f.store.maxEventId();
+    const health=f.store.piHealth(Date.parse(original.createdAt)+27_000);
+    assert.equal(health.totalOutstanding,1);
+    assert.equal(health.missions.length,1);
+    const item=health.missions[0]!;
+    assert.equal(item.state,'RUNNING');
+    assert.equal(item.turnCount,0);
+    assert.equal(item.browserReceipt,'reserved');
+    assert.equal(item.browserReservationAgeSeconds,27);
+    assert.equal(item.phase,'browser_answer_pending_do_not_resend');
+    assert.equal(item.receiptHasFullAnswerHash,false);
+    assert.equal(item.ownerProcessMatchesPoller,false);
+    assert.equal(item.lastEvent,'chatgpt.browser_reserved');
+    assert.equal(f.store.maxEventId(),before);
+    const serialized=JSON.stringify(health);
+    for(const privateValue of ['Telegram test','private submitted user prompt','private-request-1',
+      'install:Chrome:private','chatgpt.com',sha])assert.ok(!serialized.includes(privateValue));
+    const answer='Private response with [MISSION_RELAY:NEXT]';
+    f.store.finishChatBrowserTurn(f.m.id,'private-request-1',{kind:'observed',
+      assistantSha256:createHash('sha256').update(answer).digest('hex'),summary:answer});
+    const after=f.store.piHealth();
+    assert.equal(after.missions[0]?.phase,'awaiting_pi_review');
+    assert.equal(after.missions[0]?.turnCount,1);
+    assert.equal(after.missions[0]?.currentChatObservedTurns,1);
+    assert.equal(after.missions[0]?.receiptHasFullAnswerHash,true);
+    f.store.commitPiPlan(f.m.id,createHash('sha256').update(answer).digest('hex'),[],
+      {action:'DONE',summary:'All verified',nextPrompt:''});
+    assert.equal(f.store.piHealth().totalOutstanding,0);
+  }finally{f.cleanup();}
+});
+
+test('pi-health distinguishes an ambiguous browser request from a healthy Telegram connection',()=>{
+  const f=fixture();try{
+    const linked=f.store.linkChat(f.m.id,'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',f.m.version).mission;
+    const bound=f.store.bindChatBrowser(f.m.id,'install:Chrome:private',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${f.m.id}`,'1');
+    f.store.reserveChatBrowserTurn(f.m.id,bound.version,'private-uncertain',
+      createHash('sha256').update('private prompt').digest('hex'));
+    f.store.finishChatBrowserTurn(f.m.id,'private-uncertain',{
+      kind:'uncertain',error:'UI reply cannot be attributed'});
+    const status=f.store.piHealth();
+    assert.equal(status.totalOutstanding,1);
+    assert.equal(status.missions[0]?.browserReceipt,'uncertain');
+    assert.equal(status.missions[0]?.phase,'reconciliation_required_do_not_resend');
+    assert.equal(status.missions[0]?.browserReservationAgeSeconds,null);
+    assert.equal(status.missions[0]?.state,'NEEDS_RECONCILIATION');
+  }finally{f.cleanup();}
+});
+
+test('authenticated Telegram status exposes bounded in-flight PI phase without suggesting a duplicate Send',async()=>{
+  const f=fixture();try{
+    const linked=f.store.linkChat(f.m.id,'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',f.m.version).mission;
+    const bound=f.store.bindChatBrowser(f.m.id,'install:Chrome:private',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${f.m.id}`,'1');
+    f.store.reserveChatBrowserTurn(f.m.id,bound.version,'private-reservation',
+      createHash('sha256').update('very private browser prompt').digest('hex'));
+    f.transport.updates=[f.message(739,`/status ${f.m.id}`)];
+    await f.bridge.pollOnce(0);
+    const output=f.transport.sent.join('\n');
+    assert.match(output,/Current Chat observed sends: 0\/8/);
+    assert.match(output,/Controller phase: browser_answer_pending_do_not_resend/);
+    assert.match(output,/Current browser request age: \d+s/);
+    assert.match(output,/not proof of a stall; do not resend/);
+    assert.ok(!output.includes('very private browser prompt'));
+    assert.ok(!output.includes('private-reservation'));
+    assert.equal(f.store.chatBrowserTurn(f.m.id)?.status,'reserved');
+  }finally{f.cleanup();}
+});
+
 test('Telegram accepts only allowlisted numeric user and private chat',async()=>{
   const f=fixture();try {
     f.transport.updates=[f.message(1,`/pause ${f.m.id}`,999),f.message(2,`/pause ${f.m.id}`,1001,2001,'group'),

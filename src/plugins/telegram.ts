@@ -728,16 +728,24 @@ export class TelegramBridge {
       throw new Error('Unknown command. Send /help. Native agents use /agent, not a vendor-specific command.');
     if(!id || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Provide a complete mission UUID');
     const m=this.engine.get(id);
-    if(cmd==='/status') return [`${m.id} [${m.state}] v${m.version}`,`Turn ${m.turnCount}/${m.maxTurns}`,
+    if(cmd==='/status') {
+      const piLive=this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'
+        ?this.store.piHealth().missions.find(item=>item.id===id):undefined;
+      return [`${m.id} [${m.state}] v${m.version}`,`Turn ${m.turnCount}/${m.maxTurns}`,
       `Mode: ${m.sandbox}${m.sandbox==='workspace-write'&&m.workspace?` (${m.workspace})`:''}`,
       `Goal: ${m.goal.slice(0,400)}`,
       ...(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'
         ?[`PI coordinator: ${this.store.piPlan(id)?.action??'analyzing / awaiting the first answer'}`,
           `Pending owner instructions: ${this.store.pendingPiOwnerDirectives(id).length}`]:[]),
+      ...(piLive?[`Current Chat observed sends: ${piLive.currentChatObservedTurns}/8`,
+        `Controller phase: ${piLive.phase}`,
+        ...(piLive.browserReservationAgeSeconds!==null
+          ?[`Current browser request age: ${piLive.browserReservationAgeSeconds}s (not proof of a stall; do not resend)`]:[])]:[]),
       ...(this.store.piChainParent(id)?[`Previous Mission: ${this.store.piChainParent(id)}`]:[]),
       ...(this.store.piChainSuccessor(id)?[`Continued as: ${this.store.piChainSuccessor(id)}`]:[]),
       ...(m.lastError?[`Last controller error: ${compactTelegramText(m.lastError,250)}`]:[]),
       `Last summary: ${(m.lastSummary ?? 'none').slice(0,1000)}`].join('\n');
+    }
     if(cmd==='/handoff') {
       if(words.length) throw new Error('Use /handoff <mission-id>');
       const url=this.store.chatLink(id);

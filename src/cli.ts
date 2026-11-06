@@ -62,6 +62,7 @@ Commands:
                       Operator approval of one repository for /build (must equal configured PI project)
   telegram-identify     Inspect local /start sender IDs before owner authorization
   channel-status        Inspect durable Telegram delivery cursor and poller status (no secrets)
+  pi-health             Inspect active PI/browser requests, observed turns and wait age (no content, no Send)
   create --goal <text> --accept <criterion> [--accept <criterion>...] --workspace <path>
          [--sandbox read-only|workspace-write] [--mode supervised|autopilot]
          [--max-turns 10] [--request-key <stable key>] [--checks-file <path>]
@@ -276,6 +277,9 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       result={released:true};
     } else if (command === 'channel-status') {
       result=store.channelStatus('telegram');
+    } else if (command === 'pi-health') {
+      if(id||rest.length)throw new Error('pi-health takes no arguments');
+      result=store.piHealth();
     } else if (command === 'doctor') {
       result=await executorPreflight(store);
       if (!(result as {ok:boolean}).ok) process.exitCode=2;
