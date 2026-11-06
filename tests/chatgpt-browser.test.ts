@@ -18,6 +18,7 @@ import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUr
   submitChatTurn,submitNewChatTurn,
   DEFAULT_BROWSER_TURN_TIMEOUT_MS,MAX_BROWSER_TURN_TIMEOUT_MS,type BrowserSession} from '../src/plugins/chatgpt-browser.js';
 import {executeBrowserTurn,driveChatConversation,browserDecision,browserFreshTaskPrompt,
+  retireSupersededRelayTab,
   MAX_FRESH_CHAT_TASK_CHARS,executorTaskGoal,
   browserNewChatPrompt,browserRolloverRecoveryPrompt,browserContinuationPrompt} from '../src/core/browser-controller.js';
 import type {AgentAdapter} from '../src/core/types.js';
@@ -881,6 +882,74 @@ class SourceWithNewTab extends SyntheticChatPage {
     this.created++;return this.destination;
   }};}
 }
+
+class RelayOwnedIntermediatePage extends SyntheticNewChatPage {
+  closeCalls=0;
+  failClose=false;
+  nextPage:Page|null=null;
+  async close(){
+    this.closeCalls++;
+    if(this.failClose)throw new Error('synthetic browser lost connection while closing owned tab');
+  }
+  context(){return {newPage:async()=>{
+    if(!this.nextPage)throw new Error('Synthetic next tab not configured');
+    return this.nextPage;
+  }};}
+}
+class DistinctLastNewChatPage extends RelayOwnedIntermediatePage {
+  override url(){
+    const url=super.url();
+    return url===NEXT_CHAT_URL
+      ?'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614179998':url;
+  }
+}
+
+test('a verified second rollover retires only its prior Relay-owned tab, never the owner source',async()=>{
+  for(const failClose of [false,true]){
+    const f=fixture();try{
+      const source=new SourceWithNewTab();
+      let ownerSourceCloses=0;
+      (source as unknown as {close:()=>Promise<void>}).close=async()=>{ownerSourceCloses++;};
+      source.reply='First completed stage\n[MISSION_RELAY:HANDOFF]';
+      const intermediate=new RelayOwnedIntermediatePage();
+      intermediate.reply='Second completed stage\n[MISSION_RELAY:HANDOFF]';
+      intermediate.failClose=failClose;
+      const destination=new DistinctLastNewChatPage();
+      destination.reply='Third stage finished\n[MISSION_RELAY:DONE]';
+      intermediate.nextPage=destination as unknown as Page;
+      source.destination=intermediate;
+      const result=await driveChatConversation({store:f.store,missionId:f.linked.id,
+        revision:f.linked.version,requestPrefix:`owned-tab-retire-${failClose}`,
+        turns:3,page:source as unknown as Page,url:URL,timeoutMs:12000});
+      assert.equal(result.turnsObserved.length,3);
+      assert.equal(ownerSourceCloses,0,'The caller-owned original tab is never disposable');
+      assert.equal(intermediate.closeCalls,1,'Only the old confirmed Relay-owned tab is retired');
+      assert.equal(destination.closeCalls,0,'The active destination remains open');
+      assert.equal(source.sends,1);
+      assert.equal(intermediate.sends,1);
+      assert.equal(destination.sends,1);
+      assert.equal(f.store.chatLink(f.linked.id),destination.url());
+      assert.equal(f.store.events(f.linked.id).filter(e=>e.type==='chatgpt.browser_migrated').length,2);
+      assert.equal(f.store.chatBrowserTurn(f.linked.id)?.status,'observed',
+        'Best-effort cleanup failure cannot corrupt the committed browser answer');
+    }finally{f.cleanup();}
+  }
+});
+
+test('owned tab cleanup refuses to close navigated, already closed or active destination tabs',async()=>{
+  let closes=0;
+  const owned={
+    isClosed:()=>false,url:()=>NEXT_CHAT_URL,
+    close:async()=>{closes++;},
+  } as unknown as Page;
+  const destination={isClosed:()=>false,url:()=>URL} as unknown as Page;
+  await retireSupersededRelayTab(owned,owned,NEXT_CHAT_URL);
+  await retireSupersededRelayTab(owned,destination,URL);
+  await retireSupersededRelayTab(null,destination,NEXT_CHAT_URL);
+  assert.equal(closes,0,'Never close active, caller-owned or navigated pages');
+  await retireSupersededRelayTab(owned,destination,NEXT_CHAT_URL);
+  assert.equal(closes,1,'Only a known owned tab at its exact old URL is eligible');
+});
 
 test('HANDOFF marker creates one new authorized tab, sends task context and atomically migrates the Mission',async()=>{
   const f=fixture();try {

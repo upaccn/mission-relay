@@ -62,6 +62,29 @@ export async function executeBrowserTurn(input:{
 }
 
 export type BrowserDecision='NEXT'|'DONE'|'BLOCKED'|'HANDOFF'|'UNMARKED';
+
+/** Only a page returned by a successful Relay new-tab Send may be retired.
+ * Do not close the owner's original/attached tab, a navigated tab, or the
+ * currently active destination. The new response and URL must already have
+ * committed to SQLite before the caller invokes this best-effort cleanup. */
+export async function retireSupersededRelayTab(ownedPage:Page|null,
+  destination:Page,expectedOldUrl:string):Promise<void>{
+  if(!ownedPage||ownedPage===destination)return;
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  try{
+    if(ownedPage.isClosed()||ownedPage.url().replace(/\/$/,'')!==expectedOldUrl.replace(/\/$/,''))return;
+    await Promise.race([
+      ownedPage.close(),
+      new Promise<void>((_,reject)=>{
+        timer=setTimeout(()=>reject(new Error('owned tab close timeout')),4000);
+      }),
+    ]);
+  }catch{
+    // A cleanup issue after a durable response is not an ambiguous Send and
+    // must not prevent PI from evaluating the already-committed destination.
+    console.error('Relay-owned previous ChatGPT tab could not be closed; keeping the verified new conversation');
+  }finally{if(timer)clearTimeout(timer);}
+}
 /** Flow-control signal, not independent verification of a model's claims. */
 export function browserDecision(answer:string):BrowserDecision {
   const ending=answer.trim().slice(-300);
@@ -276,6 +299,7 @@ export async function driveChatConversation(input:{
   if(!/^[\w.-]{1,120}$/.test(input.requestPrefix)) throw new Error('Invalid browser request prefix');
   let revision=input.revision;
   let page=input.page,url=input.url;
+  let ownedPage:Page|null=null;
   let pendingHandoff:string|null=null;
   const results:Array<{turnCount:number;revision:number;responseSha256:string;responseExcerpt:string;flowSignal:BrowserDecision}>=[];
   for(let i=0;i<input.turns;i++) {
@@ -327,8 +351,11 @@ export async function driveChatConversation(input:{
         requireFinalMarker:true,consumedInstruction:m.nextInstruction,
         telegramBatch:batch,expectedSource});
     if('page' in receipt){
-      page=(receipt as BrowserTurnOutcome&{page:Page;url:string}).page;
-      url=(receipt as BrowserTurnOutcome&{page:Page;url:string}).url;
+      const migrated=receipt as BrowserTurnOutcome&{page:Page;url:string};
+      const formerPage=page,formerUrl=url;
+      page=migrated.page;url=migrated.url;
+      await retireSupersededRelayTab(ownedPage,page,formerUrl);
+      ownedPage=page===formerPage?null:page;
     }
     const signal=browserDecision(receipt.lastAssistant);
     results.push({turnCount:receipt.turnCount,revision:receipt.revision,

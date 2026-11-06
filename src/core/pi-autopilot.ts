@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import type {Store,PiPlan} from './store.js';
 import type {PiPlanner,PiDecision} from './pi-planner.js';
 import {inspectChatPage,lastVisibleUserPromptSha256} from '../plugins/chatgpt-browser.js';
-import {executeBrowserTurn,executeBrowserRollover,browserFreshTaskPrompt,
+import {executeBrowserTurn,executeBrowserRollover,retireSupersededRelayTab,browserFreshTaskPrompt,
   browserNewChatPrompt,browserTaskPolicy,executorTaskGoal,type BrowserTurnOutcome} from './browser-controller.js';
 import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 
@@ -148,6 +148,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
   if(origin.sandbox!=='read-only'&&!writeWorkspace)
     throw new Error('PI Mission has no approved execution scope');
   let page=input.page,url=input.url,revision=input.revision;
+  let ownedPage:Page|null=null;
   let nextPlan:PiPlan|null=null;
   let latestBrowserAnswer=input.recoveredAnswer?.lastAssistant??null;
   if(chainParentId&&origin.turnCount===0){
@@ -287,7 +288,10 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
     if(!received)return; // PI stopped a successor before its first Send.
     if('page' in received){
       const rollover=received as BrowserTurnOutcome&{page:Page;url:string};
+      const formerPage=page,formerUrl=url;
       page=rollover.page;url=rollover.url;
+      await retireSupersededRelayTab(ownedPage,page,formerUrl);
+      ownedPage=page===formerPage?null:page;
     }
     revision=received.revision;
     const lastAssistant=received.lastAssistant;

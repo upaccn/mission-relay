@@ -2,6 +2,12 @@
 
 Updated: 2026-11-07
 
+## 2026-11-07 long-task Chrome tab retirement hardening
+
+- **Read-back baseline:** AIOS and GitHub `main` were clean at `631fb93fd5f6d1db47e8369d5b9d5b929f8caed3`; exact-SHA GitHub Actions `42299159630` succeeded on Ubuntu, macOS and Windows. GMK remained on clean pull-only `a29576e` because its Telegram worker had an active, durably reserved third browser Send. The second ChatGPT answer had been observed and PI reviewed (`2/32`, `2` SHA-matched NEXT decisions, `pi-evidence.ledgerConsistent:true`, 0 violations). Channel transport and single worker were healthy. Do not resend, reset, drain or restart this in-flight request.
+- **Source change:** `closeTabsOnEnd:false` intentionally preserves user/active Chrome tabs, but continuous automatic new-chat handoffs otherwise retain every Relay-created old tab in Chrome. The PI and manual browser-drive loops now track only pages they themselves received from a successfully observed, atomically committed new-tab Send. On a later successful rollover, they retire only the prior Relay-owned page (never the user/attached source nor current destination), and only if its exact ChatGPT URL is unchanged. A bounded 4-second best-effort close cannot turn a committed response into `NEEDS_RECONCILIATION`, retry a browser Send, or indefinitely delay PI. The existing SQLite record, Chrome binding and prior chat history remain intact. Unproven tabs across restarts or separate manual invocations remain untouched.
+- **Evidence scope:** Distinct synthetic tabs, repeated HANDOFF, cleanup failure and changed/active URL guards are tested. The **final Linux source passed 230/230 tests**, `npm run check`, `npm run privacy-check`, `npm run build` and `git diff --check` with no failures. This improvement is not a real 5→6 Playwriter acceptance or proven reduction in Chrome RAM. GitHub exact-SHA CI remains a separate promotion gate, and GMK deployment and live 5→6/32→child acceptance remain outstanding while its active Send prevents an authorized drain.
+
 ## 2026-11-07 ordinary PI NEXT and manual intra-batch source-correlation hardening
 
 - **Verified source baseline:** AIOS checkout and GitHub `main` were the same clean `381d95d81a88b079dc6717ab0759fd1551845a32`; independent GitHub Actions run `42297329481` returned `success` on Ubuntu, macOS and Windows Node 24 with that exact head SHA. GMK Windows runtime remained at the older clean pull-only revision `a29576e` because maintenance preflight correctly rejected an active browser Send.
