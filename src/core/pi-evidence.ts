@@ -68,6 +68,12 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
   const violations:string[]=[];
   let chatSegment=0,chatTurn=0,maxPerChat=0,verified=0;
   let pendingMigration:string|null=null;
+  // Consecutive migrations must form one continuous conversation lineage.
+  // The initial source chat may be an adopted/owner-linked tab, so its hash
+  // is unknown until the first independently recorded destination. Do not
+  // count a later migration from an unrelated source as a valid reset of
+  // the five-Send ceiling merely because its two URL hashes differ.
+  let lastDestinationUrlSha256:string|null=null;
   const observations:PiRoundEvidence[]=[];
   const warn=(issue:string)=>{if(!violations.includes(issue))violations.push(issue);};
   for(const e of events){
@@ -88,6 +94,10 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
         typeof p.newUrlSha256!=='string'||!SHA.test(p.newUrlSha256)||
         p.previousUrlSha256===p.newUrlSha256)
         warn('invalid_migration_url_sha256');
+      if(lastDestinationUrlSha256&&p.previousUrlSha256!==lastDestinationUrlSha256)
+        warn('migration_source_url_discontinuity');
+      if(typeof p.newUrlSha256==='string'&&SHA.test(p.newUrlSha256))
+        lastDestinationUrlSha256=p.newUrlSha256;
       pendingMigration=typeof p.requestKey==='string'?p.requestKey:'';
       chatSegment++;chatTurn=0;
     }
@@ -133,6 +143,12 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
       typeof p.newUrlSha256!=='string'||!SHA.test(p.newUrlSha256)||
       p.previousUrlSha256===p.newUrlSha256))
       warn('invalid_recovered_migration_url_sha256');
+    if(kind==='recovered-new-chat'){
+      if(lastDestinationUrlSha256&&p.previousUrlSha256!==lastDestinationUrlSha256)
+        warn('migration_source_url_discontinuity');
+      if(typeof p.newUrlSha256==='string'&&SHA.test(p.newUrlSha256))
+        lastDestinationUrlSha256=p.newUrlSha256;
+    }
     observations.push({round,observedEventId:e.id,observedAt:e.createdAt,
       observation:kind,answerSha256:typeof sha==='string'?sha:'',
       chatSegment,chatTurn,decisionEventId:null,decisionAction:null,

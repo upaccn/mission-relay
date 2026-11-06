@@ -132,6 +132,53 @@ test('PI ledger rejects fake or misattributed chat migrations even when all answ
   }finally{f.cleanup();}
 });
 
+test('PI ledger refuses a discontinuous 5-to-6 Chat URL migration despite matching answer and PI hashes',()=>{
+  const f=fixture();try{
+    for(let i=1;i<=6;i++)observe(f.store,f.id,i,i===1?first:i===6?second:undefined);
+    const migrations=f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_migrated');
+    assert.equal(migrations.length,2);
+    const firstPayload=migrations[0]!.payload as {newUrlSha256:string};
+    const secondPayload=migrations[1]!.payload as {previousUrlSha256:string};
+    assert.equal(secondPayload.previousUrlSha256,firstPayload.newUrlSha256);
+    const old=inspectPiEvidence(f.store,f.id);
+    assert.equal(old.ledgerConsistent,true);
+    const forged={...secondPayload,previousUrlSha256:sha('a different, unrelated browser conversation')};
+    assert.notEqual(forged.previousUrlSha256,firstPayload.newUrlSha256);
+    f.store.db.prepare('UPDATE events SET payload_json=? WHERE id=?')
+      .run(JSON.stringify(forged),migrations[1]!.id);
+    const audit=inspectPiEvidence(f.store,f.id);
+    assert.equal(audit.decisionsVerified,6,
+      'A valid answer/PI hash cannot justify a migration from an unrelated source tab');
+    assert.equal(audit.ledgerConsistent,false);
+    assert.ok(audit.violations.includes('migration_source_url_discontinuity'));
+  }finally{f.cleanup();}
+});
+
+test('PI ledger also verifies source URL continuity for an independently recovered new-chat answer',()=>{
+  const f=fixture();try{
+    observe(f.store,f.id,1,first);
+    const answer='Previously ambiguous new chat, later independently inspected';
+    const request='recovered-next-chat',promptSha=sha('new chat request');
+    f.store.reserveChatBrowserTurn(f.id,f.store.get(f.id).version,request,
+      promptSha,{newConversation:true});
+    f.store.finishChatBrowserTurn(f.id,request,{kind:'uncertain',error:'Chrome observer unavailable'});
+    f.store.recoverObservedBrowserRollover(f.id,f.store.get(f.id).version,{
+      requestPromptSha256:promptSha,newChatUrl:second,
+      assistantSha256:sha(answer),summary:answer});
+    f.store.commitPiPlan(f.id,sha(answer),[],{
+      action:'NEXT',summary:'The observed response is attributable',nextPrompt:'Continue'});
+    assert.equal(inspectPiEvidence(f.store,f.id).ledgerConsistent,true);
+    const recovered=f.store.events(f.id).find(e=>e.type==='chatgpt.browser_rollover_recovered')!;
+    f.store.db.prepare('UPDATE events SET payload_json=? WHERE id=?')
+      .run(JSON.stringify({...recovered.payload as object,
+        previousUrlSha256:sha('another unrelated old conversation')}),recovered.id);
+    const report=inspectPiEvidence(f.store,f.id);
+    assert.equal(report.decisionsVerified,2);
+    assert.equal(report.ledgerConsistent,false);
+    assert.ok(report.violations.includes('migration_source_url_discontinuity'));
+  }finally{f.cleanup();}
+});
+
 test('PI ledger independently validates a recovered first-new-chat answer and rejects a mismatched PI hash',()=>{
   const f=fixture();try{
     const answer='Observed after exact-prompt operator recovery',request='first-recover';
