@@ -840,6 +840,8 @@ export class TelegramBridge {
           `Pending owner instructions: ${this.store.pendingPiOwnerDirectives(id).length}`]:[]),
       ...(piLive?[`Current Chat observed sends: ${piLive.currentChatObservedTurns}/${MAX_RELAY_CHAT_TURNS}`,
         `Controller phase: ${piLive.phase}`,
+        ...(piLive.browserNewChatReserved
+          ?['New Chat: reserved only (Send, new URL and answer not yet verified)']:[]),
         ...(piLive.browserReservationAgeSeconds!==null
           ?[`Current browser request age: ${piLive.browserReservationAgeSeconds}s (not proof of a stall; do not resend)`]:[])]:[]),
       ...(this.store.piChainParent(id)?[`Previous Mission: ${this.store.piChainParent(id)}`]:[]),

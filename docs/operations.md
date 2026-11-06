@@ -1,5 +1,7 @@
 # Operations
 
+**New-chat intent vs. observed result:** The read-only `pi-health.browserNewChatReserved`, `pi-evidence.pendingNewChatReservation` and authenticated Telegram `/status` distinguish an unresolved *new-conversation reservation* from an ordinary same-chat continuation. They never certify an actual new tab, URL migration or final answer. A browser page that appears complete while its original observer has not committed the receipt remains in-flight: do not replay, replace its request key, restart the active controller or bypass the maintenance drain.
+
 ## Canonical development checkout and local execution node
 
 For the owner-operated AIOS/GMK deployment, the **durable AIOS Linux checkout is the only development source**. GitHub `main` is the reviewed, pushed release/synchronization record. The Windows GMK checkout is a **pull-only execution copy**, not an independent branch of product development. This does not make AIOS a Mission Provider or move the authoritative local browser-Mission SQLite database to the VPS.

@@ -2,6 +2,11 @@
 
 Updated: 2026-11-07
 
+## 2026-11-07 sixth-turn diagnostic intent precision (AIOS source)
+
+- **Production readback:** GMK was still on `a29576e` when owner Mission `c3574261` reached five fully observed same-chat turns with five exact-SHA PI NEXT decisions. Event #281 reserved the sixth request. A separate pinned Playwriter inventory plus read-only DOM inspection found a different ChatGPT conversation URL with a visible latest user prompt whose SHA-256 matched event #281; the browser had shown an assistant message, but the original worker had **not** committed its response, migration or sixth PI decision. The Telegram poller remained healthy. No replay, forced recovery or GMK upgrade was authorized by this evidence.
+- **Minimal source change:** `pi-health.browserNewChatReserved`, `pi-evidence.pendingNewChatReservation` and the authenticated Telegram `/status` new-chat intent line distinguish an unresolved new-chat reservation from a same-chat request. These report only SQLite reservation intent, not a confirmed tab, Send, URL, response or autonomous rollover. No Send behavior, database schema, process lifecycle or original request records are changed. A post-change targeted suite passed 69/69 tests, and TypeScript check, privacy-check, build and diff check passed. The full post-change suite, exact-SHA GitHub CI, production activation and live sixth-turn completion are separate gates.
+
 ## 2026-11-07 five-to-six Chat migration lineage audit hardening
 
 - **Verified baseline:** AIOS and GitHub `main` were clean at `a3e3118535ba272b67ca93951af37654a6187a5a`; GitHub Actions `42302579893` returned exact-SHA success for Windows, Ubuntu and macOS. GMK remained at `a29576e`, single healthy Telegram Poller PID 12932, no pending Bot API replies, and an in-progress fifth browser Send. The owner Mission `c3574261` had **4/32 observed replies** with 4 SHA-matched PI NEXT decisions; `pi-evidence` reported 1 Chat segment, 0 violations and `ledgerConsistent:true`. The fifth Send had been reserved at `2026-11-06T22:27:08.914Z` and not yet observed. Do not resend, clear, restart or deploy over that reservation.

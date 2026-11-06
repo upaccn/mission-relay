@@ -268,6 +268,7 @@ test('pi-health reports exact browser/PI progress without revealing private goal
     assert.equal(item.state,'RUNNING');
     assert.equal(item.turnCount,0);
     assert.equal(item.browserReceipt,'reserved');
+    assert.equal(item.browserNewChatReserved,false);
     assert.equal(item.browserReservationAgeSeconds,27);
     assert.equal(item.phase,'browser_answer_pending_do_not_resend');
     assert.equal(item.receiptHasFullAnswerHash,false);
@@ -285,9 +286,38 @@ test('pi-health reports exact browser/PI progress without revealing private goal
     assert.equal(after.missions[0]?.turnCount,1);
     assert.equal(after.missions[0]?.currentChatObservedTurns,1);
     assert.equal(after.missions[0]?.receiptHasFullAnswerHash,true);
+    assert.equal(after.missions[0]?.browserNewChatReserved,false);
     f.store.commitPiPlan(f.m.id,createHash('sha256').update(answer).digest('hex'),[],
       {action:'DONE',summary:'All verified',nextPrompt:''});
     assert.equal(f.store.piHealth().totalOutstanding,0);
+  }finally{f.cleanup();}
+});
+
+test('read-only diagnostics distinguish new-chat reservation from an observed migration',async()=>{
+  const f=fixture();try{
+    const linked=f.store.linkChat(f.m.id,'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',f.m.version).mission;
+    const bound=f.store.bindChatBrowser(f.m.id,'install:Chrome:private',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${f.m.id}`,'1');
+    const before=f.store.maxEventId();
+    f.store.reserveChatBrowserTurn(f.m.id,bound.version,'new-chat-reserved',
+      createHash('sha256').update('sensitive prompt').digest('hex'),{newConversation:true});
+    const afterReservation=f.store.maxEventId();
+    assert.equal(afterReservation,before+1);
+    const health=f.store.piHealth();
+    assert.equal(health.missions[0]?.browserNewChatReserved,true);
+    assert.equal(health.missions[0]?.turnCount,0);
+    const {inspectPiEvidence}=await import('../src/core/pi-evidence.js');
+    const evidence=inspectPiEvidence(f.store,f.m.id);
+    assert.equal(evidence.pendingBrowserRequest,true);
+    assert.equal(evidence.pendingNewChatReservation,true);
+    assert.equal(evidence.chatSegments,0);
+    f.transport.updates=[f.message(740,`/status ${f.m.id}`)];
+    await f.bridge.pollOnce(0);
+    assert.match(f.transport.sent.join('\n'),/New Chat: reserved only/);
+    assert.equal(f.store.maxEventId(),afterReservation,
+      'Read-only diagnostics must not create new events or credit an answer');
+    for(const secret of ['sensitive prompt','new-chat-reserved','chatgpt.com'])
+      assert.ok(!JSON.stringify(health).includes(secret));
   }finally{f.cleanup();}
 });
 

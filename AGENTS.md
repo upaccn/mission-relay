@@ -1,5 +1,7 @@
 # Mission Relay contributor instructions
 
+Read-only PI health/evidence and Telegram status may expose a **new-conversation reservation intent** flag from private SQLite. It must be false for same-chat and settled requests and must never be treated as proof of a new tab, submitted Send, observed URL or completed response. Never recover, replay or deploy based on this flag alone.
+
 This is an independent, public, local-first open-source project. It does not depend on any private AIOS deployment.
 
 ## Boundaries

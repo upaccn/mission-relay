@@ -19,6 +19,8 @@ export interface PiEvidenceReport {
   chatSegments:number;maxObservedTurnsInOneChat:number;
   decisionsVerified:number;pendingPiReviewRounds:number[];
   pendingBrowserRequest:boolean;
+  /** Intent in the current SQLite reservation; no browser migration is credited. */
+  pendingNewChatReservation:boolean;
   successorId:string|null;parentId:string|null;
   violations:string[];ledgerConsistent:boolean;
   rounds:PiRoundEvidence[];
@@ -183,6 +185,7 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     maxObservedTurnsInOneChat:maxPerChat,decisionsVerified:verified,
     pendingPiReviewRounds:pending,
     pendingBrowserRequest:current?.status==='reserved',
+    pendingNewChatReservation:current?.status==='reserved'&&current.newConversation===true,
     successorId:store.piChainSuccessor(id),parentId:store.piChainParent(id),
     violations,ledgerConsistent:violations.length===0,rounds:observations,
     businessAcceptanceVerified:false,

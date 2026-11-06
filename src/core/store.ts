@@ -290,6 +290,8 @@ export class Store {
       id:string;state:Mission['state'];turnCount:number;maxTurns:number;
       currentChatObservedTurns:number;piDecision:string|null;
       piDecisionRound:number|null;browserReceipt:string|null;
+      /** Reservation intent only; not proof of a new tab, Send or reply. */
+      browserNewChatReserved:boolean;
       browserReservedAt:string|null;browserReservationAgeSeconds:number|null;
       receiptHasFullAnswerHash:boolean;lastEvent:string|null;
       lastEventAt:string|null;pendingOwnerNotes:number;
@@ -326,6 +328,7 @@ export class Store {
         currentChatObservedTurns:this.piChatObservedTurns(m.id),
         piDecision:plan?.action??null,piDecisionRound:plan?.round??null,
         browserReceipt:receipt?.status??null,
+        browserNewChatReserved:receipt?.status==='reserved'&&receipt.newConversation===true,
         browserReservedAt:Number.isFinite(reservationTime)?receipt!.createdAt:null,
         browserReservationAgeSeconds:age,
         receiptHasFullAnswerHash:!!receipt?.assistantSha256&&/^[0-9a-f]{64}$/.test(receipt.assistantSha256),
