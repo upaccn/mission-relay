@@ -23,6 +23,22 @@ export interface PiEvidenceReport {
   /** This is a ledger-integrity report, NOT business acceptance or v1.0 qualification. */
   businessAcceptanceVerified:false;
 }
+export interface PiChainEvidenceReport {
+  rootMissionId:string;
+  inspectedFromMissionId:string;
+  missionCount:number;
+  chainConsistent:boolean;
+  violations:string[];
+  links:Array<{
+    parentId:string;childId:string;
+    limitEventId:number|null;successorEventId:number|null;startedEventId:number|null;
+    parentPlanRound:number|null;parentAnswerShaMatches:boolean;
+    scopeInherited:boolean;childStartsInNewChat:boolean|null;
+  }>;
+  missions:PiEvidenceReport[];
+  /** Append-only consistency alone never proves business completion. */
+  businessAcceptanceVerified:false;
+}
 const SHA=/^[0-9a-f]{64}$/;
 const observationTypes={
   'chatgpt.browser_observed':'normal',
@@ -46,6 +62,7 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
   const events=store.events(id);
   const reserved=new Map<string,number>(),used=new Set<string>();
   const decisions=new Map<number,MissionEvent>();
+  const allDecisions=new Map<number,MissionEvent[]>();
   const violations:string[]=[];
   let chatSegment=0,chatTurn=0,maxPerChat=0,verified=0;
   const observations:PiRoundEvidence[]=[];
@@ -63,7 +80,16 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     if(e.type==='pi.decision'||e.type==='pi.decision_revised'){
       if(typeof p.round!=='number'||!Number.isInteger(p.round)||p.round<0)
         warn('invalid_pi_round');
-      else decisions.set(p.round,e);
+      else {
+        const prior=allDecisions.get(p.round)??[];
+        if(e.type==='pi.decision'&&prior.length)
+          warn('duplicate_base_pi_decision');
+        if(e.type==='pi.decision_revised'&&!prior.length)
+          warn('pi_decision_revision_without_base');
+        prior.push(e);
+        allDecisions.set(p.round,prior);
+        decisions.set(p.round,e);
+      }
     }
     if(!hasOwn(observationTypes,e.type))continue;
     const kind=observationTypes[e.type as ObservationType];
@@ -101,6 +127,8 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     o.decisionShaMatches=matches;
     if(matches)verified++;
     else warn('pi_decision_answer_sha_mismatch');
+    if(allDecisions.get(o.round)?.some(d=>payload(d).responseSha256!==o.answerSha256))
+      warn('historical_pi_decision_answer_sha_mismatch');
     if(decision.id<=o.observedEventId)warn('pi_decision_precedes_browser_observation');
   }
   if(observations.length!==mission.turnCount)warn('turn_counter_differs_from_observed_ledger');
@@ -118,4 +146,94 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     violations,ledgerConsistent:violations.length===0,rounds:observations,
     businessAcceptanceVerified:false,
   };
+}
+
+/** Verify the 32->1 continuation lineage without contacting PI or Chrome.
+ * This checks durable intent, reciprocal parent/child links, source answer
+ * evidence, and invariant owner scope. Even a perfect chain is not evidence
+ * that the underlying model really changed code or passed release checks. */
+export function inspectPiChainEvidence(store:Store,id:string):PiChainEvidenceReport {
+  const violations:string[]=[];
+  const warn=(s:string)=>{if(!violations.includes(s))violations.push(s);};
+  const visited=new Set<string>();
+  let root=id;
+  while(true){
+    if(visited.has(root)||visited.size>=64)
+      throw new Error('PI chain parent lineage is cyclic or exceeds 64 Missions');
+    visited.add(root);
+    const parent=store.piChainParent(root);
+    if(!parent)break;
+    root=parent;
+  }
+  visited.clear();
+  const missions:PiEvidenceReport[]=[],links:PiChainEvidenceReport['links']=[];
+  let cursor:string|null=root;
+  while(cursor){
+    if(visited.has(cursor)||visited.size>=64)
+      throw new Error('PI chain successor lineage is cyclic or exceeds 64 Missions');
+    visited.add(cursor);
+    const report=inspectPiEvidence(store,cursor);
+    missions.push(report);
+    if(!report.ledgerConsistent)warn('mission_event_ledger_inconsistent');
+    const childId=store.piChainSuccessor(cursor);
+    if(childId){
+      const parent=store.get(cursor),child=store.get(childId);
+      const plan=store.piPlan(cursor),receipt=store.chatBrowserTurn(cursor);
+      const parentEvents=store.events(cursor),childEvents=store.events(childId);
+      const limit=parentEvents.find(e=>e.type==='pi.autopilot_finished'&&
+        payload(e).action==='LIMIT'&&payload(e).round===parent.maxTurns);
+      const successors=parentEvents.filter(e=>e.type==='pi.chain_successor');
+      const starts=childEvents.filter(e=>e.type==='pi.chain_started');
+      const successor=successors.find(e=>{
+        const p=e.payload as {successorId?:unknown;parentAnswerSha256?:unknown}|null;
+        return p?.successorId===childId&&p.parentAnswerSha256===plan?.responseSha256;
+      });
+      const started=starts.find(e=>{
+        const p=e.payload as {parentId?:unknown;parentAnswerSha256?:unknown}|null;
+        return p?.parentId===cursor&&p.parentAnswerSha256===plan?.responseSha256;
+      });
+      const parentBrowser=store.chatBrowserBinding(cursor);
+      const scopeInherited=parent.goal===child.goal&&
+        JSON.stringify(parent.acceptance)===JSON.stringify(child.acceptance)&&
+        JSON.stringify(parent.checks)===JSON.stringify(child.checks)&&
+        parent.workspace===child.workspace&&parent.sandbox===child.sandbox&&
+        parent.mode===child.mode&&parent.maxTurns===child.maxTurns&&
+        !!parentBrowser&&parentBrowser===store.chatBrowserBinding(childId)&&
+        child.requestKey===`pi-chain-${cursor}`;
+      const parentAnswerShaMatches=!!plan&&!!receipt&&
+        /^[0-9a-f]{64}$/.test(plan.responseSha256)&&
+        receipt.assistantSha256===plan.responseSha256&&
+        store.hasVerifiedPiBrowserCheckpoint(cursor);
+      // A migration on round TWO must not disguise an invalid first Send in
+      // the inherited parent conversation. The new-tab migration must
+      // precede the child's *first* observed answer, or that answer itself
+      // must be an independently recovered new-tab rollover.
+      const firstObserved=childEvents.find(e=>hasOwn(observationTypes,e.type));
+      const migrated=!!firstObserved&&(
+        firstObserved.type==='chatgpt.browser_rollover_recovered'||
+        childEvents.some(e=>e.type==='chatgpt.browser_migrated'&&
+          e.id<firstObserved.id&&
+          payload(e).requestKey===payload(firstObserved).requestKey));
+      const childStartsInNewChat=child.turnCount===0?null:migrated;
+      links.push({parentId:cursor,childId,
+        limitEventId:limit?.id??null,
+        successorEventId:successor?.id??null,
+        startedEventId:started?.id??null,
+        parentPlanRound:plan?.round??null,parentAnswerShaMatches,
+        scopeInherited,childStartsInNewChat});
+      if(store.piChainParent(childId)!==cursor)warn('nonreciprocal_pi_chain');
+      if(successors.length!==1||starts.length!==1||!successor||!started)
+        warn('pi_chain_link_event_missing_or_duplicated');
+      if(parent.turnCount!==parent.maxTurns||parent.maxTurns!==32||
+        plan?.round!==parent.maxTurns||!['NEXT','HANDOFF'].includes(plan?.action??'')||!limit)
+        warn('pi_chain_parent_limit_not_verified');
+      if(!parentAnswerShaMatches)warn('pi_chain_parent_answer_not_verified');
+      if(!scopeInherited)warn('pi_chain_scope_not_preserved');
+      if(childStartsInNewChat===false)warn('pi_chain_child_first_send_not_new_chat');
+    }
+    cursor=childId;
+  }
+  return {rootMissionId:root,inspectedFromMissionId:id,
+    missionCount:missions.length,chainConsistent:violations.length===0,
+    violations,links,missions,businessAcceptanceVerified:false};
 }

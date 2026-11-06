@@ -2,11 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,rmSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Store} from '../src/core/store.js';
-import {inspectPiEvidence} from '../src/core/pi-evidence.js';
+import {inspectPiEvidence,inspectPiChainEvidence} from '../src/core/pi-evidence.js';
 
 const source='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
 const first='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174001';
@@ -121,5 +121,144 @@ test('PI ledger independently validates a recovered first-new-chat answer and re
     assert.equal(invalid.ledgerConsistent,false);
     assert.ok(invalid.violations.includes('pi_decision_answer_sha_mismatch'));
     assert.equal(invalid.decisionsVerified,0);
+  }finally{f.cleanup();}
+});
+
+test('PI ledger rejects duplicate base decisions and changed historical SHA even when latest revision matches',()=>{
+  const f=fixture();try{
+    observe(f.store,f.id,1,first);
+    const decision=f.store.events(f.id).find(e=>e.type==='pi.decision')!;
+    const insert=(type:string,payload:unknown)=>f.store.db.prepare(
+      'INSERT INTO events(mission_id,created_at,type,payload_json) VALUES(?,?,?,?)'
+    ).run(f.id,new Date().toISOString(),type,JSON.stringify(payload));
+    insert('pi.decision_revised',decision.payload);
+    assert.equal(inspectPiEvidence(f.store,f.id).ledgerConsistent,true);
+    insert('pi.decision',decision.payload);
+    assert.ok(inspectPiEvidence(f.store,f.id).violations.includes('duplicate_base_pi_decision'));
+    const tampered={...(decision.payload as object),responseSha256:sha('other')};
+    f.store.db.prepare('UPDATE events SET payload_json=? WHERE id=?')
+      .run(JSON.stringify(tampered),decision.id);
+    assert.ok(inspectPiEvidence(f.store,f.id).violations.includes(
+      'historical_pi_decision_answer_sha_mismatch'));
+  }finally{f.cleanup();}
+});
+
+const createVerifiedSuccessor=(store:Store)=>{
+  const created=store.create({goal:'Owner-approved chained evidence review',
+    acceptance:['Verify all 32 checkpoints'],workspace:'',sandbox:'read-only',
+    mode:'supervised',maxTurns:32,checks:[],requestKey:'chain-ledger-parent'});
+  const linked=store.linkChat(created.id,source,created.version).mission;
+  const bound=store.bindChatBrowser(created.id,'install:Chrome:synthetic',linked.version).mission;
+  store.setMeta(`pi.autopilot.enabled.${created.id}`,'1');
+  const parentId=bound.id;
+  for(let round=1;round<=32;round++){
+    const requestKey=`chain-ledger-${round}`,answer=`Private stage ${round}`;
+    store.reserveChatBrowserTurn(parentId,store.get(parentId).version,requestKey,
+      sha(`private submitted prompt ${round}`));
+    const migration=round===1||[9,17,25].includes(round)
+      ?{newChatUrl:`https://chatgpt.com/c/123e4567-e89b-42d3-a456-${(426614174000+round).toString()}`}
+      :{};
+    store.finishChatBrowserTurn(parentId,requestKey,{kind:'observed',
+      assistantSha256:sha(answer),summary:answer,...migration});
+    store.commitPiPlan(parentId,sha(answer),[],{
+      action:'NEXT',summary:`Stage ${round} confirmed, more remains`,
+      nextPrompt:'Verify remaining stages'});
+  }
+  const child=store.createPiSuccessor(parentId);
+  assert.ok(child);
+  return {parentId,childId:child.id};
+};
+
+test('real store lineage reader verifies 32-to-1 successor creation, inherited scope and exact first-chat migration',()=>{
+  const f=fixture();try{
+    const {parentId,childId}=createVerifiedSuccessor(f.store);
+    assert.equal(f.store.createPiSuccessor(parentId)?.id,childId);
+    const before=f.store.maxEventId();
+    const ready=inspectPiChainEvidence(f.store,childId);
+    assert.equal(ready.chainConsistent,true);
+    assert.equal(ready.missionCount,2);
+    assert.equal(ready.missions[0]?.observedTurns,32);
+    assert.equal(ready.missions[0]?.decisionsVerified,32);
+    assert.equal(ready.missions[0]?.maxObservedTurnsInOneChat,8);
+    assert.equal(ready.links[0]?.scopeInherited,true);
+    assert.equal(ready.links[0]?.childStartsInNewChat,null);
+    assert.equal(ready.links[0]?.parentAnswerShaMatches,true);
+    assert.equal(ready.links[0]?.parentPlanRound,32);
+    assert.equal(ready.businessAcceptanceVerified,false);
+    assert.equal(f.store.maxEventId(),before);
+    const req='child-first',answer='Child verified final stage';
+    f.store.reserveChatBrowserTurn(childId,f.store.get(childId).version,req,sha('child prompt'));
+    f.store.finishChatBrowserTurn(childId,req,{kind:'observed',
+      assistantSha256:sha(answer),summary:answer,newChatUrl:second});
+    f.store.commitPiPlan(childId,sha(answer),[],{action:'DONE',summary:'Test finished',nextPrompt:''});
+    const after=inspectPiChainEvidence(f.store,parentId);
+    assert.equal(after.chainConsistent,true);
+    assert.equal(after.links[0]?.childStartsInNewChat,true);
+    assert.equal(after.missions[1]?.observedTurns,1);
+    const cli=JSON.parse(execFileSync(process.execPath,
+      ['--import','tsx','src/cli.ts','pi-chain-evidence',childId],
+      {cwd:process.cwd(),env:{...process.env,MISSION_RELAY_HOME:f.dir},
+        encoding:'utf8',timeout:12000})) as typeof after;
+    assert.equal(cli.chainConsistent,true);
+    assert.equal(cli.missionCount,2);
+    assert.equal(cli.links[0]?.parentAnswerShaMatches,true);
+    assert.equal(cli.businessAcceptanceVerified,false);
+    const output=JSON.stringify(cli);
+    assert.ok(!output.includes('Owner-approved chained evidence review'));
+    assert.ok(!output.includes('Private stage'));
+    assert.ok(!output.includes('chatgpt.com'));
+  }finally{f.cleanup();}
+});
+
+test('cross-Mission lineage reader detects scope tampering and child using the existing conversation',()=>{
+  const f=fixture();try{
+    const {parentId,childId}=createVerifiedSuccessor(f.store);
+    const req='child-same-chat',answer='Should be refused by control plane';
+    f.store.reserveChatBrowserTurn(childId,f.store.get(childId).version,req,sha('bad prompt'));
+    f.store.finishChatBrowserTurn(childId,req,{kind:'observed',
+      assistantSha256:sha(answer),summary:answer});
+    f.store.commitPiPlan(childId,sha(answer),[],{action:'NEXT',summary:'Bad child test',nextPrompt:'Move chat'});
+    const report=inspectPiChainEvidence(f.store,parentId);
+    assert.equal(report.chainConsistent,false);
+    assert.ok(report.violations.includes('pi_chain_child_first_send_not_new_chat'));
+    // Switching chats later must not retroactively legitimize the FIRST
+    // child Send, which was incorrectly issued in the predecessor chat.
+    const secondRequest='child-second',secondAnswer='Eventually moved';
+    f.store.reserveChatBrowserTurn(childId,f.store.get(childId).version,
+      secondRequest,sha('second child prompt'));
+    f.store.finishChatBrowserTurn(childId,secondRequest,{kind:'observed',
+      assistantSha256:sha(secondAnswer),summary:secondAnswer,newChatUrl:second});
+    f.store.commitPiPlan(childId,sha(secondAnswer),[],{
+      action:'DONE',summary:'Later move cannot repair the violation',nextPrompt:''});
+    assert.ok(inspectPiChainEvidence(f.store,parentId).violations.includes(
+      'pi_chain_child_first_send_not_new_chat'));
+    f.store.db.prepare('UPDATE missions SET workspace=? WHERE id=?')
+      .run('unauthorized-scope',childId);
+    const altered=inspectPiChainEvidence(f.store,childId);
+    assert.ok(altered.violations.includes('pi_chain_scope_not_preserved'));
+    assert.equal(altered.links[0]?.scopeInherited,false);
+  }finally{f.cleanup();}
+});
+
+test('PI diagnostic database opens strictly read-only and refuses state mutation or missing state creation',()=>{
+  const f=fixture();try{
+    const baseline=f.store.maxEventId();
+    const reader=new Store(join(f.dir,'missions.sqlite'),{readOnly:true});
+    try{
+      assert.equal(inspectPiEvidence(reader,f.id).ledgerConsistent,true);
+      assert.equal(inspectPiChainEvidence(reader,f.id).chainConsistent,true);
+      assert.throws(()=>reader.setMeta('unauthorized.audit.write','nope'),/readonly|READONLY/i);
+      assert.equal(reader.getMeta('unauthorized.audit.write'),null);
+    }finally{reader.close();}
+    assert.equal(f.store.maxEventId(),baseline);
+    const nonexistent=join(f.dir,'does-not-exist.sqlite');
+    assert.throws(()=>new Store(nonexistent,{readOnly:true}),/open|SQLITE_CANTOPEN/i);
+    assert.equal(existsSync(nonexistent),false);
+    const cli=JSON.parse(execFileSync(process.execPath,
+      ['--import','tsx','src/cli.ts','pi-evidence',f.id],
+      {cwd:process.cwd(),env:{...process.env,MISSION_RELAY_HOME:f.dir},
+        encoding:'utf8',timeout:12000})) as {ledgerConsistent:boolean};
+    assert.equal(cli.ledgerConsistent,true);
+    assert.equal(f.store.maxEventId(),baseline);
   }finally{f.cleanup();}
 });

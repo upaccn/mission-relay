@@ -47,12 +47,27 @@ function fromRow(r: MissionRow): Mission {
 
 export class Store {
   readonly db: DatabaseSync;
-  constructor(filename: string) {
-    if (filename !== ':memory:') {
+  constructor(filename: string,options:{readOnly?:boolean}={}) {
+    const readOnly=options.readOnly===true;
+    if(readOnly&&filename===':memory:')
+      throw new Error('Read-only diagnostics require a persisted SQLite database');
+    if (filename !== ':memory:'&&!readOnly) {
       mkdirSync(dirname(filename), { recursive: true, mode: 0o700 });
     }
-    this.db = new DatabaseSync(filename, { timeout: 5000 });
+    this.db = new DatabaseSync(filename, { timeout: 5000,readOnly });
     this.db.exec('PRAGMA foreign_keys = ON');
+    if(readOnly){
+      // No implicit CREATE TABLE / schema upgrade / PRAGMA journal_mode
+      // on live production state when the operator only asks for evidence.
+      // Both file-open flags and query_only fence writes even if a future
+      // diagnostic accidentally calls a mutating Store helper.
+      this.db.exec('PRAGMA query_only = ON');
+      const version=this.db.prepare('SELECT value FROM meta WHERE key = ?')
+        .get('schema_version') as {value:string}|undefined;
+      if(version?.value!=='3')
+        throw new Error('Read-only PI diagnostic requires existing schema v3; upgrade separately under maintenance');
+      return;
+    }
     this.db.exec('PRAGMA journal_mode = WAL');
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);

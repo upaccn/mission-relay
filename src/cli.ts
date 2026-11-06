@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { statSync, readFileSync } from 'node:fs';
 import { Engine } from './core/engine.js';
 import { Store } from './core/store.js';
-import {inspectPiEvidence} from './core/pi-evidence.js';
+import {inspectPiEvidence,inspectPiChainEvidence} from './core/pi-evidence.js';
 import {LazyExecutor,registerExecutorPlugin,registeredExecutorPlugins,defaultExecutorId,
   setDefaultExecutor,removeExecutorPlugin,executorPreflight} from './core/executor-plugins.js';
 import { TelegramBridge, TelegramHttpTransport } from './plugins/telegram.js';
@@ -65,6 +65,7 @@ Commands:
   channel-status        Inspect durable Telegram delivery cursor and poller status (no secrets)
   pi-health             Inspect active PI/browser requests, observed turns and wait age (no content, no Send)
   pi-evidence <mission-id>  Audit real event/PI SHA correlation and 8-send chat segmentation (no content, no Send)
+  pi-chain-evidence <mission-id>  Verify durable 32-turn successor lineage and inherited scope (no Send)
   create --goal <text> --accept <criterion> [--accept <criterion>...] --workspace <path>
          [--sandbox read-only|workspace-write] [--mode supervised|autopilot]
          [--max-turns 10] [--request-key <stable key>] [--checks-file <path>]
@@ -110,7 +111,8 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
   const [command, id, ...rest] = argv;
   if (!command || ['help','--help','-h'].includes(command)) return help();
   const home = stateHome();
-  const store = new Store(join(home,'missions.sqlite'));
+  const diagnostic=['pi-health','pi-evidence','pi-chain-evidence'].includes(command);
+  const store = new Store(join(home,'missions.sqlite'),{readOnly:diagnostic});
   const engine = new Engine(store,new LazyExecutor(store));
   try {
     let result: unknown;
@@ -286,6 +288,10 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       if(!id||!/^[0-9a-f-]{36}$/i.test(id)||rest.length)
         throw new Error('Provide exactly one PI Mission UUID');
       result=inspectPiEvidence(store,id);
+    } else if (command === 'pi-chain-evidence') {
+      if(!id||!/^[0-9a-f-]{36}$/i.test(id)||rest.length)
+        throw new Error('Provide exactly one PI Mission UUID');
+      result=inspectPiChainEvidence(store,id);
     } else if (command === 'doctor') {
       result=await executorPreflight(store);
       if (!(result as {ok:boolean}).ok) process.exitCode=2;
