@@ -77,7 +77,7 @@ test('PI treats locally approved repository development as executable work',()=>
   const write=piDecisionPrompt({...input,sandbox:'workspace-write',workspace});
   assert.match(read,/Authorization mode: read-only/);
   assert.match(write,/Authorization mode: workspace-write/);
-  assert.match(write,/authorized REAL development/);
+  assert.match(write,/Permitted implementation workspace:/);
   assert.ok(write.includes(workspace));
   assert.ok(!write.includes('No account, file, website, network or external writes'));
   assert.throws(()=>piDecisionPrompt({...input,sandbox:'workspace-write'}),/path missing/);

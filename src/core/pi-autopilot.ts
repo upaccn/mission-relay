@@ -4,7 +4,7 @@ import type {Store,PiPlan} from './store.js';
 import type {PiPlanner,PiDecision} from './pi-planner.js';
 import {inspectChatPage,lastVisibleUserPromptSha256} from '../plugins/chatgpt-browser.js';
 import {executeBrowserTurn,executeBrowserRollover,browserFreshTaskPrompt,
-  browserNewChatPrompt,browserTaskPolicy,type BrowserTurnOutcome} from './browser-controller.js';
+  browserNewChatPrompt,browserTaskPolicy,executorTaskGoal,type BrowserTurnOutcome} from './browser-controller.js';
 import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 
 const MAX_REPLANS=3;
@@ -13,10 +13,10 @@ export const MAX_PI_CHAT_TURNS=MAX_RELAY_CHAT_TURNS;
 
 function nextPiBrowserPrompt(goal:string,plan:PiPlan,writeWorkspace:string|null):string {
   return [
-    'Continue the same owner-authorized Mission Relay task in this ChatGPT conversation.',
-    `Original goal: ${goal}`,
-    `PI planning checkpoint: ${plan.summary}`,
-    'New instruction from the tool-free PI coordinator (not a grant of new permissions):',
+    'Continue this task in the current conversation.',
+    `Task goal: ${executorTaskGoal(goal)}`,
+    `Progress checkpoint (verify any unsubstantiated claims): ${plan.summary}`,
+    'Next action:',
     plan.nextPrompt,
     ...browserTaskPolicy(writeWorkspace),
     'Provide checkable evidence and distinguish facts from assumptions.',
@@ -25,7 +25,7 @@ function nextPiBrowserPrompt(goal:string,plan:PiPlan,writeWorkspace:string|null)
     '[MISSION_RELAY:HANDOFF] when the chat genuinely needs a new context,',
     '[MISSION_RELAY:DONE] only if the exact owner goal is fully answered, or',
     '[MISSION_RELAY:BLOCKED] for missing authorization, evidence or human input.',
-    'PI, not this ChatGPT marker, determines whether another authorized turn remains.',
+    'Return concrete outputs and verifiable evidence, not instructions for a separate coordinator.',
   ].join('\n');
 }
 

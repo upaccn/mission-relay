@@ -37,10 +37,16 @@ export interface TelegramUpdate {
     from?:{id:number};
     chat:{id:number;type:string};
   };
+  callback_query?:{
+    id:string;data?:string;from:{id:number};
+    message?:{chat:{id:number;type:string}};
+  };
 }
+type TelegramKeyboard={inline_keyboard:Array<Array<{text:string;callback_data:string}>>};
 export interface TelegramTransport {
   getUpdates(offset:number,timeoutSeconds:number):Promise<TelegramUpdate[]>;
-  sendMessage(chatId:number,text:string):Promise<void>;
+  sendMessage(chatId:number,text:string,keyboard?:TelegramKeyboard):Promise<void>;
+  answerCallbackQuery?(id:string):Promise<void>;
 }
 
 /** Bot token is in process memory only; errors never print it or the request URL. */
@@ -62,11 +68,46 @@ export class TelegramHttpTransport implements TelegramTransport {
     return body.result;
   }
   async getUpdates(offset:number,timeoutSeconds:number):Promise<TelegramUpdate[]> {
-    return this.call<TelegramUpdate[]>('getUpdates',{offset,timeout:timeoutSeconds,allowed_updates:['message'],limit:30});
+    return this.call<TelegramUpdate[]>('getUpdates',{offset,timeout:timeoutSeconds,allowed_updates:['message','callback_query'],limit:30});
   }
-  async sendMessage(chatId:number,text:string):Promise<void> {
-    await this.call('sendMessage',{chat_id:chatId,text:text.slice(0,3900)});
+  async sendMessage(chatId:number,text:string,keyboard?:TelegramKeyboard):Promise<void> {
+    await this.call('sendMessage',{chat_id:chatId,text:text.slice(0,3900),
+      ...(keyboard?{reply_markup:keyboard}:{})});
   }
+  async answerCallbackQuery(id:string):Promise<void> {
+    await this.call('answerCallbackQuery',{callback_query_id:id});
+  }
+}
+
+/** Read-only buttons; the authoritative reply remains persisted as text and
+ * the keyboard can be deterministically re-created after a network failure. */
+export function telegramKeyboardForReply(reply:string):TelegramKeyboard|undefined {
+  if(reply.startsWith('Missions requiring attention:')||reply.startsWith('Recent Mission history')){
+    const uuids=[...reply.matchAll(/\/status ([0-9a-f-]{36})/gi)].slice(0,3).map(m=>m[1]!);
+    return {inline_keyboard:[
+      ...uuids.map((id,i)=>[{text:`View ${i+1}`,callback_data:`mr:status:${id}`}]),
+      [{text:'Refresh tasks',callback_data:'mr:list'},{text:'History',callback_data:'mr:history'}],
+    ]};
+  }
+  const detail=reply.match(/^([0-9a-f-]{36}) \[/i);
+  if(detail)return {inline_keyboard:[
+    [{text:'Refresh status',callback_data:`mr:status:${detail[1]}`}],
+    [{text:'Tasks',callback_data:'mr:list'},{text:'History',callback_data:'mr:history'}],
+  ]};
+  const status=reply.match(/\/status ([0-9a-f-]{36})/i);
+  if(status)return {inline_keyboard:[
+    [{text:'View status',callback_data:`mr:status:${status[1]}`}],
+    [{text:'Tasks',callback_data:'mr:list'}],
+  ]};
+  return undefined;
+}
+
+export function telegramCallbackCommand(data:string):string {
+  if(data==='mr:list')return '/list';
+  if(data==='mr:history')return '/history';
+  const match=data.match(/^mr:status:([0-9a-f-]{36})$/i);
+  if(match)return `/status ${match[1]}`;
+  throw new Error('Unknown or unsupported button action');
 }
 
 const TERMINAL_EVENTS=new Set([
@@ -232,17 +273,27 @@ export class TelegramBridge {
       if(!update || !Number.isSafeInteger(update.update_id) || update.update_id<offset) continue;
       const next=update.update_id+1;
       const message=update.message;
+      const cb=update.callback_query;
       // Treat all Bot API data as untrusted; malformed updates must not wedge the inbox.
-      if(!message || !message.chat || message.chat.type!=='private' || message.from?.id!==this.userId || message.chat.id!==this.chatId) {
+      const permittedMessage=message?.chat?.type==='private'&&message.from?.id===this.userId&&message.chat.id===this.chatId;
+      const permittedCallback=cb?.message?.chat?.type==='private'&&cb.from?.id===this.userId&&
+        cb.message.chat.id===this.chatId&&typeof cb.data==='string';
+      if(!permittedMessage&&!permittedCallback) {
         this.store.advanceChannelCursor(this.source,next);
         continue;
       }
       const externalId=String(update.update_id);
       if(!this.store.reserveChannelCommand(this.source,externalId,next)) continue;
       let reply:string;
-      try { reply=await this.handle(message.text ?? '',externalId); }
+      try { reply=await this.handle(permittedCallback?telegramCallbackCommand(cb!.data!):message!.text ?? '',externalId); }
       catch(err){reply=`Command rejected: ${err instanceof Error?err.message:'unknown error'}`;}
       this.store.completeChannelCommand(this.source,externalId,reply);
+      if(permittedCallback&&cb?.id&&this.transport.answerCallbackQuery){
+        try{await this.transport.answerCallbackQuery(cb.id);}catch{
+          // Acknowledgement is cosmetic; do not rerun a durable command.
+          console.error('Telegram button acknowledgement failed; command result is preserved');
+        }
+      }
     }
     await this.deliverPendingReplies();
   }
@@ -455,7 +506,7 @@ export class TelegramBridge {
       }
       const finished=this.store.pendingChannelReplies(this.source).find(x=>x.externalId===reply.externalId);
       if(!finished || finished.status!=='finished') continue;
-      await this.transport.sendMessage(this.chatId,finished.reply);
+      await this.transport.sendMessage(this.chatId,finished.reply,telegramKeyboardForReply(finished.reply));
       this.store.markChannelDelivered(this.source,reply.externalId);
     }
   }
@@ -698,10 +749,11 @@ export class TelegramBridge {
     if(!cmd) return 'Send /help for available commands.';
     if(cmd==='/help'||cmd==='/start') return [
       'Mission Relay (single authorized user)',
-      '/list — latest missions',
-      'Plain text, ChatGPT: and /auto — PI plans 32 read-only turns per Mission, max 8 per chat, with verified successor Missions',
+      '/list — tasks requiring attention (not historical completed runs)',
+      '/history — recent Mission history (kept for audit)',
+      'Plain text, ChatGPT: and /auto — PI plans up to 32 read-only turns per Mission, max 5 per chat',
       '/auto <task> — start PI-managed read-only ChatGPT autopilot',
-      '/build <task> — owner-authorized repository implementation in locally approved project',
+      '/build <task> — implement in the configured repository',
       'While PI is working, send plain text to queue owner instructions for its next decision',
       '/new <task> — same as plain text, one new ChatGPT conversation',
       '/agent <task> — optional installed native executor (no vendor required)',
@@ -725,8 +777,22 @@ export class TelegramBridge {
     if(!cmd.startsWith('/'))return this.startPiChat(clean,commandId);
     if(cmd==='/agent')return this.startAgentTask(clean.slice(6),commandId);
     if(cmd==='/list') {
-      const all=this.engine.list().slice(0,10);
-      return all.length?all.map(m=>`${m.id} — ${m.state} v${m.version}: ${m.goal.slice(0,100)}`).join('\n'):'No missions yet.';
+      const outstanding=new Set(this.store.piHealth().missions.map(x=>x.id));
+      const all=this.engine.list().filter(m=>!this.store.isMissionArchived(m.id)&&(
+        ['READY','RUNNING','VERIFYING','BLOCKED','NEEDS_RECONCILIATION'].includes(m.state)||
+        outstanding.has(m.id)||this.store.chatBrowserTurn(m.id)?.status==='uncertain')).slice(0,10);
+      return all.length?['Missions requiring attention:',...all.map(m=>
+        `${m.id.slice(0,8)}… — ${m.state}, ${m.turnCount}/${m.maxTurns}\n/status ${m.id}`),
+        'Older settled tasks: /history'].join('\n'):
+        'No active or unresolved Missions. Historical records: /history';
+    }
+    if(cmd==='/history'){
+      const recent=this.engine.list().filter(m=>
+        this.store.isMissionArchived(m.id)||
+        ['COMPLETED','CANCELLED','PAUSED'].includes(m.state)).slice(0,8);
+      return recent.length?['Recent Mission history (not evidence of business completion):',
+        ...recent.map(m=>`${m.id.slice(0,8)}… — ${m.state}${this.store.isMissionArchived(m.id)?' (archived)':''}\n/status ${m.id}`)
+      ].join('\n'):'No history yet.';
     }
     if(!['/status','/handoff','/pause','/resume','/cancel','/instruct','/continue'].includes(cmd))
       throw new Error('Unknown command. Send /help. Native agents use /agent, not a vendor-specific command.');

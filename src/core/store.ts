@@ -999,6 +999,34 @@ export class Store {
   }
   get(id: string): Mission { return fromRow(this.raw(id)); }
   list(): Mission[] { return (this.db.prepare('SELECT * FROM missions ORDER BY created_at DESC').all() as MissionRow[]).map(fromRow); }
+  /** Archiving removes old settled tasks from the daily inbox, not the audit.
+   * Never archive an ambiguous Send, an active PI checkpoint or a paused error. */
+  isMissionArchived(id:string):boolean {
+    return this.getMeta(`mission.archive.${id}`)!==null;
+  }
+  archiveSettledMissions():{archived:number;retained:number} {
+    return this.transaction(()=>{
+      let archived=0,retained=0;
+      for(const m of this.list()){
+        if(this.isMissionArchived(m.id))continue;
+        const receipt=this.chatBrowserTurn(m.id),pi=this.piPlan(m.id);
+        const safeReceipt=!receipt||['observed','reconciled'].includes(receipt.status);
+        const terminalPi=pi&&['DONE','BLOCKED'].includes(pi.action);
+        const terminalBrowser=/\[MISSION_RELAY:DONE\]\s*$/.test(m.lastSummary??'');
+        const settled=['COMPLETED','CANCELLED'].includes(m.state)||
+          (m.state==='PAUSED'&&!m.lastError&&!m.stopRequested&&
+           this.pendingPiOwnerDirectives(m.id).length===0&&
+           (terminalPi||this.events(m.id).some(e=>e.type==='pi.autopilot_finished')||
+            (this.getMeta(`pi.autopilot.enabled.${m.id}`)!=='1'&&terminalBrowser)));
+        if(!safeReceipt||!settled){retained++;continue;}
+        const at=new Date().toISOString();
+        this.setMeta(`mission.archive.${m.id}`,at);
+        this.event(m.id,'mission.archived',{at,reason:'settled_history'});
+        archived++;
+      }
+      return {archived,retained};
+    });
+  }
   events(id: string): MissionEvent[] {
     this.raw(id);
     return (this.db.prepare('SELECT * FROM events WHERE mission_id = ? ORDER BY id').all(id) as EventRow[])

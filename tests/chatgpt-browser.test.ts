@@ -18,12 +18,25 @@ import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUr
   submitChatTurn,submitNewChatTurn,
   DEFAULT_BROWSER_TURN_TIMEOUT_MS,MAX_BROWSER_TURN_TIMEOUT_MS,type BrowserSession} from '../src/plugins/chatgpt-browser.js';
 import {executeBrowserTurn,driveChatConversation,browserDecision,browserFreshTaskPrompt,
-  MAX_FRESH_CHAT_TASK_CHARS,
+  MAX_FRESH_CHAT_TASK_CHARS,executorTaskGoal,
   browserNewChatPrompt,browserRolloverRecoveryPrompt,browserContinuationPrompt} from '../src/core/browser-controller.js';
 import type {AgentAdapter} from '../src/core/types.js';
 import type {Page} from 'playwriter';
 
 const SHA=createHash('sha256').update('test browser prompt').digest('hex');
+
+test('coordinator-only heading is omitted from executor prompts while original owner goal remains untouched',()=>{
+  const goal='Deliver a verified release.\n【执行与自治规则】\nPI decides all orchestration.\nFive sends max.\n【v1.0 核心交付】\nImplement the feature and test it.';
+  const preview=executorTaskGoal(goal);
+  assert.ok(preview.includes('Deliver a verified release.'));
+  assert.ok(preview.includes('Implement the feature and test it.'));
+  assert.ok(!preview.includes('PI decides all orchestration.'));
+  assert.ok(!browserFreshTaskPrompt(goal).includes('PI decides all orchestration.'));
+  assert.ok(!browserNewChatPrompt(goal,['verify'],'summary',null).includes('PI decides all orchestration.'));
+  assert.ok(goal.includes('PI decides all orchestration.'),'PI retains the full owner goal');
+  assert.equal(executorTaskGoal('Plain objective, with no separate planning section.'),
+    'Plain objective, with no separate planning section.');
+});
 
 test('missing launch anchor bootstraps a new source tab without sending to an old chat',async()=>{
   const target='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
@@ -134,7 +147,7 @@ test('A timed-out first PI /build new-chat Send is reconstructable without repla
     adopted:false,chainParent:false,piManaged:true,piPlan:null,
   });
   assert.equal(recovered,browserFreshTaskPrompt(goal,workspace));
-  assert.ok(recovered.includes('Approved canonical source repository'));
+  assert.ok(recovered.includes(`Task scope: implement and test code in ${workspace}`));
   assert.throws(()=>browserRolloverRecoveryPrompt({
     goal,acceptance:['Tests pass'],sandbox:'workspace-write',workspace,
     turnCount:0,nextInstruction:null,missionRequestKey:'telegram-pi-123',

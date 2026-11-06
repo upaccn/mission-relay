@@ -72,7 +72,8 @@ Commands:
          [--max-turns 10] [--request-key <stable key>] [--checks-file <path>]
   run <id>              Execute one supervised turn or a bounded autopilot
   show <id>             Read authoritative mission state
-  list                  List missions
+  list                  List complete Mission ledger (including archives)
+  archive-settled       Locally archive only settled history; preserve all audit records
   events <id>           Read append-only mission events
   link-chat <id> --url <ChatGPT conversation URL> --revision <version>
   chat-create --goal <text> --accept <criterion> --url <ChatGPT conversation URL>
@@ -298,6 +299,11 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       if (!(result as {ok:boolean}).ok) process.exitCode=2;
     }
     else if (command === 'list') result = engine.list();
+    else if (command === 'archive-settled') {
+      if(id||rest.length)throw new Error('archive-settled takes no arguments');
+      result={...store.archiveSettledMissions(),mode:'non-destructive',
+        note:'Mission records and all audit events remain available via list/show/events.'};
+    }
     else if (command === 'browser-list') {
       const browsers=await listBrowsers();
       result=browsers.map(b=>({id:b.id,browser:b.browser,activeTabs:b.activeTabs,playwriterVersion:b.playwriterVersion}));

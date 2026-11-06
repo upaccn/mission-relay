@@ -59,7 +59,11 @@ The existing Node controller checks ordinary control-loop progress every 30 seco
 
 The vendor-neutral optional native route is `/agent <task>` or `Agent: <task>`, and requires an independently installed executor plugin plus a locally approved `telegram-agent-workspace`. Plain text and `ChatGPT:` remain browser-first without native executor selection. Vendor-specific aliases (`/codex`, `Codex:`) are **not** supported by the new CLI; they were used in earlier prototypes. See [plugin API](plugin-api.md).
 
-`/list`, `/status <uuid>`, `/handoff <uuid>`, `/continue <uuid> v<revision>`, `/pause <uuid>`, `/resume <uuid> v<revision>`, `/instruct <uuid> v<revision> <text>`, `/cancel <uuid> v<revision>`.
+`/list`, `/history`, `/status <uuid>`, `/handoff <uuid>`, `/continue <uuid> v<revision>`, `/pause <uuid>`, `/resume <uuid> v<revision>`, `/instruct <uuid> v<revision> <text>`, `/cancel <uuid> v<revision>`.
+
+`/list` now presents up to ten **actionable** Missions, rather than the ten newest historical records. It keeps uncertain browser Sends, pending PI checkpoints and blocked tasks visible even when their ChatGPT tabs are closed. `/history` shows recent historical Missions. Task messages and notifications have **read-only Telegram inline buttons** for viewing or refreshing status, returning to Tasks, and opening History. Callback actions use the same authenticated owner and private chat restrictions and the existing deduplicated Telegram update ledger. They cannot approve, restart, delete or reconcile a Mission. This is an inline-keyboard UI, not a custom Telegram Mini App or editable HTML card.
+
+To clear safely settled historical Missions from the owner inbox, the operator may run `node dist/cli.js archive-settled` **locally**. The command is idempotent and non-destructive: all Mission rows, append-only events, receipts and historical CLI `list` output remain available. It refuses uncertain requests, interrupted PI work and other unresolved states. No automatic deletion or background cleanup is performed. See [product UX decisions](product-ux.md).
 
 ### Natural-language tasks and fresh ChatGPT tabs
 

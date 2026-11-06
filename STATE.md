@@ -2,6 +2,13 @@
 
 Updated: 2026-11-06
 
+## 2026-11-06 owner-facing prompt and Mission lifecycle refinement (AIOS source work)
+
+- The 2026-11-06 GMK production readback found **26 retained Missions**: 2 `NEEDS_RECONCILIATION`, 20 `PAUSED`, 3 `COMPLETED`, 1 `CANCELLED`. `pi-health` showed 3 outstanding PI records (two uncertain browser Sends and one interrupted PAUSED checkpoint); the single Telegram poller remained healthy and no Telegram replies were queued. GMK runtime `main` remained at `3cde5c8`, while AIOS and upstream `main` were at `4c78c2b` before this work. No original unresolved browser request was replayed, reset, deleted or recovered by the present review.
+- AIOS source changes separate PI planning policy from ChatGPT executor instructions; new ChatGPT prompts are direct task imperatives rather than third-person owner proxies. A deterministic recovery reconstruction continues to use the exact same prompt implementation. Telegram `/list` shows actionable entries, `/history` shows historical records, local-only `archive-settled` marks only unambiguously settled records without deleting audit history. Read-only Telegram inline keyboards support task navigation through authenticated, deduplicated callbacks. Product architecture decisions are documented in `docs/product-ux.md`.
+- **Do not mistake source implementation for deployed behavior.** Full test, CI, Windows activation and real Telegram button interaction results must be recorded separately after verification. In particular, the two production `NEEDS_RECONCILIATION` Missions must remain prominent and cannot be archived solely because their Chrome tabs are absent.
+- **Final AIOS regression (this source increment):** Node 24 TypeScript `check`, `privacy-check`, `npm test` **223/223 passed** (0 failed, 0 skipped), `npm run build`, `git diff --check`. Tests include the deterministic PI-only section projection, safe history archive/idempotency and authenticated, read-only Telegram inline callback navigation. This is local source acceptance, not a real Telegram phone callback or GMK activation.
+
 ## 2026-11-06 production fourth-Send DOM timeout; narrow observer hardening (source validated)
 
 - **Verified release parent:** AIOS source and GitHub `main` were both `e87d20482809d25fa8ca0522a8a975e614c4daa1`, clean checkout. CI `42220125584` returned `success` with matching SHA on Ubuntu, macOS and Windows Node 24, after the prior 216/216 local test run.

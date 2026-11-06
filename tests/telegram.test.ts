@@ -7,6 +7,7 @@ import {createHash} from 'node:crypto';
 import { Store } from '../src/core/store.js';
 import { Engine } from '../src/core/engine.js';
 import { TelegramBridge, formatBrowserResultNotification, formatNativeMissionNotification,
+  telegramKeyboardForReply,telegramCallbackCommand,
   stalledPollerMayExit,TELEGRAM_IDLE_STALL_EXIT_MS,
   type TelegramUpdate, type TelegramTransport } from '../src/plugins/telegram.js';
 import type { AgentAdapter, Decision, Mission, TurnInput, Verification } from '../src/core/types.js';
@@ -26,12 +27,16 @@ class FakeAgent implements AgentAdapter {
 class FakeTransport implements TelegramTransport {
   updates:TelegramUpdate[]=[];
   sent:string[]=[];
+  keyboards:Array<unknown>=[];
+  acknowledged:string[]=[];
   failSend=false;
   async getUpdates(offset:number):Promise<TelegramUpdate[]> {return this.updates.filter(x=>x.update_id>=offset);}
-  async sendMessage(_chatId:number,text:string):Promise<void> {
+  async sendMessage(_chatId:number,text:string,keyboard?:unknown):Promise<void> {
     if(this.failSend) {this.failSend=false;throw new Error('simulated network drop');}
     this.sent.push(text);
+    this.keyboards.push(keyboard);
   }
+  async answerCallbackQuery(id:string):Promise<void> {this.acknowledged.push(id);}
 }
 
 const fixture=()=>{
@@ -47,6 +52,74 @@ const fixture=()=>{
   return {dir,store,agent,engine,m,transport,bridge,message,
     cleanup:()=>{store.close();rmSync(dir,{force:true,recursive:true});}};
 };
+
+test('settled Mission archive preserves audit history and refuses uncertain/active records',()=>{
+  const f=fixture();try{
+    const done=f.engine.create({goal:'Completed old test',acceptance:['done'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:1,requestKey:'settled-old'});
+    f.store.update(done.id,done.version,{state:'COMPLETED'},'verification.accepted',{reason:'test'});
+    const paused=f.engine.create({goal:'Old completed browser test',acceptance:['done'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:2,requestKey:'paused-done'});
+    f.store.update(paused.id,paused.version,{state:'PAUSED',lastSummary:'Verified result\n[MISSION_RELAY:DONE]'},
+      'chatgpt.browser_run_finished',{});
+    const uncertain=f.engine.create({goal:'Uncertain browser request',acceptance:['inspect'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:2,requestKey:'uncertain-test'});
+    f.store.update(uncertain.id,uncertain.version,{state:'NEEDS_RECONCILIATION'},
+      'chatgpt.browser_uncertain',{});
+    const count=f.store.archiveSettledMissions();
+    assert.equal(count.archived,2);
+    assert.equal(f.store.isMissionArchived(done.id),true);
+    assert.equal(f.store.isMissionArchived(paused.id),true);
+    assert.equal(f.store.isMissionArchived(f.m.id),false);
+    assert.equal(f.store.isMissionArchived(uncertain.id),false);
+    assert.equal(f.store.archiveSettledMissions().archived,0);
+    assert.equal(f.store.get(done.id).state,'COMPLETED');
+    assert.equal(f.store.events(done.id).at(-1)?.type,'mission.archived');
+    assert.ok(f.store.events(done.id).some(e=>e.type==='verification.accepted'));
+  }finally{f.cleanup();}
+});
+
+test('Telegram /list shows actionable Missions and /history shows archived ones',async()=>{
+  const f=fixture();try{
+    const old=f.engine.create({goal:'Old settled study',acceptance:['done'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:1,requestKey:'old-study'});
+    f.store.update(old.id,old.version,{state:'COMPLETED'},'verification.accepted',{});
+    f.store.archiveSettledMissions();
+    f.transport.updates=[f.message(1,'/list'),f.message(2,'/history')];
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,2);
+    assert.match(f.transport.sent[0]!,/Missions requiring attention/);
+    assert.ok(f.transport.sent[0]!.includes(f.m.id));
+    assert.ok(!f.transport.sent[0]!.includes(old.id));
+    assert.match(f.transport.sent[1]!,/Recent Mission history/);
+    assert.ok(f.transport.sent[1]!.includes(old.id));
+    assert.match(f.transport.sent[1]!,/archived/);
+  }finally{f.cleanup();}
+});
+
+test('Telegram task cards offer authenticated read-only inline navigation, without a second writer',async()=>{
+  const f=fixture();try{
+    f.transport.updates=[f.message(10,'/list')];
+    await f.bridge.pollOnce(0);
+    const markup=f.transport.keyboards[0] as {inline_keyboard:Array<Array<{text:string;callback_data:string}>>};
+    assert.ok(markup.inline_keyboard.some(row=>row.some(btn=>btn.callback_data===`mr:status:${f.m.id}`)));
+    assert.ok(markup.inline_keyboard.some(row=>row.some(btn=>btn.callback_data==='mr:history')));
+    const view:TelegramUpdate={update_id:11,callback_query:{id:'cb-read-11',data:`mr:status:${f.m.id}`,
+      from:{id:1001},message:{chat:{id:2001,type:'private'}}}};
+    const spoofed:TelegramUpdate={update_id:12,callback_query:{...view.callback_query!,id:'cb-other',
+      from:{id:999}}};
+    f.transport.updates=[view,spoofed];
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,2);
+    assert.match(f.transport.sent[1]!,/Turn 0\/3/);
+    assert.deepEqual(f.transport.acknowledged,['cb-read-11']);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,2,'Duplicate callback must not generate another message');
+    assert.equal(f.store.get(f.m.id).state,'READY');
+    assert.throws(()=>telegramCallbackCommand('mr:pause:untrusted'),/Unknown/);
+    assert.equal(telegramKeyboardForReply('unrelated text'),undefined);
+  }finally{f.cleanup();}
+});
 
 test('pi-health reports exact browser/PI progress without revealing private goals or messages',()=>{
   const f=fixture();try{
@@ -1041,7 +1114,7 @@ test('Explicit /new creates one isolated ChatGPT tab, commits URL and final SHA,
     assert.equal(events.filter(e=>e.type==='chatgpt.browser_run_finished').length,1);
     assert.equal(events.filter(e=>e.type==='chatgpt.browser_migrated').length,1);
     assert.equal(newPages,1);assert.equal(sends,1);
-    assert.match(entered,/Owner request:\nFind three real NetBox field workflow user problems/);
+    assert.match(entered,/Complete the following task:\nFind three real NetBox field workflow user problems/);
     assert.doesNotMatch(entered,/Prior conversation handoff/);
     await bridge.pollOnce(0);
     assert.equal(f.transport.sent.filter(x=>/ChatGPT result \(model-provided/.test(x)).length,1);
