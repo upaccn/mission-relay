@@ -112,7 +112,10 @@ export function browserTaskPolicy(writeWorkspace:string|null=null):string[] {
  * so a reserved browser request can always be reconstructed byte-for-byte. */
 export function executorTaskGoal(goal:string):string {
   const chunks=goal.split(/(?=^【[^\r\n】]{1,60}】)/m);
-  const visible=chunks.filter(x=>!/^【执行与自治规则】/.test(x)).join('').trim();
+  const visible=chunks.filter(x=>!/^【执行与自治规则】/.test(x)).join('')
+    .replace(/^[ \t]*这是所有者明确授权的[ \t]*workspace-write[ \t]*任务。?[ \t]*$/gm,'')
+    .replace(/^[ \t]*The owner authorized real code implementation for this task\.[ \t]*$/gmi,'')
+    .trim();
   return visible||goal.trim();
 }
 

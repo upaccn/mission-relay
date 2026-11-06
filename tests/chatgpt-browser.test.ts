@@ -25,12 +25,14 @@ import type {Page} from 'playwriter';
 
 const SHA=createHash('sha256').update('test browser prompt').digest('hex');
 
-test('coordinator-only heading is omitted from executor prompts while original owner goal remains untouched',()=>{
-  const goal='Deliver a verified release.\n【执行与自治规则】\nPI decides all orchestration.\nFive sends max.\n【v1.0 核心交付】\nImplement the feature and test it.';
+test('coordinator-only heading and third-person owner boilerplate are omitted from executor prompts',()=>{
+  const goal='Deliver a verified release.\n这是所有者明确授权的 workspace-write 任务。\nThe owner authorized real code implementation for this task.\n【执行与自治规则】\nPI decides all orchestration.\nFive sends max.\n【v1.0 核心交付】\nImplement the feature and test it.';
   const preview=executorTaskGoal(goal);
   assert.ok(preview.includes('Deliver a verified release.'));
   assert.ok(preview.includes('Implement the feature and test it.'));
   assert.ok(!preview.includes('PI decides all orchestration.'));
+  assert.ok(!preview.includes('这是所有者明确授权'));
+  assert.ok(!preview.includes('The owner authorized'));
   assert.ok(!browserFreshTaskPrompt(goal).includes('PI decides all orchestration.'));
   assert.ok(!browserNewChatPrompt(goal,['verify'],'summary',null).includes('PI decides all orchestration.'));
   assert.ok(goal.includes('PI decides all orchestration.'),'PI retains the full owner goal');
