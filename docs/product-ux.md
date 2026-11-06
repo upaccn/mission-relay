@@ -6,14 +6,14 @@ Telegram/ChatGPT prompts express the task directly as an imperative from the per
 
 ## Mission lifecycle and Telegram inbox
 
-- `/list` is the **actionable inbox**: READY/RUNNING/VERIFYING/BLOCKED/NEEDS_RECONCILIATION and nonterminal PI checkpoints needing review, at most ten concise entries. Absence of a Chrome tab is not evidence of success; a NEEDS_RECONCILIATION entry is never hidden merely because Chrome is closed.
-- `/history` shows recent completed, cancelled, safely paused or archived records without overwhelming the inbox. `/status <full-id>` is always available. Local `mission-relay list` continues to return the full unfiltered ledger.
+- `/list [page]` is the **actionable inbox**: READY/RUNNING/VERIFYING/BLOCKED/NEEDS_RECONCILIATION and nonterminal PI checkpoints needing review, eight concise entries per page. Ambiguous requests outrank newer routine tasks; no unresolved record falls off the end of an unpaginated list. Absence of a Chrome tab is not evidence of success.
+- `/history [page]` exposes the complete ledger in eight-item pages, including active and ambiguous Missions, newest-first with archival labels. `/status <full-id>` is always available. Local `mission-relay list` continues to return the full unfiltered ledger.
 - `mission-relay archive-settled` is a **local, explicit, non-destructive** maintenance operation. It marks safely settled entries in SQLite metadata and appends an audit event; no Mission, request receipt or event is deleted. READY/RUNNING/VERIFYING, NEEDS_RECONCILIATION, ambiguous Sends, paused errors, owner updates and pending PI continuations are not auto-archived. Idempotent on repeated use.
 - Do not equate archived with completed. Historical PAUSED missions may have done only their browser turn, not independent business verification. Archiving only cleans the interface.
 
 ## Telegram interaction in v0.2
 
-The first version uses Bot API **inline keyboards** attached to ordinary text, with no new frontend or messaging database. `/list`, `/history`, `/status`, and terminal notifications offer read-only View/Refresh/Tasks/History buttons. Callback data only permits these exact commands, including full UUID for status, and is bound to the same allowlisted owner and private chat; each callback update uses the existing durable inbox cursor and command reservation. Unknown or stale buttons fail closed. The reply text remains canonical, so restart can reconstruct the same keyboard deterministically.
+The first version uses Bot API **inline keyboards** attached to ordinary text, with no new frontend or messaging database. `/list`, `/history`, `/status`, and terminal notifications offer read-only View/Previous/Next/Refresh/Tasks/History buttons. Callback data only permits these commands and valid positive page numbers, including full UUID for status, and is bound to the same allowlisted owner and private chat; each callback update uses the existing durable inbox cursor and command reservation. Unknown or invalid buttons fail closed. A previously valid page may become out of range after the inbox changes and will return a bounded error rather than operating on another record. The reply text remains canonical, so restart can reconstruct the same keyboard deterministically.
 
 Example visual hierarchy:
 

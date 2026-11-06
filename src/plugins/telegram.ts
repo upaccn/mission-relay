@@ -43,6 +43,16 @@ export interface TelegramUpdate {
   };
 }
 type TelegramKeyboard={inline_keyboard:Array<Array<{text:string;callback_data:string}>>};
+const TELEGRAM_MISSION_PAGE_SIZE=8;
+function missionPage(argument:string|undefined,extra:string[],total:number):{page:number;pages:number;start:number}{
+  if(extra.length|| (argument!==undefined&&!/^[1-9]\d*$/.test(argument)))
+    throw new Error('Expected a positive page number (for example /list 2)');
+  const page=argument===undefined?1:Number(argument);
+  const pages=Math.max(1,Math.ceil(total/TELEGRAM_MISSION_PAGE_SIZE));
+  if(!Number.isSafeInteger(page)||page>pages)
+    throw new Error(`Page out of range; available pages: 1–${pages}`);
+  return {page,pages,start:(page-1)*TELEGRAM_MISSION_PAGE_SIZE};
+}
 export interface TelegramTransport {
   getUpdates(offset:number,timeoutSeconds:number):Promise<TelegramUpdate[]>;
   sendMessage(chatId:number,text:string,keyboard?:TelegramKeyboard):Promise<void>;
@@ -84,8 +94,13 @@ export class TelegramHttpTransport implements TelegramTransport {
 export function telegramKeyboardForReply(reply:string):TelegramKeyboard|undefined {
   if(reply.startsWith('Missions requiring attention:')||reply.startsWith('Recent Mission history')){
     const uuids=[...reply.matchAll(/\/status ([0-9a-f-]{36})/gi)].slice(0,3).map(m=>m[1]!);
+    const section=reply.startsWith('Recent Mission history')?'history':'list';
+    const paging=reply.match(/: Page (\d+)\/(\d+)\b/);
+    const page=paging?Number(paging[1]):1,pages=paging?Number(paging[2]):1;
     return {inline_keyboard:[
       ...uuids.map((id,i)=>[{text:`View ${i+1}`,callback_data:`mr:status:${id}`}]),
+      ...(page>1?[[{text:'Previous page',callback_data:`mr:${section}:${page-1}`}]]:[]),
+      ...(page<pages?[[{text:'Next page',callback_data:`mr:${section}:${page+1}`}]]:[]),
       [{text:'Refresh tasks',callback_data:'mr:list'},{text:'History',callback_data:'mr:history'}],
     ]};
   }
@@ -105,6 +120,8 @@ export function telegramKeyboardForReply(reply:string):TelegramKeyboard|undefine
 export function telegramCallbackCommand(data:string):string {
   if(data==='mr:list')return '/list';
   if(data==='mr:history')return '/history';
+  const page=data.match(/^mr:(list|history):([1-9]\d*)$/);
+  if(page&&Number.isSafeInteger(Number(page[2])))return `/${page[1]} ${page[2]}`;
   const match=data.match(/^mr:status:([0-9a-f-]{36})$/i);
   if(match)return `/status ${match[1]}`;
   throw new Error('Unknown or unsupported button action');
@@ -749,8 +766,8 @@ export class TelegramBridge {
     if(!cmd) return 'Send /help for available commands.';
     if(cmd==='/help'||cmd==='/start') return [
       'Mission Relay (single authorized user)',
-      '/list — tasks requiring attention (not historical completed runs)',
-      '/history — recent Mission history (kept for audit)',
+      '/list [page] — tasks requiring attention, unresolved first',
+      '/history [page] — full Mission history (kept for audit)',
       'Plain text, ChatGPT: and /auto — PI plans up to 32 read-only turns per Mission, max 5 per chat',
       '/auto <task> — start PI-managed read-only ChatGPT autopilot',
       '/build <task> — implement in the configured repository',
@@ -777,21 +794,35 @@ export class TelegramBridge {
     if(!cmd.startsWith('/'))return this.startPiChat(clean,commandId);
     if(cmd==='/agent')return this.startAgentTask(clean.slice(6),commandId);
     if(cmd==='/list') {
-      const outstanding=new Set(this.store.piHealth().missions.map(x=>x.id));
+      // piHealth is deliberately a bounded diagnostics preview (20 rows),
+      // not the authoritative inventory for a paginated Mission inbox.
       const all=this.engine.list().filter(m=>!this.store.isMissionArchived(m.id)&&(
         ['READY','RUNNING','VERIFYING','BLOCKED','NEEDS_RECONCILIATION'].includes(m.state)||
-        outstanding.has(m.id)||this.store.chatBrowserTurn(m.id)?.status==='uncertain')).slice(0,10);
-      return all.length?['Missions requiring attention:',...all.map(m=>
-        `${m.id.slice(0,8)}… — ${m.state}, ${m.turnCount}/${m.maxTurns}\n/status ${m.id}`),
-        'Older settled tasks: /history'].join('\n'):
+        (this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1'&&m.state==='PAUSED'&&
+          !m.stopRequested&&(!!m.lastError||
+          (m.turnCount<m.maxTurns&&
+            (!this.store.piPlan(m.id)||['NEXT','HANDOFF'].includes(this.store.piPlan(m.id)!.action)))))||
+        this.store.chatBrowserTurn(m.id)?.status==='uncertain'));
+      // An old ambiguous Send must not disappear below newer, ordinary READY
+      // tasks. All entries remain accessible through bounded, read-only pages.
+      const priority=(m:Mission)=>m.state==='NEEDS_RECONCILIATION'||
+        this.store.chatBrowserTurn(m.id)?.status==='uncertain'?0:
+        m.state==='RUNNING'||m.state==='VERIFYING'?1:
+        m.state==='BLOCKED'?2:m.state==='READY'?3:4;
+      all.sort((a,b)=>priority(a)-priority(b));
+      const {page,pages,start}=missionPage(id,words,all.length);
+      return all.length?[`Missions requiring attention: Page ${page}/${pages} (${all.length} total)`,
+        ...all.slice(start,start+TELEGRAM_MISSION_PAGE_SIZE).map(m=>
+        `${m.id.slice(0,8)}… — ${m.state} v${m.version}, ${m.turnCount}/${m.maxTurns}\n/status ${m.id}`),
+        'Full Mission audit history: /history'].join('\n'):
         'No active or unresolved Missions. Historical records: /history';
     }
     if(cmd==='/history'){
-      const recent=this.engine.list().filter(m=>
-        this.store.isMissionArchived(m.id)||
-        ['COMPLETED','CANCELLED','PAUSED'].includes(m.state)).slice(0,8);
-      return recent.length?['Recent Mission history (not evidence of business completion):',
-        ...recent.map(m=>`${m.id.slice(0,8)}… — ${m.state}${this.store.isMissionArchived(m.id)?' (archived)':''}\n/status ${m.id}`)
+      const all=this.engine.list();
+      const {page,pages,start}=missionPage(id,words,all.length);
+      return all.length?[`Recent Mission history: Page ${page}/${pages} (${all.length} total; not evidence of business completion)`,
+        ...all.slice(start,start+TELEGRAM_MISSION_PAGE_SIZE).map(m=>
+          `${m.id.slice(0,8)}… — ${m.state} v${m.version}${this.store.isMissionArchived(m.id)?' (archived)':''}\n/status ${m.id}`)
       ].join('\n'):'No history yet.';
     }
     if(!['/status','/handoff','/pause','/resume','/cancel','/instruct','/continue'].includes(cmd))

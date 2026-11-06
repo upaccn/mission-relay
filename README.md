@@ -1,6 +1,6 @@
 # Mission Relay
 
-**Owner-facing UX and distribution direction:** [Product decisions](docs/product-ux.md) documents the actionable Telegram inbox, non-destructive Mission history, read-only interactive buttons, browser/API separation, and proposed portable binary packaging. These are incremental alpha improvements, not evidence of v1.0 production acceptance.
+**Owner-facing UX and distribution direction:** [Product decisions](docs/product-ux.md) documents the paginated actionable Telegram inbox (unresolved requests first), complete paginated Mission history, non-destructive archiving, read-only interactive buttons, browser/API separation, and proposed portable binary packaging. These are incremental alpha improvements, not evidence of v1.0 production acceptance.
 
 **Browser-first, vendor-neutral by default.** With local `telegram-anchor` and `telegram-pi-config`, ordinary Telegram text, `ChatGPT: <task>` or `/auto <task>` starts a fresh ChatGPT Chrome conversation. After each fully observed answer, tool-free PI proposes a bounded NEXT/DONE/BLOCKED/HANDOFF decision. Existing human-created conversations can now be explicitly **adopted** (see below) with zero artificial turns. No coding agent, Codex SDK or model-provider choice is required for this path. Native execution remains an optional, separately installed plugin. **ChatGPT connected apps are not technically sandboxed by these prompts.** See [Telegram](docs/telegram.md).
 

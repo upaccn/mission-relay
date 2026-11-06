@@ -1,6 +1,14 @@
 # Mission Relay project state
 
-Updated: 2026-11-06
+Updated: 2026-11-07
+
+## 2026-11-07 complete Telegram Mission inventory pagination (AIOS source)
+
+- **Root cause addressed:** `/list` previously truncated its candidate list to ten entries and derived paused PI attention from the first twenty rows of a deliberately truncated `pi-health` diagnostic. Older unresolved PI checkpoints could disappear from the Telegram inbox even though SQLite and local `list` preserved them. `/history` exposed only the latest eight settled/paused records, with no paging. Neither omission was evidence that any Mission had completed.
+- **Implementation:** `/list [page]` now reads its own complete actionable inventory, prioritizes uncertain browser Sends/`NEEDS_RECONCILIATION` over normal tasks, and provides eight-entry pages with versions and exact `/status` commands. `/history [page]` exposes the complete read-only ledger (including live and archived records). Both include deterministic read-only Previous/Next callback navigation through the existing owner/private-chat, deduplicated Telegram command intake. Invalid/out-of-range pages fail closed; no Mission state or receipt is changed by navigation.
+- **Local regression:** dedicated Telegram suite **56/56 passed**, including an older reconciliation buried under new READY tasks, 24 paused PI checkpoints exceeding the 20-row health preview, history paging, invalid pages, callback deduplication and absence of state mutation. Linux TypeScript check, privacy boundary scan, build and `git diff --check` passed. Full repository test suite **225/225 passed** (0 failed/0 skipped) after this source increment. These are local deterministic tests, not live phone button taps or long-running autonomous Chrome acceptance.
+- **Production safety readback:** before deployment, GMK production checkout and origin/main matched AIOS base `a29576e`, clean. Telegram had a healthy single leased poller, zero reply backlog and no drain; a new `/build` Mission was RUNNING with **0/32 observed answers and one original reserved browser Send**. An older paused PI checkpoint also remained. No new Send, reconciliation, task restart, GMK pull or SQLite mutation was attempted by this change. Treat the reserved request as pending, never as permission to replay.
+- **Remaining release gates:** promote the exact source commit to GitHub and verify CI on Ubuntu/Windows/macOS. Activate on GMK only after safe idle/drain preflight, then independently verify live Telegram page callbacks and preserved records. Live five-to-six ChatGPT rotation, 32-turn successor, unattended recovery and actual business-result verification remain open; do not mark v1.0 or DONE based on this UX hardening.
 
 ## 2026-11-06 owner-facing prompt and Mission lifecycle refinement (AIOS source work)
 

@@ -97,6 +97,78 @@ test('Telegram /list shows actionable Missions and /history shows archived ones'
   }finally{f.cleanup();}
 });
 
+test('Telegram list prioritizes old reconciliation and pages all tasks and audit history',async()=>{
+  const f=fixture();try{
+    const uncertain=f.engine.create({goal:'Old uncertain browser Send',acceptance:['reconcile'],
+      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:32,requestKey:'old-uncertain'});
+    f.store.update(uncertain.id,uncertain.version,{state:'NEEDS_RECONCILIATION'},
+      'chatgpt.browser_uncertain',{});
+    const ready=[];
+    for(let i=0;i<12;i++)ready.push(f.engine.create({goal:`New READY ${i}`,acceptance:['test'],
+      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:2,requestKey:`ready-${i}`}));
+    for(let i=0;i<9;i++){
+      const done=f.engine.create({goal:`Historic completed ${i}`,acceptance:['test'],
+        workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:1,requestKey:`done-${i}`});
+      f.store.update(done.id,done.version,{state:'COMPLETED'},'verification.accepted',{});
+    }
+    f.store.archiveSettledMissions();
+    f.transport.updates=[f.message(1,'/list'),f.message(2,'/list 2'),
+      f.message(3,'/history'),f.message(4,'/history 3')];
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,4);
+    const [first,second,historyFirst,historyLast]=f.transport.sent;
+    assert.match(first!,/Missions requiring attention: Page 1\/2 \(14 total\)/);
+    assert.ok(first!.includes(uncertain.id),'Old uncertain Mission must outrank newer READY tasks');
+    assert.match(first!,/NEEDS_RECONCILIATION v1/);
+    assert.match(second!,/Missions requiring attention: Page 2\/2/);
+    assert.ok(second!.includes(f.m.id),'Oldest READY task must be accessible on the second page');
+    assert.match(historyFirst!,/Recent Mission history: Page 1\/3 \(23 total/);
+    assert.match(historyLast!,/Recent Mission history: Page 3\/3/);
+    assert.ok(historyLast!.includes(f.m.id),'History includes the full ledger, not just settled records');
+    const next=(f.transport.keyboards[0] as {inline_keyboard:Array<Array<{callback_data:string}>>})
+      .inline_keyboard.flat().find(button=>button.callback_data==='mr:list:2');
+    assert.ok(next,'First page has an authenticated read-only next-page button');
+    assert.equal(telegramCallbackCommand('mr:history:3'),'/history 3');
+    assert.throws(()=>telegramCallbackCommand('mr:list:0'),/Unknown/);
+    assert.throws(()=>telegramCallbackCommand('mr:list:99999999999999999999'),/Unknown/);
+    f.transport.updates=[f.message(5,'/list 3'),f.message(6,'/history -1')];
+    await f.bridge.pollOnce(0);
+    assert.match(f.transport.sent[4]!,/Page out of range/);
+    assert.match(f.transport.sent[5]!,/Expected a positive page number/);
+    const pageCallback:TelegramUpdate={update_id:7,callback_query:{id:'page-next',data:'mr:list:2',
+      from:{id:1001},message:{chat:{id:2001,type:'private'}}}};
+    f.transport.updates=[pageCallback];
+    await f.bridge.pollOnce(0);
+    assert.match(f.transport.sent[6]!,/Missions requiring attention: Page 2\/2/);
+    assert.deepEqual(f.transport.acknowledged,['page-next']);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.transport.sent.length,7,'Callback retry cannot append a second reply');
+    assert.equal(f.store.get(uncertain.id).state,'NEEDS_RECONCILIATION');
+    assert.equal(f.store.events(uncertain.id).filter(e=>e.type==='chatgpt.browser_uncertain').length,1);
+  }finally{f.cleanup();}
+});
+
+test('Telegram list does not inherit the 20-row pi-health diagnostic cap',async()=>{
+  const f=fixture();try{
+    const checkpoints=[];
+    for(let i=0;i<24;i++){
+      const m=f.engine.create({goal:`PI checkpoint ${i}`,acceptance:['review'],
+        workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:32,requestKey:`checkpoint-${i}`});
+      f.store.update(m.id,m.version,{state:'PAUSED'},'pi.autopilot_interrupted',{});
+      f.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
+      checkpoints.push(m);
+    }
+    assert.equal(f.store.piHealth().totalOutstanding,24);
+    assert.equal(f.store.piHealth().missions.length,20);
+    f.transport.updates=[f.message(1,'/list 4')];
+    await f.bridge.pollOnce(0);
+    assert.match(f.transport.sent[0]!,/Missions requiring attention: Page 4\/4 \(25 total\)/);
+    assert.ok(f.transport.sent[0]!.includes(checkpoints[0]!.id));
+    assert.equal(f.store.get(checkpoints[0]!.id).state,'PAUSED');
+    assert.equal(f.store.getMeta(`pi.autopilot.enabled.${checkpoints[0]!.id}`),'1');
+  }finally{f.cleanup();}
+});
+
 test('Telegram task cards offer authenticated read-only inline navigation, without a second writer',async()=>{
   const f=fixture();try{
     f.transport.updates=[f.message(10,'/list')];
