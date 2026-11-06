@@ -200,7 +200,7 @@ export class TelegramBridge {
     private readonly preflight:(missionId?:string)=>Promise<PreflightResult>=async()=>({
       ok:false,source:'default',message:'No native executor plugin configured',
     }),
-    private readonly browserConnector:(url:string,options?:{browserId?:string})=>Promise<BrowserSession>=connectChatPage,
+    private readonly browserConnector:(url:string,options?:{browserId?:string;bootstrapMissingAnchor?:boolean})=>Promise<BrowserSession>=connectChatPage,
     private readonly piPlanner:PiPlanner=new AiosPiPlanner({
       sshHost:store.getMeta('telegram.pi.sshHost')||'UNCONFIGURED',
       project:store.getMeta('telegram.pi.project')||'/srv',
@@ -552,7 +552,10 @@ export class TelegramBridge {
     if(!url||!browserId)throw new Error('PI source Chrome binding is missing');
     if(this.piPlanner instanceof AiosPiPlanner)
       await this.piPlanner.preflight(); // Avoid starting Chrome if PI is already offline.
-    const session=await this.browserConnector(url,{browserId});
+    // The anchor is an approved Chrome PROFILE identity, not a permanent tab
+    // lease. A new task always creates its own chat; replace only a missing
+    // launch source with a new owned tab in that same pinned profile.
+    const session=await this.browserConnector(url,{browserId,bootstrapMissingAnchor:true});
     try{
       const state=await inspectChatPage(session.page,url);
       if(!state.composerReady||state.generating)
@@ -589,7 +592,7 @@ export class TelegramBridge {
         try{await session.close();}catch{console.error('PI Playwriter session cleanup warning');}
         finally{this.activeMission=null;this.activeTask=null;}
       });
-      return `PI-coordinated ChatGPT Mission ${m.id} accepted (${writeWorkspace?'workspace-write':'read-only'}, up to 32 turns, max 8 per chat).\n${writeWorkspace?`Approved source: ${writeWorkspace}\n`:''}PI reviews each complete ChatGPT answer and decides the next action.\nAdditional plain-text instructions are queued for PI. Progress: /status ${m.id}. Do not resend.`;
+      return `PI-coordinated ChatGPT Mission ${m.id} accepted (${writeWorkspace?'workspace-write':'read-only'}, up to 32 turns, max ${MAX_RELAY_CHAT_TURNS} per chat).\n${writeWorkspace?`Approved source: ${writeWorkspace}\n`:''}PI reviews each complete ChatGPT answer and decides the next action.\nAdditional plain-text instructions are queued for PI. Progress: /status ${m.id}. Do not resend.`;
     }catch(error){
       try{await session.close();}catch{console.error('PI source preflight cleanup warning');}
       throw error;
@@ -620,7 +623,7 @@ export class TelegramBridge {
     const url=this.store.chatLink(anchorId);
     const browserId=this.store.chatBrowserBinding(anchorId);
     if(!url||!browserId)throw new Error('Configured ChatGPT anchor is missing its exact URL or Chrome binding');
-    const session=await this.browserConnector(url,{browserId});
+    const session=await this.browserConnector(url,{browserId,bootstrapMissingAnchor:true});
     try{
       const pageState=await inspectChatPage(session.page,url);
       if(!pageState.composerReady||pageState.generating)

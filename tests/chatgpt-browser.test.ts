@@ -7,6 +7,7 @@ import {createHash} from 'node:crypto';
 import {Store} from '../src/core/store.js';
 import {Engine} from '../src/core/engine.js';
 import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUrl,
+  bootstrapMissingChatAnchor,
   tolerateRolloverNavigation,rolloverUrlClass,newChatBootstrapDelayMs,
   shouldReloadBlankNewChat,reloadBlankDirectNewChat,isFreshResponseLoadFailure,
   canonicalVisibleUserPrompt,matchesSubmittedUserPrompt,matchesReservedPromptHash,isNewAssistantReply,
@@ -23,6 +24,34 @@ import type {AgentAdapter} from '../src/core/types.js';
 import type {Page} from 'playwriter';
 
 const SHA=createHash('sha256').update('test browser prompt').digest('hex');
+
+test('missing launch anchor bootstraps a new source tab without sending to an old chat',async()=>{
+  const target='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
+  let opened=0,filled=0,clicked=0,closed=0,current='about:blank';
+  const empty={count:async()=>0};
+  const composer={count:async()=>1,isVisible:async()=>true};
+  const page={
+    url:()=>current,isClosed:()=>false,
+    goto:async(url:string)=>{current=url;},close:async()=>{closed++;},
+    locator:(selector:string)=>selector.includes('prompt-textarea')?composer:empty,
+    getByRole:()=>empty,
+  } as unknown as Page;
+  const source=await bootstrapMissingChatAnchor({newPage:async()=>{opened++;return page;}},target);
+  assert.equal(source,page);
+  assert.equal(opened,1);
+  assert.equal(current,target);
+  assert.equal(filled+clicked,0,'Creating the source must not send any ChatGPT user message');
+  assert.equal(closed,0,'The controlled source must remain open for first-send reservation');
+});
+
+test('failed missing-anchor bootstrap closes only the owned unusable tab',async()=>{
+  const target='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
+  let closed=0;
+  const page={url:()=>target,goto:async()=>{},close:async()=>{closed++;},
+    locator:()=>({count:async()=>0}),getByRole:()=>({count:async()=>0})} as unknown as Page;
+  await assert.rejects(()=>bootstrapMissingChatAnchor({newPage:async()=>page},target),/not idle or authenticated/);
+  assert.equal(closed,1);
+});
 
 test('new owner task accepts a Telegram-length /build goal but rejects oversize goals',()=>{
   const workspace='/srv/ai/workspace/projects/mission-relay';

@@ -2,6 +2,13 @@
 
 Updated: 2026-11-06
 
+## 2026-11-06 stale Playwriter anchor in new Telegram `/build`: pending release validation
+
+- Live owner `/build` was rejected before creating a Mission with `Expected exactly one Playwriter-enabled tab at the specified ChatGPT URL; found 0`. GMK showed pinned Chrome browser connected, `activeTabs=0`, healthy Telegram transport and the old owner-paused uncertain fifth Send unchanged. The previous new-task path assumed the historical anchor tab stayed enabled forever; this was not a ChatGPT new-chat restriction.
+- A GMK read-only Playwriter proof connected to the exact pinned Chrome profile with **zero enabled tabs**, created one owned tab via `context.newPage()`, and navigated to `https://chatgpt.com/` without a Send. A second test navigated an owned tab to the saved approved anchor URL and observed `composerReady:true`, `generating:false`; no model reply or actual `/build` was submitted by these probes.
+- Code change: **only fresh authenticated Telegram task launches** can auto-bootstrap a missing old source tab in that same pinned Chrome profile, then use the existing distinct-new-chat reservation/atomic receipt path. It must not make an unavailable historic conversation count as a recovered old request, inspect other unenabled tabs or bypass cross-Mission integrity. Successful source creation is not proof of a successful first new ChatGPT Send; a separate owner `/build` remains the final production acceptance.
+- **Source qualification passed:** Linux Node 24 `npm run check`, privacy scan, **211/211 full tests**, `npm run build` and `git diff --check` passed. New regression tests cover read-only bootstrap without a send, fail-closed cleanup of an unusable source, and opt-in bootstrapping for `/build` and `/new`. The GMK source-read proof's one temporary homepage tab was closed after verifying it was the only previously created tab; Playwriter inventory returned `activeTabs:0` again without altering Telegram or SQLite. This is not a live `/build` send acceptance.
+
 ## 2026-11-06 Telegram fresh-task 1500-character rejection: deployed; live owner test pending
 
 - A real owner `/build` request was rejected with `Fresh ChatGPT task must be 1–1500 characters`. This is Mission Relay's own `browserFreshTaskPrompt` validation, not a ChatGPT input limit. Telegram Bot API single-message text allows 4096 characters; the new bound is 4000 **goal** characters, leaving room for `/build ` and retaining the separate 1500-character PI instruction/owner-note limits.

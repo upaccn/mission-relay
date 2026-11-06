@@ -130,7 +130,25 @@ export async function withBrowserSession<T>(session:BrowserSession,work:(page:Pa
 }
 
 /** Exact tab match only; no navigation, new tabs, arbitrary JS execution or cookie access. */
-export async function connectChatPage(targetUrl:string, options:{browserId?:string;port?:number}={}):Promise<BrowserSession> {
+/** Open an owned Playwriter-enabled bootstrap tab in the SAME approved Chrome
+ * profile. This source is used solely to open a DIFFERENT new ChatGPT chat;
+ * no user message is sent to the old conversation. Only new owner-authenticated
+ * Telegram tasks may opt into this fallback, never recovery or continuation. */
+export async function bootstrapMissingChatAnchor(context:{newPage():Promise<Page>},target:string):Promise<Page> {
+  const page=await context.newPage();
+  try{
+    await page.goto(target,{waitUntil:'domcontentloaded',timeout:30000});
+    const state=await inspectChatPage(page,target);
+    if(!state.composerReady||state.generating)
+      throw new Error('Automatically opened ChatGPT source is not idle or authenticated');
+    return page;
+  }catch(error){
+    await page.close().catch(()=>{});
+    throw error;
+  }
+}
+
+export async function connectChatPage(targetUrl:string, options:{browserId?:string;port?:number;bootstrapMissingAnchor?:boolean}={}):Promise<BrowserSession> {
   const target=normalizeChatGPTUrl(targetUrl);
   // Disable Playwriter's about:blank auto-attachment for this process.
   process.env.PLAYWRITER_AUTO_ENABLE='false';
@@ -149,9 +167,27 @@ export async function connectChatPage(targetUrl:string, options:{browserId?:stri
   }
   const matches=connection.browser.contexts().flatMap(context=>context.pages())
     .filter(page=>!page.isClosed()&&page.url().replace(/\/$/,'')===target);
+  if(matches.length===0&&options.bootstrapMissingAnchor&&options.browserId){
+    let bootstrap:Page;
+    try {
+      const context=connection.browser.contexts()[0];
+      if(!context)throw new Error('Pinned Chrome profile has no browser context');
+      bootstrap=await bootstrapMissingChatAnchor(context,target);
+    }catch(error){
+      await closeWithoutMaskingFailure(()=>connection.close());
+      const reason=error instanceof Error?error.message:'unknown error';
+      throw new Error(`Cannot automatically bootstrap a fresh ChatGPT task in the approved Chrome profile: ${reason.slice(0,350)}`);
+    }
+    return {page:bootstrap,close:async()=>{
+      // Only this owned source page is disposable. The actual new conversation
+      // was created separately by executeBrowserRollover and must survive.
+      await bootstrap.close().catch(()=>{});
+      await connection.close();
+    }};
+  }
   if(matches.length!==1) {
     await closeWithoutMaskingFailure(()=>connection.close());
-    throw new Error(`Expected exactly one Playwriter-enabled tab at the specified ChatGPT URL; found ${matches.length}. Enable the extension on the target tab, not other tabs.`);
+    throw new Error(`Expected exactly one Playwriter-enabled tab at the specified ChatGPT URL; found ${matches.length}. New owner tasks can bootstrap an authorized tab; recovery and existing-chat continuation require the exact tab.`);
   }
   return {page:matches[0]!,close:()=>connection.close()};
 }

@@ -29,6 +29,7 @@ function rig(planner:PiPlanner){
   store.bindChatBrowser(m.id,'install:Chrome:synthetic',linked.version);
   store.setMeta('telegram.chatgpt.anchorMissionId',m.id);
   let sends=0,newTabs=0,closed=false,entered='',location='about:blank';
+  const connectorOptions:Array<{browserId?:string;bootstrapMissingAnchor?:boolean}|undefined>=[];
   const sentPrompts:string[]=[];
   const roleLocator=(fresh:boolean)=>(selector:string)=>{
     const role=selector.includes('data-message-author-role="assistant"')?'assistant':
@@ -69,6 +70,7 @@ function rig(planner:PiPlanner){
   const bridge=new TelegramBridge(store,engine,transport,1001,2001,
     async()=>{throw new Error('Codex must not execute');},
     async(url,opts)=>{
+      connectorOptions.push(opts);
       assert.ok([SRC,DEST].includes(url));
       assert.equal(opts?.browserId,'install:Chrome:synthetic');
       return {page:url===DEST?newPage:anchor,close:async()=>{closed=true;}};
@@ -79,7 +81,7 @@ function rig(planner:PiPlanner){
   return {store,engine,bridge,sent,message,
     primeRecovered:(prompt:string)=>{location=DEST;entered=prompt;sends=1;},
     setUpdates:(items:TelegramUpdate[])=>{updates=items;},
-    state:()=>({sends,newTabs,closed,sentPrompts}),
+    state:()=>({sends,newTabs,closed,sentPrompts,connectorOptions}),
     cleanup:()=>{store.close();rmSync(dir,{recursive:true,force:true});}};
 }
 
@@ -230,6 +232,8 @@ test('Telegram /build coordinates two actual authorized browser turns in a scope
     assert.ok(mission);
     assert.equal(mission.sandbox,'workspace-write');
     assert.equal(mission.workspace,APPROVED_PROJECT);
+    assert.equal(f.state().connectorOptions[0]?.bootstrapMissingAnchor,true,
+      'A fresh owner task must authorize an owned launch tab if the old anchor is gone');
     for(let i=0;i<220&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
     assert.equal(f.state().closed,true);
     assert.equal(f.state().sends,2);
@@ -241,6 +245,17 @@ test('Telegram /build coordinates two actual authorized browser turns in a scope
       assert.ok(prompt.includes(APPROVED_PROJECT));
       assert.doesNotMatch(prompt,/This is a bounded, read-only research/);
     }
+  }finally{f.cleanup();}
+});
+
+test('A one-shot /new owner task may bootstrap a missing old launch tab',async()=>{
+  const f=rig({decide:async()=>({action:'DONE',summary:'unused',nextPrompt:''})});
+  try {
+    f.setUpdates([f.message(997,'/new Perform one isolated read-only check')]);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.state().connectorOptions[0]?.bootstrapMissingAnchor,true);
+    for(let i=0;i<220&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(f.state().sends,1);
   }finally{f.cleanup();}
 });
 
