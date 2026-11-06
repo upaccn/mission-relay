@@ -411,6 +411,47 @@ test('five-to-six PI rollover rechecks the exact source after its initial DOM pr
   }finally{f.cleanup();}
 });
 
+test('ordinary PI NEXT rechecks the exact source at the second preflight without reserving a changed-chat Send',async()=>{
+  const f=fixture();try{
+    const created=f.store.create({goal:'Keep an ordinary PI continuation bound to the last answer',
+      acceptance:['Reject a changed source without a second Send'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:7,checks:[],requestKey:'pi-race-next'});
+    const linked=f.store.linkChat(created.id,SOURCE,created.version).mission;
+    const bound=f.store.bindChatBrowser(linked.id,'install:Chrome:fake',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${bound.id}`,'1');
+    const answer='First NetBox research answer\n[MISSION_RELAY:DONE]';
+    const sha=(s:string)=>createHash('sha256').update(s).digest('hex');
+    f.store.reserveChatBrowserTurn(bound.id,bound.version,'pi-race-next-1',
+      sha('Previously submitted user prompt'),{newConversation:true});
+    f.store.finishChatBrowserTurn(bound.id,'pi-race-next-1',{
+      kind:'observed',assistantSha256:sha(answer),summary:answer,newChatUrl:DEST});
+    f.store.commitPiPlan(bound.id,sha(answer),[],{
+      action:'NEXT',summary:'One verified turn',nextPrompt:'Proceed with the next test'});
+    f.primeRecovered();
+    let assistantReads=0;
+    const source={...f.fresh,locator:(selector:string)=>{
+      const original=f.fresh.locator(selector);
+      if(!selector.includes('data-message-author-role="assistant"'))return original;
+      const edited:any={...original,innerText:async()=>
+        ++assistantReads===1?answer:'An intervening human changed the assistant response'};
+      edited.first=()=>edited;edited.last=()=>edited;
+      return edited;
+    }} as unknown as Page;
+    await assert.rejects(()=>drivePiAutopilot({store:f.store,planner:{decide:async()=>{
+      throw new Error('No new PI decision should run before source rejection');
+    }},missionId:bound.id,revision:f.store.get(bound.id).version,
+    requestPrefix:'pi-race-next',page:source,url:DEST,
+    recoveredAnswer:{responseSha256:sha(answer),lastAssistant:answer}}),
+    /Source ChatGPT history changed before existing-chat Send reservation/);
+    assert.equal(assistantReads,2,'Ordinary continuation must check source a second time');
+    assert.equal(f.results().sends,0);
+    assert.equal(f.results().newPages,0);
+    assert.equal(f.store.get(bound.id).turnCount,1);
+    assert.equal(f.store.chatBrowserTurn(bound.id)?.status,'observed');
+    assert.equal(f.store.events(bound.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+  }finally{f.cleanup();}
+});
+
 test('after a crash at five observed turns, PI recovers the exact checkpoint and sends the sixth only in a new chat',async()=>{
   const f=fixture();try{
     const created=f.store.create({goal:'Long-running recovery at the five-turn boundary',

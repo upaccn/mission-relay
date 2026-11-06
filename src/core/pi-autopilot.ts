@@ -282,7 +282,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
         expectedSource:exactSource,
       }):await executeBrowserTurn({
         ...payload,page,url,prompt:nextPiBrowserPrompt(origin.goal,nextPlan!,writeWorkspace),
-        requireFinalMarker:true,
+        requireFinalMarker:true,expectedSource:exactSource,
       });
     if(!received)return; // PI stopped a successor before its first Send.
     if('page' in received){

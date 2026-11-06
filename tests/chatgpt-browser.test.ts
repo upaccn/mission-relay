@@ -217,6 +217,28 @@ test('Browser turn is durably reserved before any external interaction',()=>{
   }finally{f.cleanup();}
 });
 
+test('existing-chat Send refuses a changed latest user prompt or answer before reservation',async()=>{
+  const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
+  for(const changed of ['user','assistant'] as const){
+    const f=fixture();try{
+      const page=new SyntheticChatPage();
+      const expectedSource={promptSha256:sha('Previous prompt'),
+        assistantSha256:sha('Previous answer')};
+      if(changed==='user')expectedSource.promptSha256=sha('Different later user prompt');
+      else expectedSource.assistantSha256=sha('Different later assistant answer');
+      await assert.rejects(()=>executeBrowserTurn({store:f.store,missionId:f.linked.id,
+        revision:f.linked.version,requestKey:`changed-${changed}`,
+        page:page as unknown as Page,url:URL,prompt:'Continue verified source',
+        expectedSource,timeoutMs:10000}),
+      /Source ChatGPT history changed before existing-chat Send reservation/);
+      assert.equal(page.sends,0);
+      assert.equal(f.store.chatBrowserTurn(f.linked.id),null);
+      assert.equal(f.store.events(f.linked.id)
+        .filter(e=>e.type==='chatgpt.browser_reserved').length,0);
+    }finally{f.cleanup();}
+  }
+});
+
 test('SQLite refuses a sixth same-chat Send even after restart and only credits a verified new conversation',()=>{
   const dir=mkdtempSync(join(tmpdir(),'relay-chat-limit-'));
   let store=new Store(join(dir,'state.sqlite'));
@@ -886,6 +908,37 @@ test('HANDOFF marker creates one new authorized tab, sends task context and atom
     assert.throws(()=>f.store.reserveChatBrowserTurn(f.linked.id,
       f.store.get(f.linked.id).version,'rollover-success-2',SHA),/already used/);
   }finally{f.cleanup();}
+});
+
+test('manual NEXT and HANDOFF refuse a changed source before a second Send or new tab',async()=>{
+  for(const marker of ['NEXT','HANDOFF'] as const){
+    const f=fixture();try{
+      const source=new SourceWithNewTab();
+      source.reply=`Complete previous observation\n[MISSION_RELAY:${marker}]`;
+      const original=source.locator.bind(source);
+      source.locator=(selector:string)=>{
+        const node=original(selector);
+        if(!selector.includes('data-message-author-role="assistant"'))return node;
+        const edited:any={...node,innerText:async()=>
+          f.store.get(f.linked.id).turnCount===1
+            ? 'An intervening human edited this ChatGPT answer'
+            : node.innerText()};
+        edited.first=()=>edited;edited.last=()=>edited;
+        return edited;
+      };
+      await assert.rejects(()=>driveChatConversation({store:f.store,
+        missionId:f.linked.id,revision:f.linked.version,
+        requestPrefix:`manual-source-race-${marker.toLowerCase()}`,turns:3,
+        page:source as unknown as Page,url:URL,timeoutMs:12000}),
+      /Source ChatGPT history changed before (existing-chat|new-tab) Send reservation/);
+      assert.equal(source.sends,1,`${marker} must not submit to the changed source`);
+      assert.equal(source.created,0,`${marker} must not open a new tab`);
+      assert.equal(f.store.get(f.linked.id).turnCount,1);
+      assert.equal(f.store.chatBrowserTurn(f.linked.id)?.status,'observed');
+      assert.equal(f.store.events(f.linked.id)
+        .filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    }finally{f.cleanup();}
+  }
 });
 
 test('separate manual browser-drive batches auto-handoff after five verified sends without a sixth old-chat Send',async()=>{

@@ -18,6 +18,8 @@ export interface BrowserTurnOutcome {
 export async function executeBrowserTurn(input:{
   store:Store;missionId:string;revision:number;requestKey:string;
   page:Page;url:string;prompt:string;timeoutMs?:number;requireFinalMarker?:boolean;
+  /** Revalidate the last observed exchange at the final read before reservation. */
+  expectedSource?:{promptSha256:string;assistantSha256:string};
   consumedInstruction?:string|null;
   telegramBatch?:{lastAuthorizedTurn:boolean;piManaged?:boolean};
 }):Promise<BrowserTurnOutcome> {
@@ -31,6 +33,10 @@ export async function executeBrowserTurn(input:{
     throw new Error('Browser timeout must be between 10 seconds and 4 hours; no message was reserved');
   const before=await inspectChatPage(page,url);
   if(!before.composerReady||before.generating) throw new Error('ChatGPT tab is not ready for a new turn');
+  if(input.expectedSource&&(
+    createHash('sha256').update(before.lastAssistant).digest('hex')!==input.expectedSource.assistantSha256||
+    await lastVisibleUserPromptSha256(page)!==input.expectedSource.promptSha256))
+    throw new Error('Source ChatGPT history changed before existing-chat Send reservation');
   const promptSha256=createHash('sha256').update(prompt.trim()).digest('hex');
   store.reserveChatBrowserTurn(missionId,revision,requestKey,promptSha256);
   try {
@@ -294,6 +300,18 @@ export async function driveChatConversation(input:{
       handoff=second.lastAssistant;
       expectedSource={promptSha256:last.promptSha256,assistantSha256:last.assistantSha256};
     }
+    // Within a multi-turn batch, a human may edit the source after a reply
+    // was observed but before the next UI preflight. Always recheck the exact
+    // durable exchange at the final pre-reservation boundary, for same-chat
+    // NEXT as well as explicit HANDOFF. A separate batch's first manual Send
+    // remains governed by its explicit command and the existing SQLite gate.
+    if(i>0&&!expectedSource){
+      const last=input.store.chatBrowserTurn(m.id);
+      if(!last?.assistantSha256||!['observed','reconciled'].includes(last.status)||
+        (handoff!==null&&createHash('sha256').update(handoff).digest('hex')!==last.assistantSha256))
+        throw new Error('Continuation requires an unchanged, complete previous browser receipt');
+      expectedSource={promptSha256:last.promptSha256,assistantSha256:last.assistantSha256};
+    }
     const prompt:string=handoff!==null
       ?browserNewChatPrompt(m.goal,m.acceptance,handoff,m.nextInstruction)
       :browserContinuationPrompt(m.goal,m.acceptance,i===0,m.nextInstruction);
@@ -307,7 +325,7 @@ export async function driveChatConversation(input:{
       :await executeBrowserTurn({store:input.store,missionId:input.missionId,revision,
         requestKey:`${input.requestPrefix}-${i+1}`,page,url,prompt,timeoutMs:input.timeoutMs,
         requireFinalMarker:true,consumedInstruction:m.nextInstruction,
-        telegramBatch:batch});
+        telegramBatch:batch,expectedSource});
     if('page' in receipt){
       page=(receipt as BrowserTurnOutcome&{page:Page;url:string}).page;
       url=(receipt as BrowserTurnOutcome&{page:Page;url:string}).url;
