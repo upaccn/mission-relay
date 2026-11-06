@@ -6,6 +6,7 @@ import {inspectChatPage,lastVisibleUserPromptSha256} from '../plugins/chatgpt-br
 import {executeBrowserTurn,executeBrowserRollover,retireSupersededRelayTab,browserFreshTaskPrompt,
   browserNewChatPrompt,browserTaskPolicy,executorTaskGoal,type BrowserTurnOutcome} from './browser-controller.js';
 import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
+import {withReadOnlyDeadline} from './read-only-deadline.js';
 
 const MAX_REPLANS=3;
 /** Independent of the Mission's total budget, avoid overlong ChatGPT chats. */
@@ -160,15 +161,15 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
       receipt.assistantSha256!==plan.responseSha256||
       store.piChainSuccessor(chainParentId)!==missionId)
       throw new Error('PI chain source is not a verified, continuing 32-turn checkpoint');
-    const first=await inspectChatPage(page,url);
+    const first=await withReadOnlyDeadline(inspectChatPage(page,url));
     if(first.generating||!first.composerReady||
-      await lastVisibleUserPromptSha256(page)!==receipt.promptSha256||
+      await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))!==receipt.promptSha256||
       createHash('sha256').update(first.lastAssistant).digest('hex')!==receipt.assistantSha256)
       throw new Error('PI chain refused: parent ChatGPT conversation changed');
     await new Promise(resolve=>setTimeout(resolve,3000));
-    const second=await inspectChatPage(page,url);
+    const second=await withReadOnlyDeadline(inspectChatPage(page,url));
     if(second.generating||second.lastAssistant!==first.lastAssistant||
-      await lastVisibleUserPromptSha256(page)!==receipt.promptSha256)
+      await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))!==receipt.promptSha256)
       throw new Error('PI chain refused: parent browser evidence did not remain stable');
     latestBrowserAnswer=second.lastAssistant;
     nextPlan=store.piPlan(missionId)??plan;
@@ -180,16 +181,16 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
     // This is a real *human* ChatGPT reply, not a dispatched Relay turn.
     // Verify both last visible messages, including a stability read, before
     // letting PI infer next actions from this existing conversation.
-    const first=await inspectChatPage(page,url);
-    const userSha=await lastVisibleUserPromptSha256(page);
+    const first=await withReadOnlyDeadline(inspectChatPage(page,url));
+    const userSha=await withReadOnlyDeadline(lastVisibleUserPromptSha256(page));
     if(first.generating||!first.composerReady||!first.lastAssistant.trim()||
        userSha!==adopted.userSha256||
        createHash('sha256').update(first.lastAssistant).digest('hex')!==adopted.assistantSha256)
       throw new Error('Adopted ChatGPT tab changed since its recorded initial snapshot');
     await new Promise(resolve=>setTimeout(resolve,3000));
-    const second=await inspectChatPage(page,url);
+    const second=await withReadOnlyDeadline(inspectChatPage(page,url));
     if(second.generating||second.lastAssistant!==first.lastAssistant||
-       await lastVisibleUserPromptSha256(page)!==adopted.userSha256)
+       await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))!==adopted.userSha256)
       throw new Error('Adopted ChatGPT reply did not remain stable');
     latestBrowserAnswer=second.lastAssistant;
     nextPlan=store.piPlan(missionId);
@@ -249,8 +250,8 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
       // Another human, browser session, or agent may have interacted with the
       // page while PI was planning. Refuse to append to a changed conversation.
       const previous=store.chatBrowserTurn(missionId);
-      const snapshot=await inspectChatPage(page,url);
-      const userSha=await lastVisibleUserPromptSha256(page);
+      const snapshot=await withReadOnlyDeadline(inspectChatPage(page,url));
+      const userSha=await withReadOnlyDeadline(lastVisibleUserPromptSha256(page));
       if(!snapshot.composerReady||snapshot.generating||!previous||
         !store.hasVerifiedPiBrowserCheckpoint(missionId)||
         createHash('sha256').update(snapshot.lastAssistant).digest('hex')!==nextPlan!.responseSha256||

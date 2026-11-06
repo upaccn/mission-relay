@@ -1,5 +1,6 @@
 import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 import {createHash} from 'node:crypto';
+import {withReadOnlyDeadline} from './read-only-deadline.js';
 import type {Page} from 'playwriter';
 import type {Store,PiPlan} from './store.js';
 import {inspectChatPage,lastVisibleUserPromptSha256,submitChatTurn,submitNewChatTurn,MAX_BROWSER_TURN_TIMEOUT_MS} from '../plugins/chatgpt-browser.js';
@@ -31,11 +32,11 @@ export async function executeBrowserTurn(input:{
   if(input.timeoutMs!==undefined && (!Number.isInteger(input.timeoutMs)||
      input.timeoutMs<10000||input.timeoutMs>MAX_BROWSER_TURN_TIMEOUT_MS))
     throw new Error('Browser timeout must be between 10 seconds and 4 hours; no message was reserved');
-  const before=await inspectChatPage(page,url);
+  const before=await withReadOnlyDeadline(inspectChatPage(page,url));
   if(!before.composerReady||before.generating) throw new Error('ChatGPT tab is not ready for a new turn');
   if(input.expectedSource&&(
     createHash('sha256').update(before.lastAssistant).digest('hex')!==input.expectedSource.assistantSha256||
-    await lastVisibleUserPromptSha256(page)!==input.expectedSource.promptSha256))
+    await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))!==input.expectedSource.promptSha256))
     throw new Error('Source ChatGPT history changed before existing-chat Send reservation');
   const promptSha256=createHash('sha256').update(prompt.trim()).digest('hex');
   store.reserveChatBrowserTurn(missionId,revision,requestKey,promptSha256);
@@ -254,12 +255,12 @@ export async function executeBrowserRollover(input:{
   if(input.timeoutMs!==undefined&&(!Number.isInteger(input.timeoutMs)||
     input.timeoutMs<10000||input.timeoutMs>MAX_BROWSER_TURN_TIMEOUT_MS))
     throw new Error('Rollover timeout must be between 10 seconds and 4 hours');
-  const current=await inspectChatPage(input.sourcePage,input.sourceUrl);
+  const current=await withReadOnlyDeadline(inspectChatPage(input.sourcePage,input.sourceUrl));
   if(!current.composerReady||current.generating)
     throw new Error('Source ChatGPT tab must be idle before a new conversation is opened');
   if(input.expectedSource&&(
     createHash('sha256').update(current.lastAssistant).digest('hex')!==input.expectedSource.assistantSha256||
-    await lastVisibleUserPromptSha256(input.sourcePage)!==input.expectedSource.promptSha256))
+    await withReadOnlyDeadline(lastVisibleUserPromptSha256(input.sourcePage))!==input.expectedSource.promptSha256))
     throw new Error('Source ChatGPT history changed before new-tab Send reservation');
   store.reserveChatBrowserTurn(missionId,revision,requestKey,
     createHash('sha256').update(prompt.trim()).digest('hex'),{newConversation:true});

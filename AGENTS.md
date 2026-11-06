@@ -2,6 +2,8 @@
 
 Read-only PI health/evidence and Telegram status may expose a **new-conversation reservation intent** flag from private SQLite. It must be false for same-chat and settled requests and must never be treated as proof of a new tab, submitted Send, observed URL or completed response. Never recover, replay or deploy based on this flag alone.
 
+Side-effect-free browser reads used before a PI recovery or Send reservation have a 30-second deadline. An expired read can interrupt PI safely without reserving or retrying a browser Send; a late-created Playwriter connector is closed. Never wrap an actual Send, Retry, reservation or PI decision in that timeout: an external side effect may already have committed.
+
 This is an independent, public, local-first open-source project. It does not depend on any private AIOS deployment.
 
 ## Boundaries

@@ -2,7 +2,10 @@
 import { DatabaseSync } from 'node:sqlite';
 
 const filename = process.argv[2];
-if (!filename) process.exit(2);
+if (!filename) {
+  console.error('Restart preflight requires the absolute local missions.sqlite path (argument 1).');
+  process.exit(2);
+}
 let db;
 try {
   db = new DatabaseSync(filename, { readOnly: true });

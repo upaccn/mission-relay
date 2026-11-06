@@ -8,6 +8,12 @@ import {spawnSync} from 'node:child_process';
 
 const script=resolve('scripts/windows/telegram-restart-check.mjs');
 
+test('restart preflight identifies a missing SQLite path instead of silently returning 2',()=>{
+  const result=spawnSync(process.execPath,[script],{encoding:'utf8',timeout:5000});
+  assert.equal(result.status,2);
+  assert.match(result.stderr,/requires the absolute local missions.sqlite path/);
+});
+
 function withFixture(run:(filename:string,db:DatabaseSync)=>void):void {
   const dir=mkdtempSync(join(tmpdir(),'mr-telegram-restart-'));
   const filename=join(dir,'missions.sqlite');

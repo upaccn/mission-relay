@@ -11,6 +11,7 @@ import {watchedBrowser,nextBrowserWatchCandidate,acknowledgeBrowserWatchCandidat
   orderedBrowserWatchCandidates,recordBrowserWatchAttempt,
   type ConnectedChatCandidate} from '../core/browser-watch.js';
 import {driveChatConversation,executeBrowserRollover,browserFreshTaskPrompt} from '../core/browser-controller.js';
+import {withReadOnlyDeadline} from '../core/read-only-deadline.js';
 import {drivePiAutopilot,pauseFailedPiPlanning} from '../core/pi-autopilot.js';
 import {AiosPiPlanner,validateRemoteProjectPath,type PiPlanner} from '../core/pi-planner.js';
 import type {Mission,MissionEvent} from '../core/types.js';
@@ -477,10 +478,11 @@ export class TelegramBridge {
     }
     let session:BrowserSession|undefined;
     try{
-      session=await this.browserConnector(url,{browserId});
-      const snapshot=await inspectChatPage(session.page,url);
+      session=await withReadOnlyDeadline(this.browserConnector(url,{browserId}),30_000,
+        lateSession=>lateSession.close());
+      const snapshot=await withReadOnlyDeadline(inspectChatPage(session.page,url));
       const previous=this.store.chatBrowserTurn(this.store.piChainParent(m.id)??m.id);
-      const lastUserHash=await lastVisibleUserPromptSha256(session.page);
+      const lastUserHash=await withReadOnlyDeadline(lastVisibleUserPromptSha256(session.page));
       if(!snapshot.composerReady||snapshot.generating||
         !previous||!this.store.hasVerifiedPiBrowserCheckpoint(this.store.piChainParent(m.id)??m.id)||
         createHash('sha256').update(snapshot.lastAssistant).digest('hex')!==previous.assistantSha256||
