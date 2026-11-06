@@ -1014,12 +1014,16 @@ export class Store {
         if(this.isMissionArchived(m.id))continue;
         const receipt=this.chatBrowserTurn(m.id),pi=this.piPlan(m.id);
         const safeReceipt=!receipt||['observed','reconciled'].includes(receipt.status);
+        // pi.autopilot_finished also records LIMIT when a 32-turn PI NEXT
+        // still needs a successor Mission. Presence of that event alone
+        // NEVER proves the owner's goal is settled. The durable latest PI
+        // plan is terminal only on an explicit DONE/BLOCKED decision.
         const terminalPi=pi&&['DONE','BLOCKED'].includes(pi.action);
         const terminalBrowser=/\[MISSION_RELAY:DONE\]\s*$/.test(m.lastSummary??'');
         const settled=['COMPLETED','CANCELLED'].includes(m.state)||
           (m.state==='PAUSED'&&!m.lastError&&!m.stopRequested&&
            this.pendingPiOwnerDirectives(m.id).length===0&&
-           (terminalPi||this.events(m.id).some(e=>e.type==='pi.autopilot_finished')||
+           (terminalPi||
             (this.getMeta(`pi.autopilot.enabled.${m.id}`)!=='1'&&terminalBrowser)));
         if(!safeReceipt||!settled){retained++;continue;}
         const at=new Date().toISOString();

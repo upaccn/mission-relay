@@ -2,6 +2,12 @@
 
 Updated: 2026-11-07
 
+## 2026-11-07 PI LIMIT inbox archival safety
+
+- **Production readback before change:** AIOS and GitHub `main` were clean at `d0529933731c54d4f975ccf53fd14864bb69c915`; GitHub CI run `42300854484` reported exact-SHA success on Windows, Ubuntu and macOS Node 24. GMK remained at `a29576e` with one healthy Telegram poller, zero pending Telegram replies, and an active reserved **fourth** Chrome Send on owner Mission `c3574261`. Three observed rounds matched three PI NEXT decisions (event IDs 267/268, 270/271, 273/274); ledger violations were empty. The earlier PAUSED PI checkpoint remains untouched. No GMK deployment, Send replay, SQLite deletion, process restart or receipt reconciliation was executed.
+- **Reproduced defect:** `archiveSettledMissions` treated the presence of *any* `pi.autopilot_finished` event as a settled PAUSED PI Mission. But the same durable event is emitted as `action=LIMIT` after 32/32 fully observed sends with PI `NEXT/HANDOFF`, when business work still requires an unstarted or active successor. The before-fix adversarial test **failed** because it incorrectly archived a legitimate 32/32 LIMIT/NEXT parent; after-fix it passes while still archiving a separate fully observed PI DONE Mission.
+- **Minimal correction and Linux validation:** A PAUSED PI Mission is archiveable only on the durable latest PI DONE/BLOCKED plan, never on a LIMIT event. Already archived SQLite records and audit events are not rewritten; existing unresolved Send and successor provenance are preserved. The final Linux Node 24 suite passed **231/231 tests** (zero failures/skips), with `npm run check`, `npm run privacy-check`, `npm run build` and `git diff --check` passing. This is a source regression fix, **not** proof of live 32-turn handoff; exact-SHA CI and safe GMK activation remain independent release gates.
+
 ## 2026-11-07 long-task Chrome tab retirement hardening
 
 - **Read-back baseline:** AIOS and GitHub `main` were clean at `631fb93fd5f6d1db47e8369d5b9d5b929f8caed3`; exact-SHA GitHub Actions `42299159630` succeeded on Ubuntu, macOS and Windows. GMK remained on clean pull-only `a29576e` because its Telegram worker had an active, durably reserved third browser Send. The second ChatGPT answer had been observed and PI reviewed (`2/32`, `2` SHA-matched NEXT decisions, `pi-evidence.ledgerConsistent:true`, 0 violations). Channel transport and single worker were healthy. Do not resend, reset, drain or restart this in-flight request.

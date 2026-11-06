@@ -79,6 +79,61 @@ test('settled Mission archive preserves audit history and refuses uncertain/acti
   }finally{f.cleanup();}
 });
 
+test('archive-settled never hides a PI LIMIT/NEXT while its 32-turn successor still needs work',()=>{
+  const f=fixture();try{
+    const sha=(text:string)=>createHash('sha256').update(text).digest('hex');
+    const parent=f.engine.create({goal:'Multi-mission audit not yet complete',
+      acceptance:['One more mission must finish'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:32,requestKey:'limit-unfinished'});
+    const linked=f.store.linkChat(parent.id,'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',
+      parent.version).mission;
+    const bound=f.store.bindChatBrowser(parent.id,'install:Chrome:test',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${parent.id}`,'1');
+    const ready=f.store.update(parent.id,bound.version,{state:'PAUSED',turnCount:31},
+      'test.previous_verified_rounds',{});
+    const answer='Stage 32 completed; owner goal remains unfinished\n[MISSION_RELAY:NEXT]';
+    f.store.reserveChatBrowserTurn(parent.id,ready.version,'limit-stage-32',sha('verified prompt'));
+    f.store.finishChatBrowserTurn(parent.id,'limit-stage-32',{
+      kind:'observed',assistantSha256:sha(answer),summary:answer,
+      telegramBatch:{terminal:true,flowSignal:'NEXT',piManaged:true}});
+    f.store.commitPiPlan(parent.id,sha(answer),[],{
+      action:'NEXT',summary:'Further work must continue',nextPrompt:'Proceed to successor'});
+    assert.equal(f.store.get(parent.id).turnCount,32);
+    assert.equal(f.store.get(parent.id).state,'PAUSED');
+    assert.equal((f.store.events(parent.id).find(e=>e.type==='pi.autopilot_finished')?.payload as
+      {action:string}).action,'LIMIT');
+    const before=f.store.maxEventId();
+    f.store.archiveSettledMissions();
+    assert.equal(f.store.isMissionArchived(parent.id),false,
+      'LIMIT is a continuation checkpoint, not a settled Mission');
+    assert.equal(f.store.maxEventId(),before,
+      'The unfinished parent must not acquire an archive audit event');
+    const child=f.store.createPiSuccessor(parent.id);
+    assert.ok(child);
+    f.store.archiveSettledMissions();
+    assert.equal(f.store.isMissionArchived(parent.id),false,
+      'A READY child does not prove the unfinished owner goal was satisfied');
+    assert.equal(f.store.isMissionArchived(child.id),false);
+
+    // A fully observed PI DONE remains archiveable (unlike LIMIT).
+    const done=f.engine.create({goal:'A separate verified one-turn task',
+      acceptance:['Complete task'],workspace:'',sandbox:'read-only',
+      mode:'supervised',maxTurns:1,requestKey:'pi-done-archive'});
+    const durl=f.store.linkChat(done.id,'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174001',
+      done.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${done.id}`,'1');
+    const doneAnswer='Verified result\n[MISSION_RELAY:DONE]';
+    f.store.reserveChatBrowserTurn(done.id,durl.version,'pi-done-send',sha('other prompt'));
+    f.store.finishChatBrowserTurn(done.id,'pi-done-send',{
+      kind:'observed',assistantSha256:sha(doneAnswer),summary:doneAnswer});
+    f.store.commitPiPlan(done.id,sha(doneAnswer),[],{
+      action:'DONE',summary:'Owner task completed',nextPrompt:''});
+    f.store.archiveSettledMissions();
+    assert.equal(f.store.isMissionArchived(done.id),true);
+    assert.equal(f.store.isMissionArchived(parent.id),false);
+  }finally{f.cleanup();}
+});
+
 test('Telegram /list shows actionable Missions and /history shows archived ones',async()=>{
   const f=fixture();try{
     const old=f.engine.create({goal:'Old settled study',acceptance:['done'],workspace:'',

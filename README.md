@@ -8,6 +8,8 @@
 
 At the 32-turn crossover, owner notes to a newly created, unsent successor are reviewed by PI before that successor submits its first message. The revised decision and note acknowledgements are durable, and an interrupted new-tab Send can reconstruct the exact revised prompt for read-only-first reconciliation. Approval revocations are also checked atomically at Send reservation, including changes made while PI is planning.
 
+A 32-turn `pi.autopilot_finished` **LIMIT** event means the *per-Mission budget* ended, not that the owner goal finished. `archive-settled` must keep such continuing parent Missions visible; it only archives PAUSED PI Missions with a genuine latest `DONE/BLOCKED` plan. Existing mistaken historical archive flags are preserved pending separate evidence-based repair.
+
 An explicit `Agent: <task>` or `/agent <task>` uses an installed native executor only if one has been configured. Plain Telegram text defaults to PI-coordinated ChatGPT. There are no vendor-specific command prefixes in Core.
 
 **Local-first mission control and handoff for long-running AI work.** Open source under Apache-2.0.
