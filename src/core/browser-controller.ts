@@ -222,7 +222,8 @@ export async function executeBrowserRollover(input:{
     createHash('sha256').update(current.lastAssistant).digest('hex')!==input.expectedSource.assistantSha256||
     await lastVisibleUserPromptSha256(input.sourcePage)!==input.expectedSource.promptSha256))
     throw new Error('Source ChatGPT history changed before new-tab Send reservation');
-  store.reserveChatBrowserTurn(missionId,revision,requestKey,createHash('sha256').update(prompt.trim()).digest('hex'));
+  store.reserveChatBrowserTurn(missionId,revision,requestKey,
+    createHash('sha256').update(prompt.trim()).digest('hex'),{newConversation:true});
   try {
     const page=await input.sourcePage.context().newPage();
     const {url,receipt}=await submitNewChatTurn(page,prompt,input.timeoutMs);

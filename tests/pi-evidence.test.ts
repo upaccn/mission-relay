@@ -24,7 +24,8 @@ const fixture=()=>{
 };
 const observe=(store:Store,id:string,round:number,newChatUrl?:string)=>{
   const request=`round-${round}`,answer=`Private code result for stage ${round}\n[MISSION_RELAY:NEXT]`;
-  store.reserveChatBrowserTurn(id,store.get(id).version,request,sha(`private prompt ${round}`));
+  store.reserveChatBrowserTurn(id,store.get(id).version,request,
+    sha(`private prompt ${round}`),newChatUrl?{newConversation:true}:{});
   store.finishChatBrowserTurn(id,request,{kind:'observed',assistantSha256:sha(answer),
     summary:answer,...(newChatUrl?{newChatUrl}:{})});
   store.commitPiPlan(id,sha(answer),[],{action:round===9?'DONE':'NEXT',
@@ -86,7 +87,12 @@ test('PI ledger exposes pending PI review and duplicate reservations as failures
 
 test('PI ledger independently flags a sixth Send in one conversation even when PI decisions are hash-matched',()=>{
   const f=fixture();try{
-    for(let i=1;i<=6;i++)observe(f.store,f.id,i);
+    for(let i=1;i<=6;i++)observe(f.store,f.id,i,i===6?second:undefined);
+    // The live reservation gate now prevents this illegal sixth Send. Corrupt
+    // an isolated test ledger instead: erase the migration event without
+    // changing the observed answer, PI SHA or recorded Send counts.
+    const migration=f.store.events(f.id).find(e=>e.type==='chatgpt.browser_migrated')!;
+    f.store.db.prepare('DELETE FROM events WHERE id=?').run(migration.id);
     const report=inspectPiEvidence(f.store,f.id);
     assert.equal(report.decisionsVerified,6);
     assert.equal(report.ledgerConsistent,false);
@@ -153,11 +159,12 @@ const createVerifiedSuccessor=(store:Store)=>{
   const parentId=bound.id;
   for(let round=1;round<=32;round++){
     const requestKey=`chain-ledger-${round}`,answer=`Private stage ${round}`;
-    store.reserveChatBrowserTurn(parentId,store.get(parentId).version,requestKey,
-      sha(`private submitted prompt ${round}`));
     const migration=round===1||[6,11,16,21,26,31].includes(round)
       ?{newChatUrl:`https://chatgpt.com/c/123e4567-e89b-42d3-a456-${(426614174000+round).toString()}`}
       :{};
+    store.reserveChatBrowserTurn(parentId,store.get(parentId).version,requestKey,
+      sha(`private submitted prompt ${round}`),
+      migration.newChatUrl?{newConversation:true}:{});
     store.finishChatBrowserTurn(parentId,requestKey,{kind:'observed',
       assistantSha256:sha(answer),summary:answer,...migration});
     store.commitPiPlan(parentId,sha(answer),[],{

@@ -202,6 +202,44 @@ test('Browser turn is durably reserved before any external interaction',()=>{
   }finally{f.cleanup();}
 });
 
+test('SQLite refuses a sixth same-chat Send even after restart and only credits a verified new conversation',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'relay-chat-limit-'));
+  let store=new Store(join(dir,'state.sqlite'));
+  try {
+    const m=store.create({goal:'Exercise five-turn boundary',acceptance:['No sixth same-chat Send'],
+      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:9,requestKey:'chat-ceiling'});
+    const linked=store.linkChat(m.id,URL,m.version).mission;
+    for(let round=1;round<=5;round++){
+      const key=`limit-${round}`;
+      store.reserveChatBrowserTurn(linked.id,store.get(linked.id).version,key,SHA);
+      store.finishChatBrowserTurn(linked.id,key,{kind:'observed',
+        assistantSha256:SHA,summary:'Stable complete answer'});
+    }
+    assert.equal(store.piChatObservedTurns(linked.id),5);
+    const eventsBefore=store.maxEventId();
+    assert.throws(()=>store.reserveChatBrowserTurn(linked.id,store.get(linked.id).version,
+      'limit-six-old-chat',SHA),/already has 5 observed Relay Sends/);
+    assert.equal(store.maxEventId(),eventsBefore,'Rejected Send must not create a reservation');
+    store.close();
+    store=new Store(join(dir,'state.sqlite'));
+    assert.throws(()=>store.reserveChatBrowserTurn(linked.id,store.get(linked.id).version,
+      'limit-six-after-restart',SHA),/already has 5 observed Relay Sends/);
+    store.reserveChatBrowserTurn(linked.id,store.get(linked.id).version,
+      'limit-six-new-chat',SHA,{newConversation:true});
+    assert.equal(store.chatBrowserTurn(linked.id)?.newConversation,true);
+    assert.throws(()=>store.finishChatBrowserTurn(linked.id,'limit-six-new-chat',
+      {kind:'observed',assistantSha256:SHA,summary:'No destination'}),
+      /cannot be credited without a distinct observed ChatGPT URL/);
+    assert.equal(store.chatBrowserTurn(linked.id)?.status,'reserved');
+    const finished=store.finishChatBrowserTurn(linked.id,'limit-six-new-chat',
+      {kind:'observed',assistantSha256:SHA,summary:'New destination observed',
+        newChatUrl:'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174001'});
+    assert.equal(finished.turnCount,6);
+    assert.equal(store.piChatObservedTurns(linked.id),1);
+    assert.equal(store.events(linked.id).filter(e=>e.type==='chatgpt.browser_reserved').length,6);
+  }finally{store.close();rmSync(dir,{recursive:true,force:true});}
+});
+
 test('Long tasks use 60-second normal DOM polls and a separate quick final-stability check',()=>{
   assert.equal(DEFAULT_BROWSER_TURN_TIMEOUT_MS,60*60*1000);
   assert.equal(MAX_BROWSER_TURN_TIMEOUT_MS,4*60*60*1000);

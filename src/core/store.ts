@@ -5,6 +5,7 @@ import { dirname } from 'node:path';
 import { hostname } from 'node:os';
 import type { CreateMission, Mission, MissionEvent, MissionState, VerificationCheck } from './types.js';
 import { normalizeChatGPTUrl } from './chatgpt-handoff.js';
+import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 
 type MissionRow = {
   id: string; goal: string; acceptance_json: string; checks_json: string; workspace: string;
@@ -20,6 +21,8 @@ export interface ChannelReply { source:string; externalId:string; status:'reserv
 export interface ChatBrowserTurn {
   requestKey:string; promptSha256:string; status:'reserved'|'observed'|'uncertain'|'reconciled';
   createdAt:string; urlHash:string; reservationRevision?:number;
+  /** Reserved for a separately created ChatGPT conversation, not this chat. */
+  newConversation?:boolean;
   assistantSha256?:string; observedAt?:string; error?:string;
 }
 export interface PiOwnerDirective {
@@ -495,7 +498,8 @@ export class Store {
       return this.recordChatAdoption(created.id,bound.version,evidence);
     });
   }
-  reserveChatBrowserTurn(id:string,revision:number,requestKey:string,promptSha256:string):Mission {
+  reserveChatBrowserTurn(id:string,revision:number,requestKey:string,promptSha256:string,
+    options:{newConversation?:boolean}={}):Mission {
     if(!/^[\w.-]{1,128}$/.test(requestKey)) throw new Error('Browser request key must be 1–128 safe characters');
     if(!/^[0-9a-f]{64}$/.test(promptSha256)) throw new Error('Expected SHA-256 of browser prompt');
     return this.transaction(()=>{
@@ -508,6 +512,12 @@ export class Store {
       if(!['READY','PAUSED'].includes(m.state)) throw new Error(`Cannot run browser turn in state ${m.state}`);
       if(m.stopRequested) throw new Error('Mission has a pending pause request; resume explicitly before another browser turn');
       if(m.turnCount>=m.maxTurns) throw new Error('Browser mission turn budget exhausted');
+      // This is the final, atomic dispatch gate. A raw browser-send or future
+      // controller path must not bypass the same-chat ceiling by omitting the
+      // higher-level PI/browser-drive rotation check. A new-tab Send is
+      // separately reserved and may only be credited with an actual URL move.
+      if(!options.newConversation&&this.piChatObservedTurns(id)>=MAX_RELAY_CHAT_TURNS)
+        throw new Error(`ChatGPT conversation already has ${MAX_RELAY_CHAT_TURNS} observed Relay Sends; start a new conversation before another Send`);
       if(m.sandbox==='workspace-write'&&this.getMeta(`pi.autopilot.enabled.${id}`)==='1'&&
         (this.getMeta('telegram.build.project')!==m.workspace||
          this.getMeta('telegram.pi.project')!==m.workspace))
@@ -526,7 +536,8 @@ export class Store {
       if(this.getMeta(this.browserUrlLockKey(urlHash)))
         throw new Error('Another Mission owns the active ChatGPT conversation; inspect and reconcile before sending');
       const record:ChatBrowserTurn={requestKey,promptSha256,urlHash,status:'reserved',
-        reservationRevision:revision,createdAt:new Date().toISOString()};
+        reservationRevision:revision,createdAt:new Date().toISOString(),
+        ...(options.newConversation?{newConversation:true}:{})};
       this.setMeta(this.browserTurnKey(id),JSON.stringify(record));
       this.setMeta(this.browserUrlLockKey(urlHash),JSON.stringify({missionId:id,requestKey}));
       this.setMeta(`chatgpt.browser.request.${id}.${requestKey}`,record.createdAt);
@@ -555,6 +566,8 @@ export class Store {
       const observed=outcome.kind==='observed';
       const previousUrl=this.chatLink(id);
       const migratedUrl=outcome.newChatUrl?normalizeChatGPTUrl(outcome.newChatUrl):null;
+      if(observed&&record.newConversation&&!migratedUrl)
+        throw new Error('New-conversation Send cannot be credited without a distinct observed ChatGPT URL');
       if(migratedUrl && (!observed||!previousUrl||migratedUrl===previousUrl))
         throw new Error('New ChatGPT conversation migration requires a distinct observed destination');
       // An instruction inserted while the browser was running increments the
