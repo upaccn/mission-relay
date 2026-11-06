@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID, createHash } from 'node:crypto';
+import {MAX_RELAY_CHAT_TURNS} from './core/chat-limits.js';
 import { join, resolve } from 'node:path';
 import { statSync, readFileSync } from 'node:fs';
 import { Engine } from './core/engine.js';
@@ -64,7 +65,7 @@ Commands:
   telegram-identify     Inspect local /start sender IDs before owner authorization
   channel-status        Inspect durable Telegram delivery cursor and poller status (no secrets)
   pi-health             Inspect active PI/browser requests, observed turns and wait age (no content, no Send)
-  pi-evidence <mission-id>  Audit real event/PI SHA correlation and 8-send chat segmentation (no content, no Send)
+  pi-evidence <mission-id>  Audit real event/PI SHA correlation and 5-send chat segmentation (no content, no Send)
   pi-chain-evidence <mission-id>  Verify durable 32-turn successor lineage and inherited scope (no Send)
   create --goal <text> --accept <criterion> [--accept <criterion>...] --workspace <path>
          [--sandbox read-only|workspace-write] [--mode supervised|autopilot]
@@ -400,7 +401,8 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       const url=store.chatLink(id);
       if(!url) throw new Error('Mission has no linked ChatGPT conversation');
       const turns=Number(option(f,'turns','3'));
-      if(!Number.isInteger(turns)||turns<1||turns>8) throw new Error('Drive turns must be 1–8');
+      if(!Number.isInteger(turns)||turns<1||turns>MAX_RELAY_CHAT_TURNS)
+        throw new Error(`Drive turns must be 1–${MAX_RELAY_CHAT_TURNS}`);
       const prefix=option(f,'request-prefix');
       if(!/^[\w.-]{1,120}$/.test(prefix)) throw new Error('Request prefix must be 1–120 safe characters');
       const timeoutMs=Number(option(f,'timeout-ms','3600000'));

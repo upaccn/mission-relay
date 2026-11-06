@@ -1,3 +1,4 @@
+import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 import {createHash} from 'node:crypto';
 import type {Page} from 'playwriter';
 import type {Store,PiPlan} from './store.js';
@@ -223,7 +224,8 @@ export async function executeBrowserRollover(input:{
   }
 }
 
-/** Bounded sequential conversation turns in the SAME visible ChatGPT tab. */
+/** Bounded sequential browser turns; auto-roll over at the shared per-chat
+ * ceiling even if the operator invokes separate browser-drive batches. */
 export async function driveChatConversation(input:{
   store:Store;missionId:string;revision:number;requestPrefix:string;turns:number;
   page:Page;url:string;timeoutMs?:number;
@@ -231,7 +233,8 @@ export async function driveChatConversation(input:{
 }):Promise<{
   state:string;turnsObserved:Array<{turnCount:number;revision:number;responseSha256:string;responseExcerpt:string;flowSignal:BrowserDecision}>;
 }> {
-  if(!Number.isInteger(input.turns)||input.turns<1||input.turns>8) throw new Error('Drive turns must be 1–8');
+  if(!Number.isInteger(input.turns)||input.turns<1||input.turns>MAX_RELAY_CHAT_TURNS)
+    throw new Error(`Drive turns must be 1–${MAX_RELAY_CHAT_TURNS}`);
   if(!/^[\w.-]{1,120}$/.test(input.requestPrefix)) throw new Error('Invalid browser request prefix');
   let revision=input.revision;
   let page=input.page,url=input.url;
@@ -240,16 +243,35 @@ export async function driveChatConversation(input:{
   for(let i=0;i<input.turns;i++) {
     const m=input.store.get(input.missionId);
     if(m.stopRequested) break;
-    const prompt:string=pendingHandoff!==null
-      ?browserNewChatPrompt(m.goal,m.acceptance,pendingHandoff,m.nextInstruction)
+    let handoff:string|null=pendingHandoff;
+    let expectedSource:{promptSha256:string;assistantSha256:string}|undefined;
+    if(handoff===null&&input.store.piChatObservedTurns(m.id)>=MAX_RELAY_CHAT_TURNS){
+      const last=input.store.chatBrowserTurn(m.id);
+      if(!last?.assistantSha256||!['observed','reconciled'].includes(last.status))
+        throw new Error('Five-turn rollover requires a complete previous browser receipt');
+      const first=await inspectChatPage(page,url);
+      if(first.generating||!first.composerReady||
+        createHash('sha256').update(first.lastAssistant).digest('hex')!==last.assistantSha256||
+        await lastVisibleUserPromptSha256(page)!==last.promptSha256)
+        throw new Error('Five-turn rollover refused: last visible ChatGPT exchange changed');
+      await new Promise(resolve=>setTimeout(resolve,3000));
+      const second=await inspectChatPage(page,url);
+      if(second.generating||second.lastAssistant!==first.lastAssistant||
+        await lastVisibleUserPromptSha256(page)!==last.promptSha256)
+        throw new Error('Five-turn rollover refused: previous answer did not remain stable');
+      handoff=second.lastAssistant;
+      expectedSource={promptSha256:last.promptSha256,assistantSha256:last.assistantSha256};
+    }
+    const prompt:string=handoff!==null
+      ?browserNewChatPrompt(m.goal,m.acceptance,handoff,m.nextInstruction)
       :browserContinuationPrompt(m.goal,m.acceptance,i===0,m.nextInstruction);
     const batch=input.notificationMode==='telegram-final'
       ?{lastAuthorizedTurn:i===input.turns-1||m.turnCount+1>=m.maxTurns}:undefined;
-    const receipt:BrowserTurnOutcome|(BrowserTurnOutcome&{page:Page;url:string})=pendingHandoff!==null
+    const receipt:BrowserTurnOutcome|(BrowserTurnOutcome&{page:Page;url:string})=handoff!==null
       ?await executeBrowserRollover({store:input.store,missionId:input.missionId,revision,
         requestKey:`${input.requestPrefix}-${i+1}`,sourcePage:page,sourceUrl:url,
         prompt,timeoutMs:input.timeoutMs,consumedInstruction:m.nextInstruction,
-        telegramBatch:batch})
+        telegramBatch:batch,expectedSource})
       :await executeBrowserTurn({store:input.store,missionId:input.missionId,revision,
         requestKey:`${input.requestPrefix}-${i+1}`,page,url,prompt,timeoutMs:input.timeoutMs,
         requireFinalMarker:true,consumedInstruction:m.nextInstruction,

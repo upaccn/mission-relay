@@ -31,20 +31,20 @@ const observe=(store:Store,id:string,round:number,newChatUrl?:string)=>{
     summary:`Stage ${round} independently reviewed`,nextPrompt:round===9?'':'Continue one stage'});
 };
 
-test('PI ledger audits nine observed sends across exact eight-turn chat boundary without claiming business completion',()=>{
+test('PI ledger audits nine observed sends across exact five-turn chat boundary without claiming business completion',()=>{
   const f=fixture();try{
-    for(let i=1;i<=9;i++)observe(f.store,f.id,i,i===1?first:i===9?second:undefined);
+    for(let i=1;i<=9;i++)observe(f.store,f.id,i,i===1?first:i===6?second:undefined);
     const eventsBefore=f.store.maxEventId();
     const report=inspectPiEvidence(f.store,f.id);
     assert.equal(report.ledgerConsistent,true);
     assert.deepEqual(report.violations,[]);
     assert.equal(report.observedTurns,9);
     assert.equal(report.decisionsVerified,9);
-    assert.equal(report.currentChatObservedTurns,1);
-    assert.equal(report.maxObservedTurnsInOneChat,8);
+    assert.equal(report.currentChatObservedTurns,4);
+    assert.equal(report.maxObservedTurnsInOneChat,5);
     assert.equal(report.chatSegments,2);
-    assert.deepEqual(report.rounds.map(r=>r.chatTurn),[1,2,3,4,5,6,7,8,1]);
-    assert.deepEqual(report.rounds.map(r=>r.chatSegment),[1,1,1,1,1,1,1,1,2]);
+    assert.deepEqual(report.rounds.map(r=>r.chatTurn),[1,2,3,4,5,1,2,3,4]);
+    assert.deepEqual(report.rounds.map(r=>r.chatSegment),[1,1,1,1,1,2,2,2,2]);
     assert.ok(report.rounds.every(r=>r.reservedEventId!==null&&r.decisionShaMatches===true));
     assert.equal(report.businessAcceptanceVerified,false);
     assert.equal(f.store.maxEventId(),eventsBefore);
@@ -55,7 +55,7 @@ test('PI ledger audits nine observed sends across exact eight-turn chat boundary
     assert.equal(cli.ledgerConsistent,true);
     assert.equal(cli.observedTurns,9);
     assert.equal(cli.chatSegments,2);
-    assert.equal(cli.maxObservedTurnsInOneChat,8);
+    assert.equal(cli.maxObservedTurnsInOneChat,5);
     assert.equal(f.store.maxEventId(),eventsBefore);
     const output=JSON.stringify(report);
     for(const sensitive of ['Owner private nine-round work','Private code result',
@@ -84,15 +84,15 @@ test('PI ledger exposes pending PI review and duplicate reservations as failures
   }finally{f.cleanup();}
 });
 
-test('PI ledger independently flags a ninth Send in one conversation even when PI decisions are hash-matched',()=>{
+test('PI ledger independently flags a sixth Send in one conversation even when PI decisions are hash-matched',()=>{
   const f=fixture();try{
-    for(let i=1;i<=9;i++)observe(f.store,f.id,i);
+    for(let i=1;i<=6;i++)observe(f.store,f.id,i);
     const report=inspectPiEvidence(f.store,f.id);
-    assert.equal(report.decisionsVerified,9);
+    assert.equal(report.decisionsVerified,6);
     assert.equal(report.ledgerConsistent,false);
     assert.equal(report.chatSegments,1);
-    assert.equal(report.maxObservedTurnsInOneChat,9);
-    assert.ok(report.violations.includes('more_than_eight_sends_in_chat'));
+    assert.equal(report.maxObservedTurnsInOneChat,6);
+    assert.ok(report.violations.includes('chat_send_limit_exceeded'));
     assert.equal(report.businessAcceptanceVerified,false);
   }finally{f.cleanup();}
 });
@@ -155,7 +155,7 @@ const createVerifiedSuccessor=(store:Store)=>{
     const requestKey=`chain-ledger-${round}`,answer=`Private stage ${round}`;
     store.reserveChatBrowserTurn(parentId,store.get(parentId).version,requestKey,
       sha(`private submitted prompt ${round}`));
-    const migration=round===1||[9,17,25].includes(round)
+    const migration=round===1||[6,11,16,21,26,31].includes(round)
       ?{newChatUrl:`https://chatgpt.com/c/123e4567-e89b-42d3-a456-${(426614174000+round).toString()}`}
       :{};
     store.finishChatBrowserTurn(parentId,requestKey,{kind:'observed',
@@ -179,7 +179,7 @@ test('real store lineage reader verifies 32-to-1 successor creation, inherited s
     assert.equal(ready.missionCount,2);
     assert.equal(ready.missions[0]?.observedTurns,32);
     assert.equal(ready.missions[0]?.decisionsVerified,32);
-    assert.equal(ready.missions[0]?.maxObservedTurnsInOneChat,8);
+    assert.equal(ready.missions[0]?.maxObservedTurnsInOneChat,5);
     assert.equal(ready.links[0]?.scopeInherited,true);
     assert.equal(ready.links[0]?.childStartsInNewChat,null);
     assert.equal(ready.links[0]?.parentAnswerShaMatches,true);

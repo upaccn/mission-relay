@@ -1,3 +1,4 @@
+import {MAX_RELAY_CHAT_TURNS} from '../core/chat-limits.js';
 import type { PluginManifest } from '../core/plugins.js';
 import {createHash} from 'node:crypto';
 import { Engine } from '../core/engine.js';
@@ -737,7 +738,7 @@ export class TelegramBridge {
       ...(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'
         ?[`PI coordinator: ${this.store.piPlan(id)?.action??'analyzing / awaiting the first answer'}`,
           `Pending owner instructions: ${this.store.pendingPiOwnerDirectives(id).length}`]:[]),
-      ...(piLive?[`Current Chat observed sends: ${piLive.currentChatObservedTurns}/8`,
+      ...(piLive?[`Current Chat observed sends: ${piLive.currentChatObservedTurns}/${MAX_RELAY_CHAT_TURNS}`,
         `Controller phase: ${piLive.phase}`,
         ...(piLive.browserReservationAgeSeconds!==null
           ?[`Current browser request age: ${piLive.browserReservationAgeSeconds}s (not proof of a stall; do not resend)`]:[])]:[]),

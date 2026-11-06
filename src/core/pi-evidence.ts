@@ -1,5 +1,6 @@
 import type {Store} from './store.js';
 import type {MissionEvent} from './types.js';
+import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 
 type EvidencePayload = {requestKey?:unknown;round?:unknown;assistantSha256?:unknown;
   responseSha256?:unknown;action?:unknown;independentlyInspected?:unknown};
@@ -105,7 +106,7 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     if(chatSegment===0)chatSegment=1; // An adopted human chat is segment one.
     chatTurn++;
     maxPerChat=Math.max(maxPerChat,chatTurn);
-    if(chatTurn>8)warn('more_than_eight_sends_in_chat');
+    if(chatTurn>MAX_RELAY_CHAT_TURNS)warn('chat_send_limit_exceeded');
     if(round!==observations.length+1)warn('nonsequential_observed_round');
     if(kind!=='normal'&&p.independentlyInspected!==true)
       warn('recovery_lacks_independent_inspection');

@@ -701,6 +701,62 @@ test('HANDOFF marker creates one new authorized tab, sends task context and atom
   }finally{f.cleanup();}
 });
 
+test('separate manual browser-drive batches auto-handoff after five verified sends without a sixth old-chat Send',async()=>{
+  const f=fixture();try{
+    const base=f.store.create({goal:'Five-turn browser load bound',
+      acceptance:['Keep long tasks in small chats'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:8,checks:[],requestKey:'manual-five-limit'});
+    const linked=f.store.linkChat(base.id,URL,base.version).mission;
+    const page=new SourceWithNewTab();
+    await assert.rejects(driveChatConversation({store:f.store,missionId:linked.id,
+      revision:linked.version,requestPrefix:'manual-over-limit',turns:6,
+      page:page as unknown as Page,url:URL,timeoutMs:12000}),
+    /Drive turns must be 1–5/);
+    assert.equal(page.sends,0);
+    const originalLocator=page.locator.bind(page);
+    page.locator=(selector:string)=>{
+      const original=originalLocator(selector);
+      if(!selector.includes('send-button'))return original;
+      const changing:any={...original,click:async()=>{
+        await original.click();
+        page.reply=`Verified item ${page.sends}\n[MISSION_RELAY:NEXT]`;
+      }};
+      changing.first=()=>changing;
+      return changing;
+    };
+    for(let i=1;i<=5;i++){
+      const result=await driveChatConversation({store:f.store,missionId:linked.id,
+        revision:f.store.get(linked.id).version,requestPrefix:`manual-five-${i}`,turns:1,
+        page:page as unknown as Page,url:URL,timeoutMs:12000});
+      assert.equal(result.turnsObserved.length,1);
+      assert.equal(page.sends,i);
+      assert.equal(page.created,0);
+    }
+    assert.equal(f.store.piChatObservedTurns(linked.id),5);
+    page.reply='A human changed the old answer after the fifth verified Send';
+    await assert.rejects(driveChatConversation({store:f.store,missionId:linked.id,
+      revision:f.store.get(linked.id).version,requestPrefix:'manual-five-modified',turns:1,
+      page:page as unknown as Page,url:URL,timeoutMs:12000}),
+    /Five-turn rollover refused: last visible ChatGPT exchange changed/);
+    assert.equal(page.sends,5);
+    assert.equal(page.created,0);
+    assert.equal(f.store.chatBrowserTurn(linked.id)?.status,'observed');
+    page.reply='Verified item 5\n[MISSION_RELAY:NEXT]';
+    page.destination.reply='Continued in the new chat with prior context.\n[MISSION_RELAY:DONE]';
+    const next=await driveChatConversation({store:f.store,missionId:linked.id,
+      revision:f.store.get(linked.id).version,requestPrefix:'manual-five-six',turns:1,
+      page:page as unknown as Page,url:URL,timeoutMs:12000});
+    assert.equal(next.turnsObserved.length,1);
+    assert.equal(page.sends,5,'No sixth Send in the original long chat');
+    assert.equal(page.created,1);
+    assert.equal(page.destination.sends,1);
+    assert.equal(f.store.chatLink(linked.id),NEXT_CHAT_URL);
+    assert.equal(f.store.piChatObservedTurns(linked.id),1);
+    assert.equal(f.store.events(linked.id).filter(e=>e.type==='chatgpt.browser_migrated').length,1);
+    assert.match(page.destination.prompt,/Verified item 5/);
+  }finally{f.cleanup();}
+});
+
 test('Telegram-scoped HANDOFF to a new chat creates only one terminal notification event',async()=>{
   const f=fixture();try {
     const source=new SourceWithNewTab();

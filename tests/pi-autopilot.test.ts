@@ -320,7 +320,7 @@ test('uncertain successor first-Send recovery reconstructs the owner-revised PI 
   }finally{f.cleanup();}
 });
 
-test('a PI NEXT after eight observed sends starts exactly one fresh chat and preserves its Mission',async()=>{
+test('a PI NEXT after five observed sends starts exactly one fresh chat and preserves its Mission',async()=>{
   const f=fixture();try{
     const created=f.store.create({goal:'Long-running staged evidence audit',
       acceptance:['Gather nine independently checked rounds'],workspace:'',
@@ -336,11 +336,53 @@ test('a PI NEXT after eight observed sends starts exactly one fresh chat and pre
     assert.equal(m.turnCount,9);
     assert.equal(f.results().sends,9);
     assert.equal(f.results().newPages,2);
-    assert.equal(f.store.piChatObservedTurns(m.id),1);
+    assert.equal(f.store.piChatObservedTurns(m.id),4);
     assert.equal(f.store.chatLink(m.id),DEST2);
     assert.equal(f.store.events(m.id).filter(x=>x.type==='chatgpt.browser_migrated').length,2);
     assert.equal(f.store.events(m.id).filter(x=>x.type==='chatgpt.browser_reserved').length,9);
     assert.equal(f.store.events(m.id).filter(x=>x.type==='pi.autopilot_finished').length,1);
+  }finally{f.cleanup();}
+});
+
+test('after a crash at five observed turns, PI recovers the exact checkpoint and sends the sixth only in a new chat',async()=>{
+  const f=fixture();try{
+    const created=f.store.create({goal:'Long-running recovery at the five-turn boundary',
+      acceptance:['No old-chat sixth send or duplicate request'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:7,checks:[],requestKey:'pi-five-crash'});
+    const linked=f.store.linkChat(created.id,SOURCE,created.version).mission;
+    const bound=f.store.bindChatBrowser(linked.id,'install:Chrome:fake',linked.version).mission;
+    let interruptOnce=true;
+    const planner:PiPlanner={decide:async context=>{
+      if(context.turnCount===5&&interruptOnce){
+        interruptOnce=false;
+        throw new Error('Synthetic PI crash after the fifth observed answer');
+      }
+      return context.turnCount===6
+        ?{action:'DONE',summary:'Sixth answer independently reviewed',nextPrompt:''}
+        :{action:'NEXT',summary:'Checkpoint retained',nextPrompt:'Continue evidence check'};
+    }};
+    await assert.rejects(drivePiAutopilot({store:f.store,planner,missionId:bound.id,
+      revision:bound.version,requestPrefix:'pi-five-crash',page:f.anchor,url:SOURCE}),
+    /Synthetic PI crash/);
+    assert.equal(f.store.get(bound.id).turnCount,5);
+    assert.equal(f.store.chatBrowserTurn(bound.id)?.status,'observed');
+    assert.equal(f.store.piChatObservedTurns(bound.id),5);
+    assert.equal(f.results().sends,5);
+    assert.equal(f.results().newPages,1);
+    const previous=f.store.chatBrowserTurn(bound.id)!;
+    const lastAssistant='NetBox research with VRF evidence, observed round 5\n[MISSION_RELAY:DONE]';
+    assert.equal(createHash('sha256').update(lastAssistant).digest('hex'),previous.assistantSha256);
+    await drivePiAutopilot({store:f.store,planner,missionId:bound.id,
+      revision:f.store.get(bound.id).version,requestPrefix:'pi-five-crash',
+      page:f.fresh,url:DEST,
+      recoveredAnswer:{responseSha256:previous.assistantSha256!,lastAssistant}});
+    assert.equal(f.store.get(bound.id).turnCount,6);
+    assert.equal(f.store.piChatObservedTurns(bound.id),1);
+    assert.equal(f.results().sends,6);
+    assert.equal(f.results().newPages,2);
+    assert.equal(f.store.events(bound.id).filter(e=>e.type==='chatgpt.browser_reserved').length,6);
+    assert.equal(f.store.events(bound.id).filter(e=>e.type==='chatgpt.browser_migrated').length,2);
+    assert.equal(f.store.piPlan(bound.id)?.action,'DONE');
   }finally{f.cleanup();}
 });
 

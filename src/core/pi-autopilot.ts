@@ -5,10 +5,11 @@ import type {PiPlanner,PiDecision} from './pi-planner.js';
 import {inspectChatPage,lastVisibleUserPromptSha256} from '../plugins/chatgpt-browser.js';
 import {executeBrowserTurn,executeBrowserRollover,browserFreshTaskPrompt,
   browserNewChatPrompt,browserTaskPolicy,type BrowserTurnOutcome} from './browser-controller.js';
+import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 
 const MAX_REPLANS=3;
 /** Independent of the Mission's total budget, avoid overlong ChatGPT chats. */
-export const MAX_PI_CHAT_TURNS=8;
+export const MAX_PI_CHAT_TURNS=MAX_RELAY_CHAT_TURNS;
 
 function nextPiBrowserPrompt(goal:string,plan:PiPlan,writeWorkspace:string|null):string {
   return [
