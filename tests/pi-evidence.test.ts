@@ -103,6 +103,35 @@ test('PI ledger independently flags a sixth Send in one conversation even when P
   }finally{f.cleanup();}
 });
 
+test('PI ledger rejects fake or misattributed chat migrations even when all answer and decision hashes match',()=>{
+  const f=fixture();try{
+    for(let i=1;i<=6;i++)observe(f.store,f.id,i,i===1?first:i===6?second:undefined);
+    assert.equal(inspectPiEvidence(f.store,f.id).ledgerConsistent,true);
+    const migrations=f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_migrated');
+    assert.equal(migrations.length,2);
+    const update=(eventId:number,p:unknown)=>f.store.db.prepare(
+      'UPDATE events SET payload_json=? WHERE id=?').run(JSON.stringify(p),eventId);
+    const firstEvent=migrations[0]!;
+    // Model and PI agree on all six answers; the unrelated migration cannot
+    // be used to manufacture a valid 5->6 transition.
+    update(firstEvent.id,{...(firstEvent.payload as object),requestKey:'unrelated-request'});
+    const wrongRequest=inspectPiEvidence(f.store,f.id);
+    assert.equal(wrongRequest.decisionsVerified,6);
+    assert.ok(wrongRequest.violations.includes('migration_request_mismatch'));
+    assert.ok(wrongRequest.violations.includes('migration_without_matching_reservation'));
+    update(firstEvent.id,firstEvent.payload);
+    update(firstEvent.id,{...(firstEvent.payload as object),
+      newUrlSha256:(firstEvent.payload as {previousUrlSha256:string}).previousUrlSha256});
+    assert.ok(inspectPiEvidence(f.store,f.id).violations.includes('invalid_migration_url_sha256'));
+    update(firstEvent.id,firstEvent.payload);
+    const last=migrations[1]!;
+    f.store.db.prepare('INSERT INTO events(mission_id,created_at,type,payload_json) VALUES(?,?,?,?)')
+      .run(f.id,new Date().toISOString(),'chatgpt.browser_migrated',JSON.stringify(last.payload));
+    assert.ok(inspectPiEvidence(f.store,f.id).violations.includes('migration_without_observed_response'));
+    assert.equal(inspectPiEvidence(f.store,f.id).businessAcceptanceVerified,false);
+  }finally{f.cleanup();}
+});
+
 test('PI ledger independently validates a recovered first-new-chat answer and rejects a mismatched PI hash',()=>{
   const f=fixture();try{
     const answer='Observed after exact-prompt operator recovery',request='first-recover';

@@ -3,7 +3,8 @@ import type {MissionEvent} from './types.js';
 import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 
 type EvidencePayload = {requestKey?:unknown;round?:unknown;assistantSha256?:unknown;
-  responseSha256?:unknown;action?:unknown;independentlyInspected?:unknown};
+  responseSha256?:unknown;action?:unknown;independentlyInspected?:unknown;
+  previousUrlSha256?:unknown;newUrlSha256?:unknown};
 export interface PiRoundEvidence {
   round:number;observedEventId:number;observedAt:string;
   observation:'normal'|'recovered-turn'|'recovered-new-chat';
@@ -66,6 +67,7 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
   const allDecisions=new Map<number,MissionEvent[]>();
   const violations:string[]=[];
   let chatSegment=0,chatTurn=0,maxPerChat=0,verified=0;
+  let pendingMigration:string|null=null;
   const observations:PiRoundEvidence[]=[];
   const warn=(issue:string)=>{if(!violations.includes(issue))violations.push(issue);};
   for(const e of events){
@@ -76,6 +78,17 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
       else reserved.set(p.requestKey,e.id);
     }
     if(e.type==='chatgpt.browser_migrated'){
+      // An arbitrary migration marker must not reset the five-Send counter.
+      // Normal rollover commits this event immediately before the matching
+      // observed response; recovered rollovers use their own observation type.
+      if(pendingMigration!==null)warn('multiple_migrations_without_observation');
+      if(typeof p.requestKey!=='string'||!reserved.has(p.requestKey)||used.has(p.requestKey))
+        warn('migration_without_matching_reservation');
+      if(typeof p.previousUrlSha256!=='string'||!SHA.test(p.previousUrlSha256)||
+        typeof p.newUrlSha256!=='string'||!SHA.test(p.newUrlSha256)||
+        p.previousUrlSha256===p.newUrlSha256)
+        warn('invalid_migration_url_sha256');
+      pendingMigration=typeof p.requestKey==='string'?p.requestKey:'';
       chatSegment++;chatTurn=0;
     }
     if(e.type==='pi.decision'||e.type==='pi.decision_revised'){
@@ -95,6 +108,11 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     if(!hasOwn(observationTypes,e.type))continue;
     const kind=observationTypes[e.type as ObservationType];
     const round=p.round,sha=p.assistantSha256,key=p.requestKey;
+    if(pendingMigration!==null){
+      if(kind!=='normal'||key!==pendingMigration)
+        warn('migration_request_mismatch');
+      pendingMigration=null;
+    }
     if(typeof round!=='number'||!Number.isInteger(round)||round<1){
       warn('invalid_browser_observation_round');continue;
     }
@@ -110,6 +128,11 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     if(round!==observations.length+1)warn('nonsequential_observed_round');
     if(kind!=='normal'&&p.independentlyInspected!==true)
       warn('recovery_lacks_independent_inspection');
+    if(kind==='recovered-new-chat'&&(
+      typeof p.previousUrlSha256!=='string'||!SHA.test(p.previousUrlSha256)||
+      typeof p.newUrlSha256!=='string'||!SHA.test(p.newUrlSha256)||
+      p.previousUrlSha256===p.newUrlSha256))
+      warn('invalid_recovered_migration_url_sha256');
     observations.push({round,observedEventId:e.id,observedAt:e.createdAt,
       observation:kind,answerSha256:typeof sha==='string'?sha:'',
       chatSegment,chatTurn,decisionEventId:null,decisionAction:null,
@@ -117,6 +140,7 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
       reservedEventId:typeof key==='string'?reserved.get(key)??null:null,
       independentlyRecovered:kind!=='normal'&&p.independentlyInspected===true});
   }
+  if(pendingMigration!==null)warn('migration_without_observed_response');
   const pending:number[]=[];
   for(const o of observations){
     const decision=decisions.get(o.round);
