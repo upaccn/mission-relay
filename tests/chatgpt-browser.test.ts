@@ -16,7 +16,8 @@ import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUr
   ACTIVE_REPLY_OBSERVATION_INTERVAL_MS,
   submitChatTurn,submitNewChatTurn,
   DEFAULT_BROWSER_TURN_TIMEOUT_MS,MAX_BROWSER_TURN_TIMEOUT_MS,type BrowserSession} from '../src/plugins/chatgpt-browser.js';
-import {executeBrowserTurn,driveChatConversation,browserDecision,browserContinuationPrompt} from '../src/core/browser-controller.js';
+import {executeBrowserTurn,driveChatConversation,browserDecision,browserFreshTaskPrompt,
+  browserNewChatPrompt,browserRolloverRecoveryPrompt,browserContinuationPrompt} from '../src/core/browser-controller.js';
 import type {AgentAdapter} from '../src/core/types.js';
 import type {Page} from 'playwriter';
 
@@ -29,6 +30,11 @@ test('ChatGPT accessible user transcript decorations are excluded from prompt id
   assert.equal(createHash('sha256').update(canonicalVisibleUserPrompt(decorated,true)).digest('hex'),
     createHash('sha256').update(submitted).digest('hex'));
   assert.equal(canonicalVisibleUserPrompt(`${submitted}\n…\nShow more`,false),submitted);
+  assert.equal(canonicalVisibleUserPrompt(`You said:\n${submitted}\nShow less`,true),submitted);
+  assert.equal(canonicalVisibleUserPrompt(`${submitted}\nShow less`,false),submitted);
+  assert.equal(createHash('sha256').update(canonicalVisibleUserPrompt(`${submitted}\nShow less`,true)).digest('hex'),
+    createHash('sha256').update(submitted).digest('hex'));
+  assert.notEqual(canonicalVisibleUserPrompt(`${submitted}\nShow less\nSubsequent human text`,true),submitted);
   assert.notEqual(canonicalVisibleUserPrompt(`You said:\n${submitted}\nAdditional human edit\n…\nShow more`,true),submitted);
   assert.notEqual(canonicalVisibleUserPrompt(`You said:\n${submitted}\nShow something else`,true),submitted);
 });
@@ -59,6 +65,44 @@ test('Recovery binds the latest visible user to the durable PI-authored reservat
   assert.equal(matchesReservedPromptHash(hash(`Prior prompt: ${piPrompt}\nAnother request`),reserved),false);
   assert.equal(matchesReservedPromptHash(hash(goal),reserved),false);
   assert.equal(matchesReservedPromptHash(null,reserved),false);
+});
+
+test('A timed-out first PI /build new-chat Send is reconstructable without replay',()=>{
+  const goal='Implement the next Mission Relay feature and test it';
+  const workspace='/srv/ai/workspace/projects/mission-relay';
+  const reserved='telegram-pi-123-1';
+  const recovered=browserRolloverRecoveryPrompt({
+    goal,acceptance:['Tests pass'],sandbox:'workspace-write',workspace,
+    turnCount:0,nextInstruction:null,missionRequestKey:'telegram-pi-123',
+    reservedRequestKey:reserved,sourceAnswer:'Unrelated anchor reply',
+    adopted:false,chainParent:false,piManaged:true,piPlan:null,
+  });
+  assert.equal(recovered,browserFreshTaskPrompt(goal,workspace));
+  assert.ok(recovered.includes('Approved canonical source repository'));
+  assert.throws(()=>browserRolloverRecoveryPrompt({
+    goal,acceptance:['Tests pass'],sandbox:'workspace-write',workspace,
+    turnCount:0,nextInstruction:null,missionRequestKey:'telegram-pi-123',
+    reservedRequestKey:'mismatched',sourceAnswer:'Unrelated anchor reply',
+    adopted:false,chainParent:false,piManaged:true,piPlan:null,
+  }),/exact verified previous plan/);
+});
+
+test('Recovery of a PI-controlled later new chat reconstructs the exact planned prompt',()=>{
+  const answer='Verified prior source findings\n[MISSION_RELAY:NEXT]';
+  const sha=createHash('sha256').update(answer).digest('hex');
+  const plan={action:'NEXT' as const,summary:'Reviewed available evidence',
+    nextPrompt:'Implement tests on the next stage',responseSha256:sha,round:8,
+    reviewedDirectiveIds:[]};
+  const input={goal:'Build Mission Relay',acceptance:['Ship source'],
+    sandbox:'workspace-write' as const,workspace:'/srv/ai/workspace/projects/mission-relay',
+    turnCount:8,nextInstruction:null,missionRequestKey:'pi-long',
+    reservedRequestKey:'pi-long-9',sourceAnswer:answer,
+    adopted:false,chainParent:false,piManaged:true,piPlan:plan};
+  assert.equal(browserRolloverRecoveryPrompt(input),
+    browserNewChatPrompt(input.goal,input.acceptance,plan.summary,
+      plan.nextPrompt,answer,input.workspace));
+  assert.throws(()=>browserRolloverRecoveryPrompt({...input,
+    sourceAnswer:answer+'\nHuman changed the conversation'}),/exact verified previous plan/);
 });
 test('Same assistant text counts as a new response only with changed message identity',()=>{
   const old={url:'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',
@@ -844,6 +888,28 @@ test('Operator-confirmed completed new-chat rollover restores the exact link wit
       requestPromptSha256:SHA,assistantSha256:SHA,newChatUrl:NEXT_CHAT_URL,summary:'Repeated',
     }),/Only an uncertain/);
     assert.throws(()=>f.store.reserveChatBrowserTurn(done.id,done.version,'recover-new-chat',SHA),/already used/);
+  }finally{f.cleanup();}
+});
+
+test('Rollover recovery refuses to steal a destination owned by another active Mission',()=>{
+  const f=fixture();try{
+    f.store.reserveChatBrowserTurn(f.linked.id,f.linked.version,'recover-collision',SHA);
+    const uncertain=f.store.finishChatBrowserTurn(f.linked.id,'recover-collision',{
+      kind:'uncertain',error:'New-tab answer was not yet observed'});
+    const other=f.store.create({goal:'Independent observed tab',acceptance:['Check evidence'],
+      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:2,
+      checks:[],requestKey:'different-mission'});
+    f.store.linkChat(other.id,NEXT_CHAT_URL,other.version);
+    const input={requestPromptSha256:SHA,assistantSha256:SHA,
+      newChatUrl:NEXT_CHAT_URL,summary:'Validated answer [MISSION_RELAY:NEXT]'};
+    assert.throws(()=>f.store.recoverObservedBrowserRollover(f.linked.id,
+      uncertain.version,input),/belongs to another active Mission/);
+    assert.equal(f.store.get(f.linked.id).state,'NEEDS_RECONCILIATION');
+    assert.equal(f.store.chatLink(f.linked.id),URL);
+    const cancelled=f.store.get(other.id);
+    f.engine.cancel(other.id,cancelled.version);
+    assert.equal(f.store.recoverObservedBrowserRollover(f.linked.id,
+      uncertain.version,input).turnCount,1);
   }finally{f.cleanup();}
 });
 

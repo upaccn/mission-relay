@@ -330,6 +330,12 @@ export class TelegramBridge {
    * until its stable answer is independently checked. No extra daemon. */
   async scanBrowserWatchOnce():Promise<string|null> {
     if(this.activeMission||this.activeTask)return null;
+    // A new-tab Send may have completed while the observer lost its URL.
+    // Do not adopt that orphan as a separate read-only human conversation:
+    // preserve its original write scope and request identity for recovery.
+    if(this.engine.list().some(m=>m.state==='NEEDS_RECONCILIATION'&&
+      this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1'&&
+      this.store.chatBrowserTurn(m.id)?.status==='uncertain'))return null;
     const browserId=watchedBrowser(this.store);
     if(!browserId)return null;
     const inventory=await this.watchCandidates(browserId);

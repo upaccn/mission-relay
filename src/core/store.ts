@@ -570,6 +570,10 @@ export class Store {
       if(m.turnCount>=m.maxTurns)throw new Error('Recovery would exceed the authorized Mission turn budget');
       if(record.promptSha256!==input.requestPromptSha256||oldUrl===destination)
         throw new Error('Rollover request hash mismatch or destination is not a new conversation');
+      if(this.list().some(other=>other.id!==id &&
+        this.chatLink(other.id)===destination &&
+        !['CANCELLED','COMPLETED'].includes(other.state)))
+        throw new Error('Recovery destination still belongs to another active Mission; resolve that attribution before migration');
       const now=new Date().toISOString();
       this.setMeta(`chatgpt.handoff.${id}`,destination);
       this.setMeta(this.browserTurnKey(id),JSON.stringify({...record,status:'reconciled',

@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import type {Page} from 'playwriter';
-import type {Store} from './store.js';
+import type {Store,PiPlan} from './store.js';
 import {inspectChatPage,submitChatTurn,submitNewChatTurn,MAX_BROWSER_TURN_TIMEOUT_MS} from '../plugins/chatgpt-browser.js';
 import {validateRemoteProjectPath} from './pi-planner.js';
 
@@ -138,6 +138,33 @@ export function browserNewChatPrompt(goal:string,acceptance:string[],handoff:str
     'At the end summarize progress/evidence/blockers/next action in at most 8 short lines.',
     'Finish with exactly one standalone [MISSION_RELAY:NEXT], [MISSION_RELAY:HANDOFF], [MISSION_RELAY:DONE], or [MISSION_RELAY:BLOCKED].',
   ].join('\n');
+}
+
+/** Rebuild only a deterministically recorded new-tab request. The caller
+ * still verifies the exact reserved SHA and independently observes the new
+ * tab's latest user/assistant messages before crediting any turn. */
+export function browserRolloverRecoveryPrompt(input:{
+  goal:string;acceptance:string[];sandbox:'read-only'|'workspace-write';workspace:string;
+  nextInstruction:string|null;turnCount:number;missionRequestKey:string;
+  reservedRequestKey:string;sourceAnswer:string;adopted:boolean;
+  chainParent:boolean;piManaged:boolean;piPlan:PiPlan|null;
+}):string {
+  const workspace=input.sandbox==='workspace-write'?input.workspace:null;
+  if(input.turnCount===0&&!input.adopted&&!input.chainParent &&
+    input.reservedRequestKey===`${input.missionRequestKey}-1`)
+    return browserFreshTaskPrompt(input.goal,workspace);
+  if(input.piManaged){
+    const plan=input.piPlan;
+    if(!plan||!['NEXT','HANDOFF'].includes(plan.action)||
+       createHash('sha256').update(input.sourceAnswer).digest('hex')!==plan.responseSha256)
+      throw new Error('PI rollover recovery requires the exact verified previous plan and browser answer');
+    return browserNewChatPrompt(input.goal,input.acceptance,plan.summary,
+      plan.nextPrompt,input.sourceAnswer,workspace);
+  }
+  if(browserDecision(input.sourceAnswer)!=='HANDOFF')
+    throw new Error('Original conversation does not contain a complete HANDOFF response');
+  return browserNewChatPrompt(input.goal,input.acceptance,
+    input.sourceAnswer,input.nextInstruction);
 }
 
 /** New-tab rollover reserves the request BEFORE any tab creation or message Send.

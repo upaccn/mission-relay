@@ -10,7 +10,7 @@ import { TelegramBridge, TelegramHttpTransport } from './plugins/telegram.js';
 import { stateHome } from './core/paths.js';
 import { renderChatGPTHandoff, normalizeChatGPTUrl } from './core/chatgpt-handoff.js';
 import { connectChatPage, inspectChatPage, matchesSubmittedUserPrompt, matchesReservedPromptHash, lastVisibleUserPrompt, lastVisibleUserPromptSha256, listConnectedChatCandidates, withBrowserSession } from './plugins/chatgpt-browser.js';
-import { executeBrowserTurn, driveChatConversation, browserDecision, browserNewChatPrompt, browserContinuationPrompt } from './core/browser-controller.js';
+import { executeBrowserTurn, driveChatConversation, browserDecision, browserRolloverRecoveryPrompt, browserNewChatPrompt, browserContinuationPrompt } from './core/browser-controller.js';
 import {AiosPiPlanner,validatePictlRemoteConfig,validateRemoteProjectPath} from './core/pi-planner.js';
 import {adoptConnectedConversation} from './core/chat-adoption.js';
 import {watchedBrowser,enableBrowserWatch,disableBrowserWatch} from './core/browser-watch.js';
@@ -457,9 +457,18 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       const oldSession=await connectChatPage(oldUrl,{browserId:bound});
       const prompt=await withBrowserSession(oldSession,async page=>{
         const source=await inspectChatPage(page,oldUrl);
-        if(source.generating||browserDecision(source.lastAssistant)!=='HANDOFF')
-          throw new Error('Original conversation does not contain a complete HANDOFF response');
-        return browserNewChatPrompt(m.goal,m.acceptance,source.lastAssistant,m.nextInstruction);
+        if(source.generating||!source.composerReady)
+          throw new Error('Original ChatGPT source tab is not idle');
+        const parent=store.piChainParent(id);
+        return browserRolloverRecoveryPrompt({
+          goal:m.goal,acceptance:m.acceptance,sandbox:m.sandbox,workspace:m.workspace,
+          nextInstruction:m.nextInstruction,turnCount:m.turnCount,
+          missionRequestKey:m.requestKey,reservedRequestKey:record.requestKey,
+          sourceAnswer:source.lastAssistant,adopted:store.chatAdoption(id)!==null,
+          chainParent:parent!==null,
+          piManaged:store.getMeta(`pi.autopilot.enabled.${id}`)==='1',
+          piPlan:store.piPlan(parent??id),
+        });
       });
       const promptSha256=createHash('sha256').update(prompt.trim()).digest('hex');
       if(promptSha256!==record.promptSha256)

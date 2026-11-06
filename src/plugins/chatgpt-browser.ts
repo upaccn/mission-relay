@@ -28,7 +28,11 @@ async function sendLocator(page:Page) {
  * differences must remain a hash mismatch and fail closed. */
 export function canonicalVisibleUserPrompt(text:string,headingWrapper:boolean):string {
   const withoutHeader=headingWrapper?text.replace(/^You said:\s*/,''):text;
-  return withoutHeader.replace(/\n(?:…|\.\.\.)\s*\nShow more\s*$/u,'').trim();
+  return withoutHeader
+    .replace(/\n(?:…|\.\.\.)\s*\nShow more\s*$/u,'')
+    // Expanded long prompts expose a Show less control inside the same
+    // heading wrapper. It is UI chrome, not another user-authored sentence.
+    .replace(/\nShow less\s*$/u,'').trim();
 }
 
 /** User-authored last visible prompt, excluding ChatGPT accessibility labels.
@@ -449,7 +453,7 @@ export async function submitNewChatTurn(page:Page,prompt:string,
     throw new Error('New ChatGPT tab has no enabled Send button');
   await send.click({timeout:10000});
   const start=Date.now();let deadline=start+timeoutMs;
-  const finalMarker=/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED)\]\s*$/;
+  const finalMarker=/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]\s*$/;
   let last='',stableSince=start,failureSince:number|null=null,reloadedBlank=false;
   let interruptedSeen=false,deliveryRetryClicked=false,transportExtensionUsed=false;
   while(Date.now()<deadline) {

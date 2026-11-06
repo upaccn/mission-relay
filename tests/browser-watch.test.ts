@@ -71,6 +71,34 @@ test('A permanently incomplete earlier conversation does not starve later ready 
   }finally{f.close();}
 });
 
+test('An uncertain PI new-chat Send prevents the watcher from adopting its orphan as read-only',async()=>{
+  const f=fixture();try{
+    const m=f.store.create({goal:'Owner-approved source development',acceptance:['Real code'],
+      workspace:'/srv/ai/workspace/projects/mission-relay',sandbox:'workspace-write',
+      mode:'supervised',maxTurns:32,requestKey:'telegram-pi-test',checks:[]});
+    const linked=f.store.linkChat(m.id,urlA,m.version).mission;
+    const bound=f.store.bindChatBrowser(linked.id,browserId,linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
+    f.store.reserveChatBrowserTurn(m.id,bound.version,'telegram-pi-test-1',hash('Exact prompt'));
+    f.store.finishChatBrowserTurn(m.id,'telegram-pi-test-1',{
+      kind:'uncertain',error:'Observed new ChatGPT tab but reply did not match prompt hash'});
+    enableBrowserWatch(f.store,browserId,[]);
+    let enumerated=0;
+    const noAgent:AgentAdapter={async execute(){throw new Error('Never execute');},
+      async verify(){throw new Error('Never verify');}};
+    const bridge=new TelegramBridge(f.store,new Engine(f.store,noAgent),{
+      getUpdates:async()=>[],sendMessage:async()=>{},
+    },1001,2001,async()=>({ok:true,source:'test',message:'ready'}),
+    async()=>{throw new Error('Do not adopt uncertain browser response');},
+    {decide:async()=>({action:'DONE',summary:'unused',nextPrompt:''})},
+    async()=>{enumerated++;return [candidate(urlB,'Orphaned PI new-chat request')];});
+    assert.equal(await bridge.scanBrowserWatchOnce(),null);
+    assert.equal(enumerated,0);
+    assert.equal(f.store.list().length,1);
+    assert.equal(f.store.get(m.id).state,'NEEDS_RECONCILIATION');
+  }finally{f.close();}
+});
+
 test('Telegram watcher records one stable human-origin Mission, no Playwriter Send, no native agent',async()=>{
   const f=fixture();
   try{
