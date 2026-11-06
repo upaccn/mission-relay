@@ -13,7 +13,7 @@ function withFixture(run:(filename:string,db:DatabaseSync)=>void):void {
   const filename=join(dir,'missions.sqlite');
   const db=new DatabaseSync(filename);
   try {
-    db.exec(`CREATE TABLE missions(state TEXT);
+    db.exec(`CREATE TABLE missions(id TEXT,state TEXT);
       CREATE TABLE channel_commands(source TEXT,status TEXT);
       CREATE TABLE meta(key TEXT,value TEXT);`);
     run(filename,db);
@@ -29,10 +29,19 @@ test('Telegram restart preflight permits an idle durable database',()=>withFixtu
 }));
 
 test('Telegram restart preflight refuses running or verifying Missions',()=>withFixture((file,db)=>{
-  db.prepare('INSERT INTO missions VALUES(?)').run('RUNNING');
+  db.prepare('INSERT INTO missions VALUES(?,?)').run('task-one','RUNNING');
   assert.equal(check(file),3);
   db.exec("UPDATE missions SET state='VERIFYING'");
   assert.equal(check(file),3);
+}));
+
+test('Telegram restart preflight refuses accepted READY PI tasks but allows unrelated READY records',()=>withFixture((file,db)=>{
+  db.prepare('INSERT INTO missions VALUES(?,?)').run('pi-ready','READY');
+  assert.equal(check(file),0,'An unrelated READY mission is not the Telegram PI worker');
+  db.prepare('INSERT INTO meta VALUES(?,?)').run('pi.autopilot.enabled.pi-ready','1');
+  assert.equal(check(file),3,'Unsent READY PI mission cannot be stranded by restart');
+  db.exec("UPDATE meta SET value='0'");
+  assert.equal(check(file),0,'Revoked PI marker no longer claims a pending PI launch');
 }));
 
 test('Telegram restart preflight refuses pending delivery or reserved browser Sends',()=>withFixture((file,db)=>{
@@ -43,6 +52,8 @@ test('Telegram restart preflight refuses pending delivery or reserved browser Se
   assert.equal(check(file),3);
   db.exec("UPDATE meta SET value='not-json'");
   assert.equal(check(file),2);
+  db.exec("UPDATE meta SET value='{\"status\":\"unknown\"}'");
+  assert.equal(check(file),2,'Unknown receipt status must fail closed');
 }));
 
 test('Telegram restart preflight fails closed if the database is absent',()=>{

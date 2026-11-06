@@ -164,6 +164,24 @@ function readySuccessor(f:ReturnType<typeof fixture>,key:string){
   return {parent,child,sha};
 }
 
+test('SQLite requires a verified continuing parent and a fresh conversation on the first successor Send',()=>{
+  const f=fixture();try{
+    const {parent,child,sha}=readySuccessor(f,'successor-sqlite-gate');
+    const request='successor-sqlite-first';
+    const before=f.store.maxEventId();
+    assert.throws(()=>f.store.reserveChatBrowserTurn(child.id,child.version,request,
+      sha('Unchanged chat'),{}),/first Send must open a new ChatGPT conversation/);
+    assert.equal(f.store.chatBrowserTurn(child.id),null);
+    assert.equal(f.store.maxEventId(),before);
+    f.store.pausePiChain(parent.id);
+    assert.throws(()=>f.store.reserveChatBrowserTurn(child.id,f.store.get(child.id).version,
+      request,sha('New chat after pause'),{newConversation:true}),
+    /pause request|approved, verified continuation checkpoint/);
+    assert.equal(f.store.chatBrowserTurn(child.id),null);
+    assert.equal(f.store.events(child.id).filter(e=>e.type==='chatgpt.browser_reserved').length,0);
+  }finally{f.cleanup();}
+});
+
 test('PI reviews changing owner notes before the first successor Send and persists one revised prompt',async()=>{
   const f=fixture();try{
     const {child,sha}=readySuccessor(f,'preflight-update');
@@ -206,12 +224,12 @@ test('a late owner note racing the successor reservation is automatically re-pla
     const {child}=readySuccessor(f,'preflight-reservation-race');
     const original=f.store.reserveChatBrowserTurn.bind(f.store);
     let injected=false,piPreflightCalls=0;
-    f.store.reserveChatBrowserTurn=(id,revision,key,sha)=>{
+    f.store.reserveChatBrowserTurn=(id,revision,key,sha,options)=>{
       if(id===child.id&&!injected){
         injected=true;
         f.store.queuePiOwnerDirective(child.id,'1993','Add the final security regression');
       }
-      return original(id,revision,key,sha);
+      return original(id,revision,key,sha,options);
     };
     const planner:PiPlanner={decide:async context=>{
       if(context.turnCount===0){
@@ -310,7 +328,8 @@ test('uncertain successor first-Send recovery reconstructs the owner-revised PI 
     assert.equal(recovered,submitted);
     assert.notEqual(recovered,browserRolloverRecoveryPrompt({...args,
       piPlan:f.store.piPlan(parent.id)}));
-    f.store.reserveChatBrowserTurn(child.id,child.version,args.reservedRequestKey,sha(submitted.trim()));
+    f.store.reserveChatBrowserTurn(child.id,child.version,args.reservedRequestKey,
+      sha(submitted.trim()),{newConversation:true});
     f.store.finishChatBrowserTurn(child.id,args.reservedRequestKey,{kind:'uncertain',
       error:'Synthetic Chrome observer disconnect after an unconfirmed new-tab Send'});
     assert.equal(f.store.chatBrowserTurn(child.id)?.status,'uncertain');

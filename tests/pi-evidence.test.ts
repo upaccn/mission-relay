@@ -194,7 +194,8 @@ test('real store lineage reader verifies 32-to-1 successor creation, inherited s
     assert.equal(ready.businessAcceptanceVerified,false);
     assert.equal(f.store.maxEventId(),before);
     const req='child-first',answer='Child verified final stage';
-    f.store.reserveChatBrowserTurn(childId,f.store.get(childId).version,req,sha('child prompt'));
+    f.store.reserveChatBrowserTurn(childId,f.store.get(childId).version,
+      req,sha('child prompt'),{newConversation:true});
     f.store.finishChatBrowserTurn(childId,req,{kind:'observed',
       assistantSha256:sha(answer),summary:answer,newChatUrl:second});
     f.store.commitPiPlan(childId,sha(answer),[],{action:'DONE',summary:'Test finished',nextPrompt:''});
@@ -221,9 +222,17 @@ test('cross-Mission lineage reader detects scope tampering and child using the e
   const f=fixture();try{
     const {parentId,childId}=createVerifiedSuccessor(f.store);
     const req='child-same-chat',answer='Should be refused by control plane';
-    f.store.reserveChatBrowserTurn(childId,f.store.get(childId).version,req,sha('bad prompt'));
+    assert.throws(()=>f.store.reserveChatBrowserTurn(childId,f.store.get(childId).version,
+      'child-rejected-same-chat',sha('bad prompt')),/first Send must open a new ChatGPT conversation/);
+    // The new reservation gate prevents a malformed first Send. To retain an
+    // independent HISTORICAL ledger audit, forge only an isolated test record
+    // by removing its first migration event after an otherwise valid Send.
+    f.store.reserveChatBrowserTurn(childId,f.store.get(childId).version,req,
+      sha('bad prompt'),{newConversation:true});
     f.store.finishChatBrowserTurn(childId,req,{kind:'observed',
-      assistantSha256:sha(answer),summary:answer});
+      assistantSha256:sha(answer),summary:answer,newChatUrl:second});
+    const firstMigration=f.store.events(childId).find(e=>e.type==='chatgpt.browser_migrated')!;
+    f.store.db.prepare('DELETE FROM events WHERE id=?').run(firstMigration.id);
     f.store.commitPiPlan(childId,sha(answer),[],{action:'NEXT',summary:'Bad child test',nextPrompt:'Move chat'});
     const report=inspectPiChainEvidence(f.store,parentId);
     assert.equal(report.chainConsistent,false);
@@ -232,9 +241,9 @@ test('cross-Mission lineage reader detects scope tampering and child using the e
     // child Send, which was incorrectly issued in the predecessor chat.
     const secondRequest='child-second',secondAnswer='Eventually moved';
     f.store.reserveChatBrowserTurn(childId,f.store.get(childId).version,
-      secondRequest,sha('second child prompt'));
+      secondRequest,sha('second child prompt'),{newConversation:true});
     f.store.finishChatBrowserTurn(childId,secondRequest,{kind:'observed',
-      assistantSha256:sha(secondAnswer),summary:secondAnswer,newChatUrl:second});
+      assistantSha256:sha(secondAnswer),summary:secondAnswer,newChatUrl:first});
     f.store.commitPiPlan(childId,sha(secondAnswer),[],{
       action:'DONE',summary:'Later move cannot repair the violation',nextPrompt:''});
     assert.ok(inspectPiChainEvidence(f.store,parentId).violations.includes(

@@ -522,12 +522,26 @@ export class Store {
         (this.getMeta('telegram.build.project')!==m.workspace||
          this.getMeta('telegram.pi.project')!==m.workspace))
         throw new Error('Approved PI build workspace changed or was revoked before Send');
-      // A new owner note may arrive after the child PI review but before
-      // Playwriter's asynchronous UI preflight finishes. The reservation is
-      // the final atomic boundary: fail without a Send rather than silently
-      // dispatching the stale 32-turn handoff prompt.
-      if(m.turnCount===0&&this.piChainParent(id)&&this.pendingPiOwnerDirectives(id).length)
-        throw new Error('PI successor has new owner notes; review before reserving a Send');
+      // The first child Send MUST open a distinct ChatGPT conversation. A raw
+      // browser-send must not bypass the PI controller and append to the
+      // predecessor's old chat. Recheck the chain source inside this same
+      // transaction: an owner pause/revocation during PI inference must win.
+      const parentId=m.turnCount===0?this.piChainParent(id):null;
+      if(parentId){
+        // A new owner note may arrive after PI planning but before UI preflight.
+        if(this.pendingPiOwnerDirectives(id).length)
+          throw new Error('PI successor has new owner notes; review before reserving a Send');
+        if(!options.newConversation)
+          throw new Error('PI successor first Send must open a new ChatGPT conversation');
+        const parent=this.get(parentId),plan=this.piPlan(parentId);
+        const receipt=this.chatBrowserTurn(parentId);
+        if(this.piChainSuccessor(parentId)!==id||parent.state!=='PAUSED'||
+          parent.stopRequested||parent.lastError||parent.turnCount!==parent.maxTurns||
+          plan?.round!==parent.maxTurns||!['NEXT','HANDOFF'].includes(plan?.action??'')||
+          !receipt||receipt.assistantSha256!==plan?.responseSha256||
+          !this.hasVerifiedPiBrowserCheckpoint(parentId))
+          throw new Error('PI successor parent no longer has an approved, verified continuation checkpoint');
+      }
       if(this.getMeta(`chatgpt.browser.request.${id}.${requestKey}`)) throw new Error('Browser request key already used; never resend');
       const prior=this.chatBrowserTurn(id);
       if(prior && ['reserved','uncertain'].includes(prior.status))
