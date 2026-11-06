@@ -325,6 +325,27 @@ function visibleChatResponseFailed(answer:string):boolean {
   return /(?:This response couldn.t load|Unable to load response|Something went wrong while generating)/i.test(answer);
 }
 
+/** A brief inaccessible answer node is not evidence that the already-sent
+ * message failed. Retry DOM READS only; never repeat the composer Send. Other
+ * failures (URL change, lost browser or unknown selector) still fail closed. */
+function isTransientAssistantReadTimeout(error:unknown):boolean {
+  return error instanceof Error &&
+    /^locator\.innerText:\s*Timeout \d+ms exceeded\./i.test(error.message);
+}
+async function inspectAfterSend(page:Page,url:string,
+  state:{consecutiveReadFailures:number},deadline:number):Promise<ChatPageSnapshot|null> {
+  try {
+    const snapshot=await inspectChatPage(page,url);
+    state.consecutiveReadFailures=0;
+    return snapshot;
+  }catch(error){
+    if(!isTransientAssistantReadTimeout(error)||++state.consecutiveReadFailures>=3)
+      throw error;
+    await delay(Math.max(0,Math.min(2000,deadline-Date.now())));
+    return null;
+  }
+}
+
 /** Transient ChatGPT transport banners must not be credited as final answers.
  * The banner is checked explicitly; never treat a generic Retry as authorization. */
 export const CONNECTION_INTERRUPTED_TEXT='Connection interrupted. Waiting for the complete answer';
@@ -410,8 +431,10 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
   let last='',lastTurnId:string|null=null;let stableSince=Date.now();
   let failureSince:number|null=null;
   let interruptedSeen=false,deliveryRetryClicked=false,transportExtensionUsed=false;
+  const readState={consecutiveReadFailures:0};
   while(Date.now()<deadline) {
-    const current=await inspectChatPage(page,targetUrl);
+    const current=await inspectAfterSend(page,targetUrl,readState,deadline);
+    if(!current){last='';lastTurnId=null;stableSince=Date.now();continue;}
     const newestUserMatchesPrompt=current.userCount>0 &&
       matchesSubmittedUserPrompt(await lastVisibleUserPromptSha256(page),prompt);
     const banner=await visibleLongTaskBanner(page,current.lastAssistant);
@@ -492,6 +515,7 @@ export async function submitNewChatTurn(page:Page,prompt:string,
   const finalMarker=/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]\s*$/;
   let last='',stableSince=start,failureSince:number|null=null,reloadedBlank=false;
   let interruptedSeen=false,deliveryRetryClicked=false,transportExtensionUsed=false;
+  const readState={consecutiveReadFailures:0};
   while(Date.now()<deadline) {
     const currentUrl=page.url();
     let destination:string|null=null;
@@ -501,7 +525,8 @@ export async function submitNewChatTurn(page:Page,prompt:string,
     }
     let finalCandidate=false;
     if(destination) {
-      const snapshot=await inspectChatPage(page,destination);
+      const snapshot=await inspectAfterSend(page,destination,readState,deadline);
+      if(!snapshot){last='';stableSince=Date.now();continue;}
       const banner=await visibleLongTaskBanner(page,snapshot.lastAssistant);
       const newestUserMatchesPrompt=snapshot.userCount>0 &&
         matchesSubmittedUserPrompt(await lastVisibleUserPromptSha256(page),prompt);

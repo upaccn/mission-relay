@@ -579,6 +579,58 @@ class AccessibleChatPage extends SyntheticChatPage {
   }
 }
 
+class FlakyAssistantHeadingPage extends AccessibleChatPage {
+  remainingTimeouts:number;
+  timeoutReads=0;
+  constructor(remainingTimeouts:number){super();this.remainingTimeouts=remainingTimeouts;}
+  override getByRole(role:string,options:{name:string|RegExp}):any {
+    const original=super.getByRole(role,options);
+    if(role!=='heading'||options.name!=='ChatGPT said:')return original;
+    const last=original.last();
+    return {...original,last:()=>({...last,locator:(selector:string)=>{
+      const node=last.locator(selector);
+      return {...node,innerText:async()=>{
+        if(this.sends>0&&this.remainingTimeouts-->0){
+          this.timeoutReads++;
+          throw new Error('locator.innerText: Timeout 5000ms exceeded.');
+        }
+        return node.innerText();
+      }};
+    }})};
+  }
+}
+
+test('A transient accessible ChatGPT assistant DOM timeout after Send retries only reads, never Send',async()=>{
+  const f=fixture();try{
+    const page=new FlakyAssistantHeadingPage(1);
+    const result=await executeBrowserTurn({store:f.store,missionId:f.linked.id,
+      revision:f.linked.version,requestKey:'dom-timeout-once',
+      page:page as unknown as Page,url:URL,prompt:'Original once-only request',
+      timeoutMs:12000,requireFinalMarker:true});
+    assert.equal(page.sends,1);
+    assert.equal(page.timeoutReads,1);
+    assert.equal(result.turnCount,1);
+    assert.equal(f.store.chatBrowserTurn(f.linked.id)?.status,'observed');
+    assert.equal(f.store.events(f.linked.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(f.store.events(f.linked.id).filter(e=>e.type==='chatgpt.browser_uncertain').length,0);
+  }finally{f.cleanup();}
+});
+
+test('Repeated assistant DOM read timeouts fail closed after three observations without replay',async()=>{
+  const f=fixture();try{
+    const page=new FlakyAssistantHeadingPage(10);
+    await assert.rejects(()=>executeBrowserTurn({store:f.store,missionId:f.linked.id,
+      revision:f.linked.version,requestKey:'dom-timeout-persistent',
+      page:page as unknown as Page,url:URL,prompt:'Do not repeat this message',
+      timeoutMs:12000,requireFinalMarker:true}),/manual reconciliation/);
+    assert.equal(page.sends,1);
+    assert.equal(page.timeoutReads,3);
+    assert.equal(f.store.get(f.linked.id).state,'NEEDS_RECONCILIATION');
+    assert.equal(f.store.chatBrowserTurn(f.linked.id)?.status,'uncertain');
+    assert.equal(f.store.events(f.linked.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+  }finally{f.cleanup();}
+});
+
 class TransportBannerPage extends AccessibleChatPage {
   banner:'interrupted'|'delivery-timeout'|null='delivery-timeout';
   retryClicks=0;
@@ -710,6 +762,32 @@ class SyntheticNewChatPage extends SyntheticChatPage {
     return locator;
   }
 }
+class FlakyNewChatAssistantPage extends SyntheticNewChatPage {
+  remainingTimeouts=1;
+  override locator(selector:string):any {
+    const node=super.locator(selector);
+    if(!selector.includes('data-message-author-role="assistant"'))return node;
+    const wrapped:any={...node,innerText:async()=>{
+      if(this.sends>0&&this.remainingTimeouts>0){
+        this.remainingTimeouts--;
+        throw new Error('locator.innerText: Timeout 5000ms exceeded.');
+      }
+      return node.innerText();
+    }};
+    wrapped.first=()=>wrapped;wrapped.last=()=>wrapped;
+    return wrapped;
+  }
+}
+
+test('New ChatGPT first Send tolerates one assistant DOM text-read timeout without a second Send',async()=>{
+  const page=new FlakyNewChatAssistantPage();
+  const result=await submitNewChatTurn(page as unknown as Page,
+    'Open one authorized new ChatGPT conversation',12000);
+  assert.equal(page.sends,1);
+  assert.equal(result.url,NEXT_CHAT_URL);
+  assert.equal(result.receipt.submitted,true);
+  assert.equal(page.remainingTimeouts,0);
+});
 class TransportNewChatPage extends SyntheticNewChatPage {
   banner=true;
   retryClicks=0;
