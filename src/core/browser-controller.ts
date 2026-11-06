@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import type {Page} from 'playwriter';
 import type {Store,PiPlan} from './store.js';
-import {inspectChatPage,submitChatTurn,submitNewChatTurn,MAX_BROWSER_TURN_TIMEOUT_MS} from '../plugins/chatgpt-browser.js';
+import {inspectChatPage,lastVisibleUserPromptSha256,submitChatTurn,submitNewChatTurn,MAX_BROWSER_TURN_TIMEOUT_MS} from '../plugins/chatgpt-browser.js';
 import {validateRemoteProjectPath} from './pi-planner.js';
 
 export interface BrowserTurnOutcome {
@@ -140,6 +140,16 @@ export function browserNewChatPrompt(goal:string,acceptance:string[],handoff:str
   ].join('\n');
 }
 
+/** For an uncertain new-tab Send use the actual saved successor decision,
+ * including owner-reviewed amendments made before its very first Send. */
+export function browserRolloverPiPlan(store:Pick<Store,'piPlan'|'piChainParent'>,
+  missionId:string):PiPlan|null {
+  const own=store.piPlan(missionId);
+  if(own)return own;
+  const parent=store.piChainParent(missionId);
+  return parent?store.piPlan(parent):null;
+}
+
 /** Rebuild only a deterministically recorded new-tab request. The caller
  * still verifies the exact reserved SHA and independently observes the new
  * tab's latest user/assistant messages before crediting any turn. */
@@ -174,6 +184,8 @@ export async function executeBrowserRollover(input:{
   store:Store;missionId:string;revision:number;requestKey:string;
   sourcePage:Page;sourceUrl:string;prompt:string;timeoutMs?:number;
   consumedInstruction?:string|null;
+  /** Recheck source exactly at the last pre-reservation browser read. */
+  expectedSource?:{promptSha256:string;assistantSha256:string};
   telegramBatch?:{lastAuthorizedTurn:boolean;piManaged?:boolean};
 }):Promise<BrowserTurnOutcome&{page:Page;url:string}> {
   const {store,missionId,revision,requestKey,prompt}=input;
@@ -184,6 +196,10 @@ export async function executeBrowserRollover(input:{
   const current=await inspectChatPage(input.sourcePage,input.sourceUrl);
   if(!current.composerReady||current.generating)
     throw new Error('Source ChatGPT tab must be idle before a new conversation is opened');
+  if(input.expectedSource&&(
+    createHash('sha256').update(current.lastAssistant).digest('hex')!==input.expectedSource.assistantSha256||
+    await lastVisibleUserPromptSha256(input.sourcePage)!==input.expectedSource.promptSha256))
+    throw new Error('Source ChatGPT history changed before new-tab Send reservation');
   store.reserveChatBrowserTurn(missionId,revision,requestKey,createHash('sha256').update(prompt.trim()).digest('hex'));
   try {
     const page=await input.sourcePage.context().newPage();

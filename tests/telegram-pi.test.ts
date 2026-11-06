@@ -85,6 +85,64 @@ function rig(planner:PiPlanner){
 
 const APPROVED_PROJECT='/srv/ai/workspace/projects/mission-relay';
 
+test('owner can amend an unsent READY PI successor after restart without starting another mission',async()=>{
+  const f=rig({decide:async()=>({action:'DONE',summary:'Not invoked',nextPrompt:''})});
+  try{
+    const sha=(text:string)=>createHash('sha256').update(text).digest('hex');
+    const m=f.store.create({goal:'Finish pending code checks',
+      acceptance:['Verify last release gate'],workspace:'',sandbox:'read-only',
+      mode:'supervised',maxTurns:32,checks:[],requestKey:'owner-successor-root'});
+    const linked=f.store.linkChat(m.id,SRC,m.version).mission;
+    const bound=f.store.bindChatBrowser(m.id,'install:Chrome:synthetic',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
+    const near=f.store.update(m.id,bound.version,{state:'PAUSED',turnCount:31},'test.prior_rounds');
+    f.store.reserveChatBrowserTurn(m.id,near.version,'owner-successor-last',sha('Anchor user message'));
+    f.store.finishChatBrowserTurn(m.id,'owner-successor-last',{kind:'observed',
+      assistantSha256:sha('Anchor assistant message'),summary:'Anchor assistant message',
+      telegramBatch:{terminal:true,flowSignal:'NEXT',piManaged:true}});
+    f.store.commitPiPlan(m.id,sha('Anchor assistant message'),[],{
+      action:'NEXT',summary:'Continue after owner notes',nextPrompt:'Check remaining tests'});
+    const child=f.store.createPiSuccessor(m.id);
+    assert.ok(child);
+    f.setUpdates([f.message(981,'Add a Windows deployment gate to the next step')]);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.store.pendingPiOwnerDirectives(child.id).length,1);
+    assert.match(f.sent.join('\n'),/Owner instruction queued/);
+    f.setUpdates([f.message(982,`/instruct ${child.id} v${child.version} Verify failed CI recovery`)]);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.store.pendingPiOwnerDirectives(child.id).length,2);
+    f.setUpdates([f.message(983,'/build Should not upgrade this read-only child')]);
+    await f.bridge.pollOnce(0);
+    assert.match(f.sent.at(-1)??'',/cannot be upgraded/);
+    assert.equal(f.store.pendingPiOwnerDirectives(child.id).length,2);
+    assert.equal(f.store.get(child.id).state,'READY');
+    assert.equal(f.state().sends,0);
+    assert.equal(f.store.events(m.id).filter(e=>e.type==='pi.chain_successor').length,1);
+  }finally{f.cleanup();}
+});
+
+test('revoking the exact approved PI build workspace rejects a raced browser reservation',()=>{
+  const f=rig({decide:async()=>({action:'DONE',summary:'Not invoked',nextPrompt:''})});
+  try{
+    f.store.setMeta('telegram.build.project',APPROVED_PROJECT);
+    f.store.setMeta('telegram.pi.project',APPROVED_PROJECT);
+    const m=f.store.create({goal:'Owner-authorized code change',
+      acceptance:['Verify source and CI'],workspace:APPROVED_PROJECT,
+      sandbox:'workspace-write',mode:'supervised',maxTurns:32,
+      checks:[],requestKey:'revoked-build-pre-send'});
+    const linked=f.store.linkChat(m.id,SRC,m.version).mission;
+    const bound=f.store.bindChatBrowser(m.id,'install:Chrome:synthetic',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
+    f.store.setMeta('telegram.build.project','');
+    assert.throws(()=>f.store.reserveChatBrowserTurn(m.id,bound.version,'no-post-revoke-send',
+      createHash('sha256').update('unsafe after revocation').digest('hex')),
+    /revoked before Send/);
+    assert.equal(f.store.chatBrowserTurn(m.id),null);
+    assert.equal(f.store.get(m.id).state,'READY');
+    assert.equal(f.state().sends,0);
+  }finally{f.cleanup();}
+});
+
 test('Telegram restart poll materializes one missing PI successor and reports continuity without sending',async()=>{
   const f=rig({decide:async()=>({action:'DONE',summary:'Not invoked',nextPrompt:''})});
   try{

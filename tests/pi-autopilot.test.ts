@@ -7,7 +7,8 @@ import {createHash} from 'node:crypto';
 import type {Page} from 'playwriter';
 import {Store} from '../src/core/store.js';
 import {drivePiAutopilot,pauseFailedPiPlanning} from '../src/core/pi-autopilot.js';
-import {browserFreshTaskPrompt,browserNewChatPrompt} from '../src/core/browser-controller.js';
+import {browserFreshTaskPrompt,browserNewChatPrompt,browserRolloverRecoveryPrompt,
+  browserRolloverPiPlan} from '../src/core/browser-controller.js';
 import type {PiPlanner,PiTurnContext} from '../src/core/pi-planner.js';
 
 const SOURCE='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
@@ -140,6 +141,182 @@ test('exhausted 32-turn PI NEXT creates one durable successor and continues in a
     assert.equal(f.store.events(child.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
     assert.equal(f.store.events(child.id).filter(e=>e.type==='pi.autopilot_finished').length,1);
     assert.equal(f.store.createPiSuccessor(child.id),null);
+  }finally{f.cleanup();}
+});
+
+function readySuccessor(f:ReturnType<typeof fixture>,key:string){
+  const sha=(text:string)=>createHash('sha256').update(text).digest('hex');
+  const parent=f.store.create({goal:'Finish a 32-turn mission without ignoring owner updates',
+    acceptance:['Complete the remaining verification'],workspace:'',sandbox:'read-only',
+    mode:'supervised',maxTurns:32,checks:[],requestKey:key});
+  const linked=f.store.linkChat(parent.id,SOURCE,parent.version).mission;
+  const bound=f.store.bindChatBrowser(parent.id,'install:Chrome:fake',linked.version).mission;
+  f.store.setMeta(`pi.autopilot.enabled.${parent.id}`,'1');
+  const near=f.store.update(parent.id,bound.version,{state:'PAUSED',turnCount:31},'test.prior_rounds');
+  f.store.reserveChatBrowserTurn(parent.id,near.version,`${key}-last`,sha('Prior anchor user turn'));
+  f.store.finishChatBrowserTurn(parent.id,`${key}-last`,{kind:'observed',
+    assistantSha256:sha('Prior anchor response'),summary:'Prior anchor response',
+    telegramBatch:{terminal:true,flowSignal:'NEXT',piManaged:true}});
+  f.store.commitPiPlan(parent.id,sha('Prior anchor response'),[],{
+    action:'NEXT',summary:'Parent evidence verified; more work remains',nextPrompt:'Check the final stage'});
+  const child=f.store.createPiSuccessor(parent.id);
+  assert.ok(child);
+  return {parent,child,sha};
+}
+
+test('PI reviews changing owner notes before the first successor Send and persists one revised prompt',async()=>{
+  const f=fixture();try{
+    const {child,sha}=readySuccessor(f,'preflight-update');
+    f.store.queuePiOwnerDirective(child.id,'1981','Also check rollback requirements');
+    assert.throws(()=>f.store.reserveChatBrowserTurn(child.id,child.version,'unsafe-early',
+      sha('should not send')),/owner notes/);
+    assert.equal(f.store.chatBrowserTurn(child.id),null);
+    let calls=0;
+    const planner:PiPlanner={decide:async context=>{
+      if(context.turnCount===0){
+        calls++;
+        assert.equal(context.responseSha256,sha('Prior anchor response'));
+        assert.equal(context.lastAssistant,'Prior anchor response');
+        if(calls===1){
+          assert.equal(context.ownerDirectives.length,1);
+          f.store.queuePiOwnerDirective(child.id,'1982','Also check Windows CI');
+          return {action:'NEXT',summary:'First owner note only',nextPrompt:'Check rollback'};
+        }
+        assert.equal(context.ownerDirectives.length,2);
+        return {action:'NEXT',summary:'Both owner notes accepted',
+          nextPrompt:'Check rollback requirements and Windows CI before further work'};
+      }
+      assert.equal(context.turnCount,1);
+      return {action:'DONE',summary:'Final stage verified',nextPrompt:''};
+    }};
+    await drivePiAutopilot({store:f.store,planner,missionId:child.id,
+      revision:child.version,requestPrefix:child.requestKey,page:f.anchor,url:SOURCE});
+    assert.equal(calls,2);
+    assert.equal(f.results().sends,1);
+    assert.match(f.results().latestPrompt,/Check rollback requirements and Windows CI/);
+    assert.equal(f.store.pendingPiOwnerDirectives(child.id).length,0);
+    assert.equal(f.store.events(child.id).filter(e=>e.type==='pi.chain_preflight_decision').length,1);
+    assert.equal(f.store.events(child.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(f.store.piPlan(child.id)?.action,'DONE');
+  }finally{f.cleanup();}
+});
+
+test('a late owner note racing the successor reservation is automatically re-planned without a duplicate Send',async()=>{
+  const f=fixture();try{
+    const {child}=readySuccessor(f,'preflight-reservation-race');
+    const original=f.store.reserveChatBrowserTurn.bind(f.store);
+    let injected=false,piPreflightCalls=0;
+    f.store.reserveChatBrowserTurn=(id,revision,key,sha)=>{
+      if(id===child.id&&!injected){
+        injected=true;
+        f.store.queuePiOwnerDirective(child.id,'1993','Add the final security regression');
+      }
+      return original(id,revision,key,sha);
+    };
+    const planner:PiPlanner={decide:async context=>{
+      if(context.turnCount===0){
+        piPreflightCalls++;
+        assert.equal(context.ownerDirectives.length,1);
+        return {action:'NEXT',summary:'Owner security request reviewed',
+          nextPrompt:'Run the final security regression before completion'};
+      }
+      return {action:'DONE',summary:'Security regression confirmed',nextPrompt:''};
+    }};
+    await drivePiAutopilot({store:f.store,planner,missionId:child.id,
+      revision:child.version,requestPrefix:child.requestKey,page:f.anchor,url:SOURCE});
+    assert.equal(injected,true);
+    assert.equal(piPreflightCalls,1);
+    assert.equal(f.results().sends,1);
+    assert.match(f.results().latestPrompt,/Run the final security regression/);
+    assert.equal(f.store.events(child.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(f.store.events(child.id).filter(e=>e.type==='chatgpt.browser_uncertain').length,0);
+    assert.equal(f.store.pendingPiOwnerDirectives(child.id).length,0);
+  }finally{f.cleanup();}
+});
+
+test('successor rechecks its parent answer after PI inference and refuses a changed tab before reservation',async()=>{
+  const f=fixture();try{
+    const {child}=readySuccessor(f,'preflight-parent-change');
+    f.store.queuePiOwnerDirective(child.id,'1994','Check an extra quality gate');
+    let changed=false;
+    const changedPage={...f.anchor,locator:(selector:string)=>{
+      const original=f.anchor.locator(selector);
+      if(!changed||!selector.includes('data-message-author-role="assistant"'))return original;
+      const altered:any={...original,innerText:async()=> 'Another agent changed the parent reply'};
+      altered.last=()=>altered;altered.first=()=>altered;
+      return altered;
+    }} as unknown as Page;
+    const planner:PiPlanner={decide:async context=>{
+      if(context.turnCount===0){
+        changed=true; // Simulate a real browser change while PI is thinking.
+        return {action:'NEXT',summary:'Owner note included',
+          nextPrompt:'Verify the extra quality gate'};
+      }
+      return {action:'DONE',summary:'Gate checked',nextPrompt:''};
+    }};
+    await assert.rejects(drivePiAutopilot({store:f.store,planner,missionId:child.id,
+      revision:child.version,requestPrefix:child.requestKey,page:changedPage,url:SOURCE}),
+    /Source ChatGPT history changed before new-tab Send reservation/);
+    assert.equal(f.results().sends,0);
+    assert.equal(f.store.chatBrowserTurn(child.id),null);
+    assert.equal(f.store.piPlan(child.id)?.round,0);
+    changed=false;
+    await drivePiAutopilot({store:f.store,planner,missionId:child.id,
+      revision:child.version,requestPrefix:child.requestKey,page:f.anchor,url:SOURCE});
+    assert.equal(f.results().sends,1);
+    assert.equal(f.store.piPlan(child.id)?.action,'DONE');
+  }finally{f.cleanup();}
+});
+
+test('PI may halt a successor after new owner notes without reserving a browser Send',async()=>{
+  const f=fixture();try{
+    const {child}=readySuccessor(f,'preflight-stop');
+    f.store.queuePiOwnerDirective(child.id,'1991','Stop because a human check is required');
+    const planner:PiPlanner={decide:async context=>{
+      assert.equal(context.turnCount,0);
+      assert.equal(context.ownerDirectives.length,1);
+      return {action:'BLOCKED',summary:'Owner human checkpoint required',nextPrompt:''};
+    }};
+    await drivePiAutopilot({store:f.store,planner,missionId:child.id,
+      revision:child.version,requestPrefix:child.requestKey,page:f.anchor,url:SOURCE});
+    assert.equal(f.results().sends,0);
+    assert.equal(f.store.chatBrowserTurn(child.id),null);
+    assert.equal(f.store.get(child.id).state,'BLOCKED');
+    assert.equal(f.store.piPlan(child.id)?.action,'BLOCKED');
+    assert.equal(f.store.pendingPiOwnerDirectives(child.id).length,0);
+    assert.equal(f.store.events(child.id).filter(e=>e.type==='pi.autopilot_finished').length,1);
+  }finally{f.cleanup();}
+});
+
+test('uncertain successor first-Send recovery reconstructs the owner-revised PI prompt, never its stale parent prompt',()=>{
+  const f=fixture();try{
+    const {parent,child,sha}=readySuccessor(f,'preflight-recovery');
+    f.store.queuePiOwnerDirective(child.id,'1992','Prioritize a Windows deployment gate');
+    const directives=f.store.pendingPiOwnerDirectives(child.id);
+    const revised={action:'NEXT' as const,summary:'Owner changed release priority',
+      nextPrompt:'Verify the Windows deployment gate before changing any runtime process'};
+    f.store.commitPiChainPreflight(child.id,sha('Prior anchor response'),
+      directives.map(d=>d.id),revised);
+    const selected=browserRolloverPiPlan(f.store,child.id);
+    assert.equal(selected?.nextPrompt,revised.nextPrompt);
+    const args={goal:child.goal,acceptance:child.acceptance,
+      sandbox:child.sandbox,workspace:child.workspace,nextInstruction:null,
+      turnCount:0,missionRequestKey:child.requestKey,
+      reservedRequestKey:`${child.requestKey}-1`,sourceAnswer:'Prior anchor response',
+      adopted:false,chainParent:true,piManaged:true};
+    const submitted=browserNewChatPrompt(child.goal,child.acceptance,
+      revised.summary,revised.nextPrompt,'Prior anchor response',null);
+    const recovered=browserRolloverRecoveryPrompt({...args,piPlan:selected});
+    assert.equal(recovered,submitted);
+    assert.notEqual(recovered,browserRolloverRecoveryPrompt({...args,
+      piPlan:f.store.piPlan(parent.id)}));
+    f.store.reserveChatBrowserTurn(child.id,child.version,args.reservedRequestKey,sha(submitted.trim()));
+    f.store.finishChatBrowserTurn(child.id,args.reservedRequestKey,{kind:'uncertain',
+      error:'Synthetic Chrome observer disconnect after an unconfirmed new-tab Send'});
+    assert.equal(f.store.chatBrowserTurn(child.id)?.status,'uncertain');
+    assert.equal(f.store.chatBrowserTurn(child.id)?.promptSha256,sha(recovered.trim()));
+    assert.throws(()=>f.store.reserveChatBrowserTurn(child.id,f.store.get(child.id).version,
+      `${child.requestKey}-2`,sha('different message')),/Cannot run browser turn|Previous browser turn/);
   }finally{f.cleanup();}
 });
 

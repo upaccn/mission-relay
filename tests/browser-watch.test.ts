@@ -79,6 +79,8 @@ test('An uncertain PI new-chat Send prevents the watcher from adopting its orpha
     const linked=f.store.linkChat(m.id,urlA,m.version).mission;
     const bound=f.store.bindChatBrowser(linked.id,browserId,linked.version).mission;
     f.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
+    f.store.setMeta('telegram.pi.project',m.workspace);
+    f.store.setMeta('telegram.build.project',m.workspace);
     f.store.reserveChatBrowserTurn(m.id,bound.version,'telegram-pi-test-1',hash('Exact prompt'));
     f.store.finishChatBrowserTurn(m.id,'telegram-pi-test-1',{
       kind:'uncertain',error:'Observed new ChatGPT tab but reply did not match prompt hash'});

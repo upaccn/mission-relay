@@ -530,6 +530,11 @@ export class TelegramBridge {
     });
     if(unresolved&&this.store.chatAdoption(unresolved.id)!==null)
       return this.queuePiOwnerText(goal,commandId,unresolved.id);
+    if(unresolved?.state==='READY'&&this.store.piChainParent(unresolved.id)){
+      if(write&&unresolved.sandbox!=='workspace-write')
+        throw new Error('A read-only PI successor cannot be upgraded by /build');
+      return this.queuePiOwnerText(goal,commandId,unresolved.id);
+    }
     if(unresolved)
       throw new Error(`An earlier PI Mission ${unresolved.id} is not terminal (${unresolved.state}); inspect its exact Chrome/SQLite receipt before starting another. No browser Send was submitted.`);
     if(this.piPlanner instanceof AiosPiPlanner &&
@@ -765,7 +770,8 @@ export class TelegramBridge {
       const instruction=words.join(' ').trim();
       if(!instruction || instruction.length>1500) throw new Error('Instruction must contain 1–1500 characters');
       if(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'){
-        if(id!==this.activeMission&&this.store.chatAdoption(id)===null)
+        if(id!==this.activeMission&&this.store.chatAdoption(id)===null&&
+          !(m.state==='READY'&&this.store.piChainParent(id)))
           throw new Error('PI Mission is not currently active; no instruction was queued');
         return this.queuePiOwnerText(instruction,commandId,id);
       }

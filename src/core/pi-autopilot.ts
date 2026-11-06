@@ -60,6 +60,73 @@ async function reviewPiRound(
   }
   throw new Error('Owner messages changed repeatedly during PI planning; paused without a new Send');
 }
+/** Re-plan the zero-turn successor from the verified LAST parent answer, not
+ * from a fabricated child reply. Pending owner notes are checked atomically
+ * with the persisted PI decision before a new-tab Send is ever reserved. */
+async function reviewPiChainPreflight(store:Store,planner:PiPlanner,id:string,
+  parentAnswerSha256:string,parentAnswer:string,parentPlan:PiPlan):Promise<PiPlan>{
+  let current=store.piPlan(id)??parentPlan;
+  if(current.responseSha256!==parentAnswerSha256||
+    createHash('sha256').update(parentAnswer).digest('hex')!==parentAnswerSha256)
+    throw new Error('PI chain preflight parent answer changed');
+  for(let attempt=0;attempt<MAX_REPLANS;attempt++){
+    if(store.get(id).stopRequested)
+      throw new Error('Owner stopped the PI successor before its first Send');
+    const queued=store.pendingPiOwnerDirectives(id);
+    if(!queued.length)return current;
+    const m=store.get(id);
+    const decision=await planner.decide({
+      goal:m.goal,acceptance:m.acceptance,turnCount:0,maxTurns:m.maxTurns,
+      responseSha256:parentAnswerSha256,lastAssistant:parentAnswer,
+      ownerDirectives:queued,sandbox:m.sandbox,workspace:m.workspace,
+      priorPiSummary:current.summary,
+    });
+    const ids=queued.map(x=>x.id);
+    if(JSON.stringify(ids)!==JSON.stringify(
+      store.pendingPiOwnerDirectives(id).map(x=>x.id)))continue;
+    current=store.commitPiChainPreflight(id,parentAnswerSha256,ids,decision);
+    if(['DONE','BLOCKED'].includes(current.action))return current;
+  }
+  throw new Error('Owner notes changed repeatedly during PI successor preflight; no Send');
+}
+/** Retrying a failed LOCAL reservation is safe only when no Playwriter Send
+ * was reserved. An owner update arriving during asynchronous DOM inspection
+ * must be PI-reviewed before any new chat is created. */
+async function dispatchPiChainFirstTurn(input:{
+  store:Store;planner:PiPlanner;missionId:string;revision:number;
+  requestKey:string;sourcePage:Page;sourceUrl:string;
+  goal:string;acceptance:string[];writeWorkspace:string|null;
+  parentAnswer:string;
+}):Promise<(BrowserTurnOutcome&{page:Page;url:string})|null>{
+  const {store,planner,missionId}=input;
+  const parentId=store.piChainParent(missionId);
+  const parentPlan=parentId?store.piPlan(parentId):null;
+  const parentReceipt=parentId?store.chatBrowserTurn(parentId):null;
+  if(!parentPlan||!parentId)
+    throw new Error('PI successor is missing its verified parent plan');
+  if(!parentReceipt?.assistantSha256||parentReceipt.assistantSha256!==parentPlan.responseSha256)
+    throw new Error('PI successor is missing its matching parent browser receipt');
+  for(let attempt=0;attempt<MAX_REPLANS;attempt++){
+    const plan=await reviewPiChainPreflight(store,planner,missionId,
+      parentPlan.responseSha256,input.parentAnswer,parentPlan);
+    if(['DONE','BLOCKED'].includes(plan.action))return null;
+    const prompt=browserNewChatPrompt(input.goal,input.acceptance,
+      plan.summary,plan.nextPrompt,input.parentAnswer,input.writeWorkspace);
+    try {
+      return await executeBrowserRollover({store,missionId,revision:input.revision,
+        requestKey:input.requestKey,sourcePage:input.sourcePage,sourceUrl:input.sourceUrl,
+        prompt,telegramBatch:{lastAuthorizedTurn:false,piManaged:true},
+        expectedSource:{promptSha256:parentReceipt.promptSha256,
+          assistantSha256:parentReceipt.assistantSha256}});
+    }catch(error){
+      if(!(error instanceof Error)||
+        !error.message.includes('PI successor has new owner notes')||
+        store.chatBrowserTurn(missionId))throw error;
+      // The rejected SQLite reservation had no external side effect.
+    }
+  }
+  throw new Error('PI successor owner messages kept changing; no new chat was submitted');
+}
 /** A bounded, supervised-by-PI loop over the ALREADY approved ChatGPT browser.
  * Browser observations and owner input are durable. A missing/invalid PI
  * decision never authorizes another browser Send. */
@@ -102,7 +169,10 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
       await lastVisibleUserPromptSha256(page)!==receipt.promptSha256)
       throw new Error('PI chain refused: parent browser evidence did not remain stable');
     latestBrowserAnswer=second.lastAssistant;
-    nextPlan=plan;
+    nextPlan=store.piPlan(missionId)??plan;
+    if(nextPlan.responseSha256!==plan.responseSha256||
+      !['NEXT','HANDOFF','DONE','BLOCKED'].includes(nextPlan.action))
+      throw new Error('PI chain preflight decision differs from its verified parent');
   }
   if(adopted&&origin.turnCount===0){
     // This is a real *human* ChatGPT reply, not a dispatched Relay turn.
@@ -189,11 +259,12 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
       telegramBatch:{lastAuthorizedTurn:false,piManaged:true}};
     const rotateChat=nextPlan?.action==='HANDOFF'||
       ((i>0||adopted)&&store.piChatObservedTurns(missionId)>=MAX_PI_CHAT_TURNS);
-    const received:BrowserTurnOutcome|(BrowserTurnOutcome&{page:Page;url:string})=
-      i===0&&chainParentId?await executeBrowserRollover({
-        ...payload,sourcePage:page,sourceUrl:url,
-        prompt:browserNewChatPrompt(origin.goal,origin.acceptance,
-          nextPlan!.summary,nextPlan!.nextPrompt,latestBrowserAnswer,writeWorkspace),
+    const received:(BrowserTurnOutcome|(BrowserTurnOutcome&{page:Page;url:string}))|null=
+      i===0&&chainParentId?await dispatchPiChainFirstTurn({
+        store,planner,missionId,revision,requestKey,
+        sourcePage:page,sourceUrl:url,goal:origin.goal,
+        acceptance:origin.acceptance,writeWorkspace,
+        parentAnswer:latestBrowserAnswer!,
       }):i===0&&!adopted?await executeBrowserRollover({
         ...payload,sourcePage:page,sourceUrl:url,
         prompt:browserFreshTaskPrompt(origin.goal,writeWorkspace),
@@ -205,6 +276,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
         ...payload,page,url,prompt:nextPiBrowserPrompt(origin.goal,nextPlan!,writeWorkspace),
         requireFinalMarker:true,
       });
+    if(!received)return; // PI stopped a successor before its first Send.
     if('page' in received){
       const rollover=received as BrowserTurnOutcome&{page:Page;url:string};
       page=rollover.page;url=rollover.url;

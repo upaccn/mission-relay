@@ -10,7 +10,7 @@ import { TelegramBridge, TelegramHttpTransport } from './plugins/telegram.js';
 import { stateHome } from './core/paths.js';
 import { renderChatGPTHandoff, normalizeChatGPTUrl } from './core/chatgpt-handoff.js';
 import { connectChatPage, inspectChatPage, matchesSubmittedUserPrompt, matchesReservedPromptHash, lastVisibleUserPrompt, lastVisibleUserPromptSha256, listConnectedChatCandidates, withBrowserSession } from './plugins/chatgpt-browser.js';
-import { executeBrowserTurn, driveChatConversation, browserDecision, browserRolloverRecoveryPrompt, browserNewChatPrompt, browserContinuationPrompt } from './core/browser-controller.js';
+import { executeBrowserTurn, driveChatConversation, browserDecision, browserRolloverRecoveryPrompt, browserRolloverPiPlan, browserNewChatPrompt, browserContinuationPrompt } from './core/browser-controller.js';
 import {AiosPiPlanner,validatePictlRemoteConfig,validateRemoteProjectPath} from './core/pi-planner.js';
 import {adoptConnectedConversation} from './core/chat-adoption.js';
 import {watchedBrowser,enableBrowserWatch,disableBrowserWatch} from './core/browser-watch.js';
@@ -467,7 +467,7 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
           sourceAnswer:source.lastAssistant,adopted:store.chatAdoption(id)!==null,
           chainParent:parent!==null,
           piManaged:store.getMeta(`pi.autopilot.enabled.${id}`)==='1',
-          piPlan:store.piPlan(parent??id),
+          piPlan:browserRolloverPiPlan(store,id),
         });
       });
       const promptSha256=createHash('sha256').update(prompt.trim()).digest('hex');

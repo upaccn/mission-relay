@@ -434,6 +434,16 @@ export class Store {
       if(!['READY','PAUSED'].includes(m.state)) throw new Error(`Cannot run browser turn in state ${m.state}`);
       if(m.stopRequested) throw new Error('Mission has a pending pause request; resume explicitly before another browser turn');
       if(m.turnCount>=m.maxTurns) throw new Error('Browser mission turn budget exhausted');
+      if(m.sandbox==='workspace-write'&&this.getMeta(`pi.autopilot.enabled.${id}`)==='1'&&
+        (this.getMeta('telegram.build.project')!==m.workspace||
+         this.getMeta('telegram.pi.project')!==m.workspace))
+        throw new Error('Approved PI build workspace changed or was revoked before Send');
+      // A new owner note may arrive after the child PI review but before
+      // Playwriter's asynchronous UI preflight finishes. The reservation is
+      // the final atomic boundary: fail without a Send rather than silently
+      // dispatching the stale 32-turn handoff prompt.
+      if(m.turnCount===0&&this.piChainParent(id)&&this.pendingPiOwnerDirectives(id).length)
+        throw new Error('PI successor has new owner notes; review before reserving a Send');
       if(this.getMeta(`chatgpt.browser.request.${id}.${requestKey}`)) throw new Error('Browser request key already used; never resend');
       const prior=this.chatBrowserTurn(id);
       if(prior && ['reserved','uncertain'].includes(prior.status))
@@ -731,6 +741,51 @@ export class Store {
       this.event(bound.id,'pi.chain_started',{parentId:id,
         parentAnswerSha256:plan.responseSha256});
       return bound;
+    });
+  }
+  /** A child created at the 32-turn boundary may receive new owner notes
+   * before its first browser Send. Replan from its verified parent reply,
+   * acknowledge exactly the notes PI reviewed, and persist the new decision
+   * atomically. No browser turn is credited by this planning checkpoint. */
+  commitPiChainPreflight(id:string,parentAnswerSha256:string,reviewedDirectiveIds:number[],
+    plan:Omit<PiPlan,'responseSha256'|'round'|'reviewedDirectiveIds'>):PiPlan {
+    return this.transaction(()=>{
+      const child=this.get(id),parentId=this.piChainParent(id);
+      if(child.state!=='READY'||child.turnCount!==0||child.stopRequested||
+        !parentId||this.piChainSuccessor(parentId)!==id||this.chatBrowserTurn(id))
+        throw new Error('PI chain preflight requires an unsent, active successor');
+      const parent=this.get(parentId),parentPlan=this.piPlan(parentId);
+      if(parent.stopRequested||parent.lastError||parent.turnCount!==parent.maxTurns||
+        !parentPlan||!['NEXT','HANDOFF'].includes(parentPlan.action)||
+        parentPlan.responseSha256!==parentAnswerSha256||
+        !this.hasVerifiedPiBrowserCheckpoint(parentId)||
+        this.chatBrowserTurn(parentId)?.assistantSha256!==parentAnswerSha256)
+        throw new Error('PI chain preflight requires a verified unchanged parent answer');
+      const previous=this.piPlan(id);
+      if(previous && (previous.round!==0||!['NEXT','HANDOFF'].includes(previous.action)))
+        throw new Error('PI chain preflight already reached a terminal decision');
+      const pending=this.pendingPiOwnerDirectives(id).map(x=>x.id);
+      if(!pending.length||JSON.stringify(pending)!==JSON.stringify(reviewedDirectiveIds))
+        throw new Error('PI chain preflight owner notes changed; re-plan before dispatch');
+      for(const directiveId of reviewedDirectiveIds){
+        const changed=this.db.prepare(`UPDATE pi_owner_directives SET consumed_round=0
+          WHERE mission_id=? AND id=? AND consumed_round IS NULL`).run(id,directiveId);
+        if(changed.changes!==1)throw new Error('PI chain directive acknowledgement conflict');
+      }
+      const result:PiPlan={...plan,responseSha256:parentAnswerSha256,round:0,
+        reviewedDirectiveIds:[...reviewedDirectiveIds]};
+      this.setMeta(`pi.plan.${id}`,JSON.stringify(result));
+      this.event(id,'pi.chain_preflight_decision',{action:plan.action,
+        parentId,parentAnswerSha256,notesReviewed:reviewedDirectiveIds.length,
+        nextPromptSha256:createHash('sha256').update(plan.nextPrompt).digest('hex')});
+      if(['DONE','BLOCKED'].includes(plan.action)){
+        this.update(id,child.version,{state:plan.action==='BLOCKED'?'BLOCKED':'PAUSED',
+          lastSummary:plan.summary.slice(0,1000)},'pi.chain_preflight_stopped',
+          {action:plan.action,reason:'PI revised parent continuation after new owner instructions'});
+        this.event(id,'pi.autopilot_finished',{action:plan.action,round:0,
+          summary:plan.summary,responseSha256:parentAnswerSha256});
+      }
+      return result;
     });
   }
   /** Atomic PI decision + exact owner directive acknowledgement. If another
