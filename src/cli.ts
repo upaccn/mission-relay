@@ -11,7 +11,7 @@ import { stateHome } from './core/paths.js';
 import { renderChatGPTHandoff, normalizeChatGPTUrl } from './core/chatgpt-handoff.js';
 import { connectChatPage, inspectChatPage, matchesSubmittedUserPrompt, matchesReservedPromptHash, lastVisibleUserPrompt, lastVisibleUserPromptSha256, listConnectedChatCandidates, withBrowserSession } from './plugins/chatgpt-browser.js';
 import { executeBrowserTurn, driveChatConversation, browserDecision, browserNewChatPrompt, browserContinuationPrompt } from './core/browser-controller.js';
-import {AiosPiPlanner,validatePictlRemoteConfig} from './core/pi-planner.js';
+import {AiosPiPlanner,validatePictlRemoteConfig,validateRemoteProjectPath} from './core/pi-planner.js';
 import {adoptConnectedConversation} from './core/chat-adoption.js';
 import {watchedBrowser,enableBrowserWatch,disableBrowserWatch} from './core/browser-watch.js';
 import { listBrowsers } from 'playwriter';
@@ -58,6 +58,8 @@ Commands:
   telegram-agent-workspace --workspace <dir>|--clear  Optional native executor workspace approval
   telegram-pi-config --ssh-host <alias> --project <remote-absolute-path> | --clear
                       Configure tool-free PI inference through the existing SSH connection
+  telegram-build-project --project <remote-absolute-path> | --clear
+                      Operator approval of one repository for /build (must equal configured PI project)
   telegram-identify     Inspect local /start sender IDs before owner authorization
   channel-status        Inspect durable Telegram delivery cursor and poller status (no secrets)
   create --goal <text> --accept <criterion> [--accept <criterion>...] --workspace <path>
@@ -231,6 +233,15 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       store.setMeta('telegram.pi.project',config.project);
       result={configured:true,route:config,
         note:'PI uses a fixed SSH → sudo pictl infer --stdin --json command with no tools. No credentials stored here; requires pre-authorized SSH and remote pictl.'};
+    } else if (command === 'telegram-build-project' && id === '--clear') {
+      store.setMeta('telegram.build.project','');
+      result={configured:false,note:'No future /build command may start until locally re-approved.'};
+    } else if (command === 'telegram-build-project') {
+      const project=validateRemoteProjectPath(option(flags(argv.slice(1)),'project'));
+      if(!store.getMeta('telegram.pi.sshHost')||project!==store.getMeta('telegram.pi.project'))
+        throw new Error('Build project must exactly match the configured PI remote project');
+      store.setMeta('telegram.build.project',project);
+      result={configured:true,project,note:'The owner may opt into project changes with /build. This is a ChatGPT authorization prompt, not an operating-system sandbox.'};
     } else if (command === 'telegram-identify') {
       const token=process.env.MISSION_RELAY_TELEGRAM_BOT_TOKEN;
       if(!token) throw new Error('Set MISSION_RELAY_TELEGRAM_BOT_TOKEN privately in the local process environment');

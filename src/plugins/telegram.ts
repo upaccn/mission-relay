@@ -11,7 +11,7 @@ import {watchedBrowser,nextBrowserWatchCandidate,acknowledgeBrowserWatchCandidat
   type ConnectedChatCandidate} from '../core/browser-watch.js';
 import {driveChatConversation,executeBrowserRollover,browserFreshTaskPrompt} from '../core/browser-controller.js';
 import {drivePiAutopilot,pauseFailedPiPlanning} from '../core/pi-autopilot.js';
-import {AiosPiPlanner,type PiPlanner} from '../core/pi-planner.js';
+import {AiosPiPlanner,validateRemoteProjectPath,type PiPlanner} from '../core/pi-planner.js';
 import type {Mission,MissionEvent} from '../core/types.js';
 
 export const telegramPluginManifest:PluginManifest={
@@ -479,11 +479,15 @@ export class TelegramBridge {
     }
   }
 
-  /** PI takes the planner role, but never gains browser tools or permits
-   * writes. The ChatGPT executor is still the exact pinned Chrome context. */
-  private async startPiChat(task:string,commandId:string):Promise<string> {
+  /** PI stays tool-free. An explicit /build command grants ChatGPT a single
+   * operator-approved source scope; ordinary text and /auto stay read-only. */
+  private async startPiChat(task:string,commandId:string,write=false):Promise<string> {
     const goal=task.trim();
-    if(this.activeMission)return this.queuePiOwnerText(goal,commandId);
+    if(this.activeMission){
+      if(write&&this.store.get(this.activeMission).sandbox!=='workspace-write')
+        throw new Error('A read-only PI Mission is already active; /build cannot silently upgrade it');
+      return this.queuePiOwnerText(goal,commandId);
+    }
     // A dead foreground process may have left a reserved browser Send or a
     // PI analysis checkpoint behind. Do not treat a fresh Telegram message
     // as permission to submit the old task in another new tab.
@@ -511,7 +515,11 @@ export class TelegramBridge {
     if(this.piPlanner instanceof AiosPiPlanner &&
       !this.store.getMeta('telegram.pi.sshHost'))
       throw new Error('PI coordinator not configured; use the local telegram-pi-config command');
-    browserFreshTaskPrompt(goal);
+    const approved=write?this.store.getMeta('telegram.build.project'):null;
+    if(write&&(!approved||approved!==this.store.getMeta('telegram.pi.project')))
+      throw new Error('Write-enabled PI task needs a locally approved project matching the PI route; configure telegram-build-project first');
+    const writeWorkspace=approved?validateRemoteProjectPath(approved):null;
+    browserFreshTaskPrompt(goal,writeWorkspace);
     const anchorId=this.store.getMeta('telegram.chatgpt.anchorMissionId');
     if(!anchorId)throw new Error('No approved PI ChatGPT anchor; use telegram-anchor locally');
     const url=this.store.chatLink(anchorId),browserId=this.store.chatBrowserBinding(anchorId);
@@ -530,8 +538,10 @@ export class TelegramBridge {
         if(this.store.channelDrainRequested(this.source))
           throw new Error('Telegram maintenance drain active; PI task was not created');
         const m=this.engine.create({
-          goal,acceptance:['Substantively answer the owner request with evidence within read-only permissions'],
-          workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:32,
+          goal,acceptance:[writeWorkspace?
+            'Implement the owner goal inside the approved source repository, verify changed files, tests and Git/CI evidence before claiming completion':
+            'Substantively answer the owner request with evidence within read-only permissions'],
+          workspace:writeWorkspace??'',sandbox:writeWorkspace?'workspace-write':'read-only',mode:'supervised',maxTurns:32,
           requestKey:`telegram-pi-${commandId}`,checks:[],
         });
         const linked=this.store.linkChat(m.id,url,m.version).mission;
@@ -553,7 +563,7 @@ export class TelegramBridge {
         try{await session.close();}catch{console.error('PI Playwriter session cleanup warning');}
         finally{this.activeMission=null;this.activeTask=null;}
       });
-      return `PI-coordinated ChatGPT Mission ${m.id} accepted (up to 32 read-only turns, max 8 per chat).\nPI will inspect each observed ChatGPT answer and decide whether another turn is useful.\nYou may send additional plain-text instructions while it runs; they are queued for PI.\nProgress: /status ${m.id}. Do not resend the original task.`;
+      return `PI-coordinated ChatGPT Mission ${m.id} accepted (${writeWorkspace?'workspace-write':'read-only'}, up to 32 turns, max 8 per chat).\n${writeWorkspace?`Approved source: ${writeWorkspace}\n`:''}PI reviews each complete ChatGPT answer and decides the next action.\nAdditional plain-text instructions are queued for PI. Progress: /status ${m.id}. Do not resend.`;
     }catch(error){
       try{await session.close();}catch{console.error('PI source preflight cleanup warning');}
       throw error;
@@ -660,8 +670,9 @@ export class TelegramBridge {
     if(cmd==='/help'||cmd==='/start') return [
       'Mission Relay (single authorized user)',
       '/list — latest missions',
-      'Plain text and ChatGPT: — PI plans up to 32 read-only turns, max 8 per chat',
+      'Plain text, ChatGPT: and /auto — PI plans up to 32 read-only turns, max 8 per chat',
       '/auto <task> — start PI-managed read-only ChatGPT autopilot',
+      '/build <task> — owner-authorized repository implementation in locally approved project',
       'While PI is working, send plain text to queue owner instructions for its next decision',
       '/new <task> — same as plain text, one new ChatGPT conversation',
       '/agent <task> — optional installed native executor (no vendor required)',
@@ -680,6 +691,7 @@ export class TelegramBridge {
     if(/^chatgpt\s*[:：]/i.test(clean))
       return this.startPiChat(clean.replace(/^chatgpt\s*[:：]\s*/i,''),commandId);
     if(cmd==='/auto')return this.startPiChat(clean.slice(5),commandId);
+    if(cmd==='/build')return this.startPiChat(clean.slice(6),commandId,true);
     if(cmd==='/new')return this.startFreshChat(clean.slice(4),commandId);
     if(!cmd.startsWith('/'))return this.startPiChat(clean,commandId);
     if(cmd==='/agent')return this.startAgentTask(clean.slice(6),commandId);
@@ -692,6 +704,7 @@ export class TelegramBridge {
     if(!id || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Provide a complete mission UUID');
     const m=this.engine.get(id);
     if(cmd==='/status') return [`${m.id} [${m.state}] v${m.version}`,`Turn ${m.turnCount}/${m.maxTurns}`,
+      `Mode: ${m.sandbox}${m.sandbox==='workspace-write'&&m.workspace?` (${m.workspace})`:''}`,
       `Goal: ${m.goal.slice(0,400)}`,
       ...(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'
         ?[`PI coordinator: ${this.store.piPlan(id)?.action??'analyzing / awaiting the first answer'}`,
@@ -729,7 +742,6 @@ export class TelegramBridge {
     }
     if(cmd==='/cancel') return `Mission is now ${this.engine.cancel(id,expectedVersion).state}`;
     if(cmd==='/instruct') {
-      if(m.sandbox!=='read-only') throw new Error('Remote instructions for workspace-write missions are disabled; use the local CLI');
       const instruction=words.join(' ').trim();
       if(!instruction || instruction.length>1500) throw new Error('Instruction must contain 1–1500 characters');
       if(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'){
@@ -737,6 +749,7 @@ export class TelegramBridge {
           throw new Error('PI Mission is not currently active; no instruction was queued');
         return this.queuePiOwnerText(instruction,commandId,id);
       }
+      if(m.sandbox!=='read-only') throw new Error('Remote instructions for native workspace-write missions are disabled; use the local CLI');
       return `Instruction saved (state ${this.engine.instruct(id,instruction,expectedVersion).state}).`;
     }
     if(cmd==='/continue') {

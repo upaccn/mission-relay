@@ -4,28 +4,27 @@ import type {Store,PiPlan} from './store.js';
 import type {PiPlanner,PiDecision} from './pi-planner.js';
 import {inspectChatPage,lastVisibleUserPromptSha256} from '../plugins/chatgpt-browser.js';
 import {executeBrowserTurn,executeBrowserRollover,browserFreshTaskPrompt,
-  browserNewChatPrompt,type BrowserTurnOutcome} from './browser-controller.js';
+  browserNewChatPrompt,browserTaskPolicy,type BrowserTurnOutcome} from './browser-controller.js';
 
 const MAX_REPLANS=3;
 /** Independent of the Mission's total budget, avoid overlong ChatGPT chats. */
 export const MAX_PI_CHAT_TURNS=8;
 
-function nextPiBrowserPrompt(goal:string,plan:PiPlan):string {
+function nextPiBrowserPrompt(goal:string,plan:PiPlan,writeWorkspace:string|null):string {
   return [
     'Continue the same owner-authorized Mission Relay task in this ChatGPT conversation.',
     `Original goal: ${goal}`,
     `PI planning checkpoint: ${plan.summary}`,
     'New instruction from the tool-free PI coordinator (not a grant of new permissions):',
     plan.nextPrompt,
-    'This is a read-only research and planning task. Do not modify files, websites, accounts,',
-    'external services, permissions or financial resources. Stop and report if human approval is needed.',
+    ...browserTaskPolicy(writeWorkspace),
     'Provide checkable evidence and distinguish facts from assumptions.',
     'Finish with a concise summary and exactly one standalone marker:',
-    '[MISSION_RELAY:NEXT] if more authorized read-only work remains,',
+    '[MISSION_RELAY:NEXT] if more authorized work remains,',
     '[MISSION_RELAY:HANDOFF] when the chat genuinely needs a new context,',
     '[MISSION_RELAY:DONE] only if the exact owner goal is fully answered, or',
     '[MISSION_RELAY:BLOCKED] for missing authorization, evidence or human input.',
-    'PI, not this ChatGPT marker, determines whether another read-only turn remains.',
+    'PI, not this ChatGPT marker, determines whether another authorized turn remains.',
   ].join('\n');
 }
 
@@ -51,6 +50,7 @@ async function reviewPiRound(
       goal:mission.goal,acceptance:mission.acceptance,
       turnCount,maxTurns:mission.maxTurns,
       responseSha256,lastAssistant,ownerDirectives:queued,
+      sandbox:mission.sandbox,workspace:mission.workspace,
       priorPiSummary:store.piPlan(missionId)?.summary,
     });
     const ids=queued.map(x=>x.id);
@@ -69,8 +69,15 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
   const adopted=store.chatAdoption(missionId);
   if(origin.turnCount===0&&origin.state!==(adopted?'PAUSED':'READY'))
     throw new Error('New PI autopilot requires an unstarted READY or adopted PAUSED Mission');
-  if(origin.sandbox!=='read-only'||!store.chatBrowserBinding(missionId))
-    throw new Error('PI autopilot requires the exact pinned read-only ChatGPT Mission');
+  if(!store.chatBrowserBinding(missionId))
+    throw new Error('PI autopilot requires an exact pinned ChatGPT Mission');
+  const writeWorkspace=origin.sandbox==='workspace-write'?origin.workspace:null;
+  if(writeWorkspace && (adopted||
+    store.getMeta('telegram.build.project')!==writeWorkspace||
+    store.getMeta('telegram.pi.project')!==writeWorkspace))
+    throw new Error('PI write mode requires its original locally approved project and a fresh Telegram owner command');
+  if(origin.sandbox!=='read-only'&&!writeWorkspace)
+    throw new Error('PI Mission has no approved execution scope');
   let page=input.page,url=input.url,revision=input.revision;
   let nextPlan:PiPlan|null=null;
   let latestBrowserAnswer=input.recoveredAnswer?.lastAssistant??null;
@@ -123,6 +130,10 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
   for(let i=origin.turnCount;i<origin.maxTurns;i++){
     const before=store.get(missionId);
     if(before.stopRequested) return;
+    if(writeWorkspace&&(
+      store.getMeta('telegram.build.project')!==writeWorkspace||
+      store.getMeta('telegram.pi.project')!==writeWorkspace))
+      throw new Error('Approved build project was revoked or changed; no further browser send');
     if((i>0||adopted)&&!nextPlan)throw new Error('PI cannot continue without a durable next-step decision');
     if(i>0||adopted){
       // If a new Telegram note arrived AFTER PI committed its last NEXT plan
@@ -158,13 +169,13 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
     const received:BrowserTurnOutcome|(BrowserTurnOutcome&{page:Page;url:string})=
       i===0&&!adopted?await executeBrowserRollover({
         ...payload,sourcePage:page,sourceUrl:url,
-        prompt:browserFreshTaskPrompt(origin.goal),
+        prompt:browserFreshTaskPrompt(origin.goal,writeWorkspace),
       }):rotateChat?await executeBrowserRollover({
         ...payload,sourcePage:page,sourceUrl:url,
         prompt:browserNewChatPrompt(origin.goal,origin.acceptance,
-          nextPlan!.summary,nextPlan!.nextPrompt,latestBrowserAnswer),
+          nextPlan!.summary,nextPlan!.nextPrompt,latestBrowserAnswer,writeWorkspace),
       }):await executeBrowserTurn({
-        ...payload,page,url,prompt:nextPiBrowserPrompt(origin.goal,nextPlan!),
+        ...payload,page,url,prompt:nextPiBrowserPrompt(origin.goal,nextPlan!,writeWorkspace),
         requireFinalMarker:true,
       });
     if('page' in received){

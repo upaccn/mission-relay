@@ -29,6 +29,7 @@ function rig(planner:PiPlanner){
   store.bindChatBrowser(m.id,'install:Chrome:synthetic',linked.version);
   store.setMeta('telegram.chatgpt.anchorMissionId',m.id);
   let sends=0,newTabs=0,closed=false,entered='',location='about:blank';
+  const sentPrompts:string[]=[];
   const roleLocator=(fresh:boolean)=>(selector:string)=>{
     const role=selector.includes('data-message-author-role="assistant"')?'assistant':
       selector.includes('data-message-author-role="user"')?'user':
@@ -43,7 +44,7 @@ function rig(planner:PiPlanner){
         fresh?(sends>=2?'Second synthetic complete answer\n[MISSION_RELAY:DONE]'
           :'Synthetic complete answer\n[MISSION_RELAY:DONE]'):'Anchor assistant message',
       fill:async(s:string)=>{entered=s;},
-      click:async()=>{sends++;location=DEST;},
+      click:async()=>{sentPrompts.push(entered);sends++;location=DEST;},
     };
     return obj;
   };
@@ -78,9 +79,68 @@ function rig(planner:PiPlanner){
   return {store,engine,bridge,sent,message,
     primeRecovered:(prompt:string)=>{location=DEST;entered=prompt;sends=1;},
     setUpdates:(items:TelegramUpdate[])=>{updates=items;},
-    state:()=>({sends,newTabs,closed}),
+    state:()=>({sends,newTabs,closed,sentPrompts}),
     cleanup:()=>{store.close();rmSync(dir,{recursive:true,force:true});}};
 }
+
+const APPROVED_PROJECT='/srv/ai/workspace/projects/mission-relay';
+
+test('Telegram /build refuses unapproved repository mutation without a browser send',async()=>{
+  const f=rig({decide:async()=>({action:'DONE',summary:'unused',nextPrompt:''})});
+  try{
+    f.setUpdates([f.message(960,'/build Implement source change and test it')]);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.engine.list().length,1);
+    assert.equal(f.state().sends,0);
+    assert.match(f.sent.join('\n'),/telegram-build-project/);
+  }finally{f.cleanup();}
+});
+
+test('Telegram /build coordinates two actual authorized browser turns in a scoped development mission',async()=>{
+  const contexts:PiTurnContext[]=[];
+  const f=rig({decide:async input=>{
+    contexts.push(input);
+    return input.turnCount===1
+      ?{action:'NEXT',summary:'Need tests',nextPrompt:'Run project checks and verify Git'}
+      :{action:'DONE',summary:'Evidence reviewed',nextPrompt:''};
+  }});
+  try{
+    f.store.setMeta('telegram.pi.project',APPROVED_PROJECT);
+    f.store.setMeta('telegram.build.project',APPROVED_PROJECT);
+    f.setUpdates([f.message(961,'/build Implement one repository improvement and verify it')]);
+    await f.bridge.pollOnce(0);
+    const mission=f.engine.list().find(m=>m.goal==='Implement one repository improvement and verify it');
+    assert.ok(mission);
+    assert.equal(mission.sandbox,'workspace-write');
+    assert.equal(mission.workspace,APPROVED_PROJECT);
+    for(let i=0;i<220&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(f.state().closed,true);
+    assert.equal(f.state().sends,2);
+    assert.equal(f.store.piPlan(mission.id)?.action,'DONE');
+    assert.equal(contexts.length,2);
+    assert.equal(contexts[1]?.sandbox,'workspace-write');
+    assert.equal(contexts[1]?.workspace,APPROVED_PROJECT);
+    for(const prompt of f.state().sentPrompts){
+      assert.ok(prompt.includes(APPROVED_PROJECT));
+      assert.doesNotMatch(prompt,/This is a bounded, read-only research/);
+    }
+  }finally{f.cleanup();}
+});
+
+test('Approving a build project leaves ordinary /auto read-only',async()=>{
+  const f=rig({decide:async()=>({action:'DONE',summary:'Done',nextPrompt:''})});
+  try{
+    f.store.setMeta('telegram.pi.project',APPROVED_PROJECT);
+    f.store.setMeta('telegram.build.project',APPROVED_PROJECT);
+    f.setUpdates([f.message(962,'/auto Inspect the project read-only')]);
+    await f.bridge.pollOnce(0);
+    const m=f.engine.list().find(m=>m.goal==='Inspect the project read-only');
+    assert.equal(m?.sandbox,'read-only');
+    assert.equal(m?.workspace,'');
+    for(let i=0;i<100&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(f.state().closed,true);
+  }finally{f.cleanup();}
+});
 
 test('An unsubmitted PI-ready task prevents an idle Telegram maintenance drain',()=>{
   const f=rig({decide:async()=>({action:'BLOCKED',summary:'No Send',nextPrompt:''})});

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {parsePiDecision,piDecisionPrompt,validatePictlRemoteConfig} from '../src/core/pi-planner.js';
+import {parsePiDecision,piDecisionPrompt,validatePictlRemoteConfig,validateRemoteProjectPath} from '../src/core/pi-planner.js';
 
 test('Remote PI host/project settings cannot be injected into the OpenSSH command',()=>{
   assert.deepEqual(validatePictlRemoteConfig({sshHost:'aios',project:'/srv/ai/workspace/projects/mission-relay'}),{
@@ -62,4 +62,23 @@ test('PI input is bounded for exceptionally large answers and declares omitted e
   assert.ok(prompt.includes('RESPONSE MIDDLE OMITTED'));
   assert.ok(!prompt.includes('MIDDLE_NOT_VERIFIED'));
   assert.ok(prompt.length<110000);
+});
+
+
+test('PI treats locally approved repository development as executable work',()=>{
+  const workspace='/srv/ai/workspace/projects/mission-relay';
+  assert.equal(validateRemoteProjectPath(workspace),workspace);
+  for(const bad of ['/','/srv/../etc','relative','/srv/','/tmp/$(id)'])
+    assert.throws(()=>validateRemoteProjectPath(bad));
+  const input={goal:'Implement one source fix',acceptance:['Tests pass'],
+    turnCount:1,maxTurns:32,responseSha256:'a'.repeat(64),
+    lastAssistant:'Analysis complete but no file changes yet',ownerDirectives:[]};
+  const read=piDecisionPrompt(input);
+  const write=piDecisionPrompt({...input,sandbox:'workspace-write',workspace});
+  assert.match(read,/Authorization mode: read-only/);
+  assert.match(write,/Authorization mode: workspace-write/);
+  assert.match(write,/authorized REAL development/);
+  assert.ok(write.includes(workspace));
+  assert.ok(!write.includes('No account, file, website, network or external writes'));
+  assert.throws(()=>piDecisionPrompt({...input,sandbox:'workspace-write'}),/path missing/);
 });
