@@ -194,6 +194,25 @@ test('Telegram /build refuses unapproved repository mutation without a browser s
   }finally{f.cleanup();}
 });
 
+test('Telegram /build accepts a real multi-paragraph owner request beyond the former 1500-char limit',async()=>{
+  const f=rig({decide:async()=>({action:'DONE',summary:'Observed first turn',nextPrompt:''})});
+  try{
+    f.store.setMeta('telegram.pi.project',APPROVED_PROJECT);
+    f.store.setMeta('telegram.build.project',APPROVED_PROJECT);
+    const goal='Implement the approved project and verify changes.\n'+'验'.repeat(3100);
+    f.setUpdates([f.message(996,`/build ${goal}`)]);
+    await f.bridge.pollOnce(0);
+    const mission=f.engine.list().find(m=>m.goal===goal);
+    assert.ok(mission,'The longer request must be accepted as the exact owner goal');
+    assert.equal(mission.sandbox,'workspace-write');
+    for(let i=0;i<220&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(f.state().sends,1);
+    assert.equal(f.state().closed,true);
+    assert.ok(f.state().sentPrompts[0]?.includes(goal));
+    assert.equal(f.store.piPlan(mission.id)?.action,'DONE');
+  }finally{f.cleanup();}
+});
+
 test('Telegram /build coordinates two actual authorized browser turns in a scoped development mission',async()=>{
   const contexts:PiTurnContext[]=[];
   const f=rig({decide:async input=>{

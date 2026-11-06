@@ -2,6 +2,13 @@
 
 Updated: 2026-11-06
 
+## 2026-11-06 Telegram fresh-task 1500-character rejection: source fix under qualification
+
+- A real owner `/build` request was rejected with `Fresh ChatGPT task must be 1–1500 characters`. This is Mission Relay's own `browserFreshTaskPrompt` validation, not a ChatGPT input limit. Telegram Bot API single-message text allows 4096 characters; the new bound is 4000 **goal** characters, leaving room for `/build ` and retaining the separate 1500-character PI instruction/owner-note limits.
+- The full owner goal is preserved in first-turn, new-chat and recovery prompts. Long goals combined with the 6000-character prior-answer excerpt exceeded the existing 12000-character browser Send cap, so new-chat context now budgets only the optional prior-answer excerpt, keeping exact owner goal, authorization and PI direction unchanged. Identical inputs deterministically reconstruct the exact same prompt for interrupted Send reconciliation.
+- This section initially records the AIOS source change and targeted regressions only; GitHub promotion, CI and controlled GMK activation require separate readbacks. Existing ambiguous fifth browser Send is not replayed or cleared by this fix.
+- **Source qualification passed:** Linux Node 24 TypeScript check, privacy boundary scan, full **208/208 tests** (0 failed/0 skipped), build and `git diff --check` passed. Targeted 78/78 includes a live-protocol synthetic Telegram `/build` intake of a 3100+ character owner goal and exact deterministic long-goal rollover reconstruction. These tests do not by themselves confirm a live Telegram `/build` or browser Send after deployment.
+
 ## 2026-11-06 owner-selected five-turn ChatGPT ceiling and original-chat readback (deployed, live handoff still gated)
 
 - **Owner direction:** Reduce ChatGPT conversation length to approximately five Relay-submitted turns to prevent severe Chrome slowdowns. The chosen **hard ceiling is 5 observed sends per Chat** (not five total Mission sends). The existing **32-turn per-Mission budget** and PI NEXT/HANDOFF/DONE/BLOCKED decisions remain unchanged. All execution, recovery, Telegram status and audit limits must share one `MAX_RELAY_CHAT_TURNS=5` constant, with no old standalone 8-turn fallback. A final `DONE` may still end after fewer than five turns.

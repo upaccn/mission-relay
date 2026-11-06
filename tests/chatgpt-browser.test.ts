@@ -17,11 +17,38 @@ import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUr
   submitChatTurn,submitNewChatTurn,
   DEFAULT_BROWSER_TURN_TIMEOUT_MS,MAX_BROWSER_TURN_TIMEOUT_MS,type BrowserSession} from '../src/plugins/chatgpt-browser.js';
 import {executeBrowserTurn,driveChatConversation,browserDecision,browserFreshTaskPrompt,
+  MAX_FRESH_CHAT_TASK_CHARS,
   browserNewChatPrompt,browserRolloverRecoveryPrompt,browserContinuationPrompt} from '../src/core/browser-controller.js';
 import type {AgentAdapter} from '../src/core/types.js';
 import type {Page} from 'playwriter';
 
 const SHA=createHash('sha256').update('test browser prompt').digest('hex');
+
+test('new owner task accepts a Telegram-length /build goal but rejects oversize goals',()=>{
+  const workspace='/srv/ai/workspace/projects/mission-relay';
+  const goal='中'.repeat(MAX_FRESH_CHAT_TASK_CHARS);
+  const prompt=browserFreshTaskPrompt(goal,workspace);
+  assert.ok(prompt.includes(goal));
+  assert.ok(prompt.includes(workspace));
+  assert.ok(prompt.length<=12000);
+  assert.throws(()=>browserFreshTaskPrompt(goal+'中',workspace),/1–4000 characters/);
+  assert.throws(()=>browserFreshTaskPrompt(' \n ',workspace),/1–4000 characters/);
+});
+
+test('five-turn handoff retains long owner goal, PI direction and exact recovery prompt within browser budget',()=>{
+  const workspace='/srv/ai/workspace/projects/mission-relay';
+  const goal='Long owner task: '+'中'.repeat(MAX_FRESH_CHAT_TASK_CHARS-17);
+  const acceptance=['Implement the approved project, run tests and verify Git/CI'];
+  const summary='s'.repeat(1000),instruction='n'.repeat(1500),answer='a'.repeat(6000);
+  const prompt=browserNewChatPrompt(goal,acceptance,summary,instruction,answer,workspace);
+  assert.ok(prompt.length<=12000,`Handoff overflowed: ${prompt.length}`);
+  assert.ok(prompt.includes(goal));
+  assert.ok(prompt.includes(instruction));
+  assert.ok(prompt.includes(workspace));
+  assert.ok(prompt.includes('[MIDDLE OMITTED]'));
+  assert.equal(prompt,browserNewChatPrompt(goal,acceptance,summary,instruction,answer,workspace),
+    'Rollover retry must recreate the exact same user prompt');
+});
 
 test('ChatGPT accessible user transcript decorations are excluded from prompt identity hashing',()=>{
   const submitted='Complete this read-only task.\nInclude two separate phases.';
