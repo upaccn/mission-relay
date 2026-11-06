@@ -85,6 +85,46 @@ function rig(planner:PiPlanner){
 
 const APPROVED_PROJECT='/srv/ai/workspace/projects/mission-relay';
 
+test('Telegram restart poll materializes one missing PI successor and reports continuity without sending',async()=>{
+  const f=rig({decide:async()=>({action:'DONE',summary:'Not invoked',nextPrompt:''})});
+  try{
+    const m=f.store.create({goal:'Continue an unfinished long task',
+      acceptance:['Verify the final stage'],workspace:'',sandbox:'read-only',
+      mode:'supervised',maxTurns:32,checks:[],requestKey:'telegram-prior-chain'});
+    const linked=f.store.linkChat(m.id,SRC,m.version).mission;
+    const bound=f.store.bindChatBrowser(m.id,'install:Chrome:synthetic',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
+    f.store.update(m.id,bound.version,{state:'PAUSED',turnCount:31},'test.prior_rounds');
+    const current=f.store.get(m.id);
+    const sha=(s:string)=>createHash('sha256').update(s).digest('hex');
+    f.store.reserveChatBrowserTurn(m.id,current.version,'prior-chain-32',sha('Anchor user message'));
+    f.store.finishChatBrowserTurn(m.id,'prior-chain-32',{kind:'observed',
+      assistantSha256:sha('Anchor assistant message'),summary:'Unfinished',
+      telegramBatch:{terminal:true,flowSignal:'NEXT',piManaged:true}});
+    f.store.commitPiPlan(m.id,sha('Anchor assistant message'),[],{
+      action:'NEXT',summary:'One stage remains',nextPrompt:'Check final stage'});
+    f.store.setMeta('telegram.notifications_cursor',String(f.store.maxEventId()-1));
+    f.setUpdates([]);
+    await f.bridge.pollOnce(0);
+    const childId=f.store.piChainSuccessor(m.id);
+    assert.ok(childId);
+    assert.equal(f.store.get(childId).state,'READY');
+    assert.equal(f.state().sends,0);
+    assert.equal(f.store.events(m.id).filter(e=>e.type==='pi.chain_successor').length,1);
+    assert.match(f.sent.join('\n'),new RegExp(`Automatically continued as Mission ${childId}`));
+    await f.bridge.pollOnce(0);
+    assert.equal(f.store.piChainSuccessor(m.id),childId);
+    assert.equal(f.store.events(m.id).filter(e=>e.type==='pi.chain_successor').length,1);
+    assert.equal(f.state().sends,0);
+    f.setUpdates([f.message(975,`/pause ${m.id}`)]);
+    await f.bridge.pollOnce(0);
+    assert.equal(f.store.get(m.id).stopRequested,true);
+    assert.equal(f.store.get(childId).stopRequested,true);
+    assert.equal(f.store.get(childId).state,'PAUSED');
+    assert.equal(f.state().sends,0);
+  }finally{f.cleanup();}
+});
+
 test('Telegram /build refuses unapproved repository mutation without a browser send',async()=>{
   const f=rig({decide:async()=>({action:'DONE',summary:'unused',nextPrompt:''})});
   try{

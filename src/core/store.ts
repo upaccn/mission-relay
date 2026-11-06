@@ -660,6 +660,75 @@ export class Store {
     const value=this.getMeta(`pi.plan.${id}`);
     return value?JSON.parse(value) as PiPlan:null;
   }
+  piChainParent(id:string):string|null {
+    this.raw(id);
+    return this.getMeta(`pi.chain.parent.${id}`);
+  }
+  piChainSuccessor(id:string):string|null {
+    this.raw(id);
+    return this.getMeta(`pi.chain.successor.${id}`);
+  }
+  /** Emergency stop propagates through every already-created successor so a
+   * pause on the original Telegram Mission cannot leave a READY child that
+   * automatically sends after the operator's stop. In-flight Sends still
+   * require their normal observation/reconciliation, never cancellation by
+   * guessing whether the remote side effect happened. */
+  pausePiChain(id:string):Mission {
+    return this.transaction(()=>{
+      const visited=new Set<string>();
+      let cursor:string|null=id;
+      while(cursor){
+        if(visited.has(cursor))throw new Error('PI Mission lineage cycle detected');
+        visited.add(cursor);
+        const m=this.get(cursor);
+        if(this.getMeta(`pi.autopilot.enabled.${cursor}`)!=='1')
+          throw new Error('PI chain pause requires an enabled PI Mission');
+        if(!m.stopRequested&&!['COMPLETED','CANCELLED','BLOCKED'].includes(m.state))
+          this.update(cursor,m.version,{
+            stopRequested:true,...(m.state==='READY'?{state:'PAUSED' as const}:{})},
+            'mission.pause_requested',{reason:'Owner paused PI Mission lineage'});
+        cursor=this.piChainSuccessor(cursor);
+      }
+      return this.get(id);
+    });
+  }
+  /** A PI NEXT/HANDOFF at the 32-turn boundary is a durable continuation
+   * intent, not a completed owner goal. Create exactly one new READY Mission
+   * bound to the same approved Chrome profile, without submitting anything.
+   * The next controller pass independently verifies the parent's browser
+   * checkpoint before the child's first new-tab Send. */
+  createPiSuccessor(id:string):Mission|null {
+    return this.transaction(()=>{
+      const parent=this.get(id),plan=this.piPlan(id);
+      if(this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
+        parent.turnCount!==parent.maxTurns||parent.state!=='PAUSED'||
+        parent.stopRequested||parent.lastError||plan?.round!==parent.maxTurns||
+        !['NEXT','HANDOFF'].includes(plan.action))return null;
+      if(!this.hasVerifiedPiBrowserCheckpoint(id)||
+        this.chatBrowserTurn(id)?.assistantSha256!==plan.responseSha256||
+        !this.events(id).some(e=>e.type==='pi.autopilot_finished'&&
+          (e.payload as {action?:string}).action==='LIMIT'))return null;
+      const existing=this.piChainSuccessor(id);
+      if(existing)return this.get(existing);
+      if(this.channelDrainRequested('telegram'))return null;
+      const url=this.chatLink(id),browserId=this.chatBrowserBinding(id);
+      if(!url||!browserId)throw new Error('PI successor requires a verified Chrome source binding');
+      const child=this.create({goal:parent.goal,acceptance:parent.acceptance,
+        workspace:parent.workspace,sandbox:parent.sandbox,mode:parent.mode,
+        maxTurns:parent.maxTurns,checks:parent.checks,
+        requestKey:`pi-chain-${id}`});
+      const linked=this.linkChat(child.id,url,child.version).mission;
+      const bound=this.bindChatBrowser(child.id,browserId,linked.version).mission;
+      this.setMeta(`pi.autopilot.enabled.${bound.id}`,'1');
+      this.setMeta(`pi.chain.parent.${bound.id}`,id);
+      this.setMeta(`pi.chain.successor.${id}`,bound.id);
+      this.event(id,'pi.chain_successor',{successorId:bound.id,round:parent.maxTurns,
+        parentAnswerSha256:plan.responseSha256});
+      this.event(bound.id,'pi.chain_started',{parentId:id,
+        parentAnswerSha256:plan.responseSha256});
+      return bound;
+    });
+  }
   /** Atomic PI decision + exact owner directive acknowledgement. If another
    * note arrived during inference, re-plan; never silently drop it. */
   commitPiPlan(id:string,expectedSha:string,reviewedDirectiveIds:number[],

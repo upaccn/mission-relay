@@ -81,6 +81,68 @@ function fixture() {
     cleanup:()=>{store.close();rmSync(dir,{recursive:true,force:true});}};
 }
 
+test('exhausted 32-turn PI NEXT creates one durable successor and continues in a fresh chat',async()=>{
+  const f=fixture();try{
+    const parent=f.store.create({goal:'Complete a multi-mission source audit',
+      acceptance:['Verify every outstanding requirement'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:32,checks:[],requestKey:'chain-root'});
+    const linked=f.store.linkChat(parent.id,SOURCE,parent.version).mission;
+    const bound=f.store.bindChatBrowser(parent.id,'install:Chrome:fake',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${parent.id}`,'1');
+    const nearLimit=f.store.update(parent.id,bound.version,{state:'PAUSED',turnCount:31},
+      'test.prior_verified_rounds');
+    const originalPrompt='Prior anchor user turn', originalAnswer='Prior anchor response';
+    const sha=(s:string)=>createHash('sha256').update(s).digest('hex');
+    f.store.reserveChatBrowserTurn(parent.id,nearLimit.version,'chain-original-32',sha(originalPrompt));
+    f.store.finishChatBrowserTurn(parent.id,'chain-original-32',{
+      kind:'observed',assistantSha256:sha(originalAnswer),summary:originalAnswer,
+      telegramBatch:{terminal:true,flowSignal:'NEXT',piManaged:true},
+    });
+    f.store.commitPiPlan(parent.id,sha(originalAnswer),[],{
+      action:'NEXT',summary:'31 checks done; final requirement remains',
+      nextPrompt:'Verify final requirement and report evidence',
+    });
+    assert.equal(f.store.events(parent.id).find(e=>e.type==='pi.autopilot_finished')?.payload &&
+      (f.store.events(parent.id).find(e=>e.type==='pi.autopilot_finished')!.payload as {action:string}).action,'LIMIT');
+    const child=f.store.createPiSuccessor(parent.id);
+    assert.ok(child);
+    assert.equal(f.store.createPiSuccessor(parent.id)?.id,child.id);
+    assert.equal(f.store.piChainParent(child.id),parent.id);
+    assert.equal(f.store.piChainSuccessor(parent.id),child.id);
+    assert.equal(child.turnCount,0);
+    assert.equal(child.state,'READY');
+    assert.equal(f.store.chatLink(child.id),SOURCE);
+    assert.equal(f.store.events(parent.id).filter(e=>e.type==='pi.chain_successor').length,1);
+    const planner:PiPlanner={decide:async context=>{
+      assert.equal(context.turnCount,1);
+      assert.match(context.lastAssistant,/First NetBox research answer/);
+      return {action:'DONE',summary:'Independently checked last requirement',nextPrompt:''};
+    }};
+    const changedSource={...f.anchor,locator:(selector:string)=>{
+      const original=f.anchor.locator(selector);
+      if(!selector.includes('data-message-author-role="user"'))return original;
+      const fake:any={...original,innerText:async()=> 'Another user changed the parent conversation'};
+      fake.last=()=>fake;fake.first=()=>fake;
+      return fake;
+    }} as unknown as Page;
+    await assert.rejects(drivePiAutopilot({store:f.store,planner,missionId:child.id,
+      revision:child.version,requestPrefix:child.requestKey,page:changedSource,url:SOURCE}),
+    /parent ChatGPT conversation changed/);
+    assert.equal(f.results().sends,0);
+    assert.equal(f.store.chatBrowserTurn(child.id),null);
+    await drivePiAutopilot({store:f.store,planner,missionId:child.id,
+      revision:child.version,requestPrefix:child.requestKey,page:f.anchor,url:SOURCE});
+    assert.equal(f.results().sends,1);
+    assert.equal(f.results().newPages,1);
+    assert.equal(f.store.get(child.id).turnCount,1);
+    assert.equal(f.store.chatLink(child.id),DEST);
+    assert.equal(f.store.piPlan(child.id)?.action,'DONE');
+    assert.equal(f.store.events(child.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(f.store.events(child.id).filter(e=>e.type==='pi.autopilot_finished').length,1);
+    assert.equal(f.store.createPiSuccessor(child.id),null);
+  }finally{f.cleanup();}
+});
+
 test('a PI NEXT after eight observed sends starts exactly one fresh chat and preserves its Mission',async()=>{
   const f=fixture();try{
     const created=f.store.create({goal:'Long-running staged evidence audit',

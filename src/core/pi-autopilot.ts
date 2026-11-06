@@ -67,6 +67,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
   const {store,planner,missionId,requestPrefix}=input;
   const origin=store.get(missionId);
   const adopted=store.chatAdoption(missionId);
+  const chainParentId=store.piChainParent(missionId);
   if(origin.turnCount===0&&origin.state!==(adopted?'PAUSED':'READY'))
     throw new Error('New PI autopilot requires an unstarted READY or adopted PAUSED Mission');
   if(!store.chatBrowserBinding(missionId))
@@ -81,6 +82,28 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
   let page=input.page,url=input.url,revision=input.revision;
   let nextPlan:PiPlan|null=null;
   let latestBrowserAnswer=input.recoveredAnswer?.lastAssistant??null;
+  if(chainParentId&&origin.turnCount===0){
+    const parent=store.get(chainParentId),plan=store.piPlan(chainParentId);
+    const receipt=store.chatBrowserTurn(chainParentId);
+    if(parent.turnCount!==parent.maxTurns||parent.stopRequested||parent.lastError||
+      plan?.round!==parent.maxTurns||!['NEXT','HANDOFF'].includes(plan.action)||
+      !receipt||!store.hasVerifiedPiBrowserCheckpoint(chainParentId)||
+      receipt.assistantSha256!==plan.responseSha256||
+      store.piChainSuccessor(chainParentId)!==missionId)
+      throw new Error('PI chain source is not a verified, continuing 32-turn checkpoint');
+    const first=await inspectChatPage(page,url);
+    if(first.generating||!first.composerReady||
+      await lastVisibleUserPromptSha256(page)!==receipt.promptSha256||
+      createHash('sha256').update(first.lastAssistant).digest('hex')!==receipt.assistantSha256)
+      throw new Error('PI chain refused: parent ChatGPT conversation changed');
+    await new Promise(resolve=>setTimeout(resolve,3000));
+    const second=await inspectChatPage(page,url);
+    if(second.generating||second.lastAssistant!==first.lastAssistant||
+      await lastVisibleUserPromptSha256(page)!==receipt.promptSha256)
+      throw new Error('PI chain refused: parent browser evidence did not remain stable');
+    latestBrowserAnswer=second.lastAssistant;
+    nextPlan=plan;
+  }
   if(adopted&&origin.turnCount===0){
     // This is a real *human* ChatGPT reply, not a dispatched Relay turn.
     // Verify both last visible messages, including a stability read, before
@@ -134,7 +157,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
       store.getMeta('telegram.build.project')!==writeWorkspace||
       store.getMeta('telegram.pi.project')!==writeWorkspace))
       throw new Error('Approved build project was revoked or changed; no further browser send');
-    if((i>0||adopted)&&!nextPlan)throw new Error('PI cannot continue without a durable next-step decision');
+    if((i>0||adopted||chainParentId)&&!nextPlan)throw new Error('PI cannot continue without a durable next-step decision');
     if(i>0||adopted){
       // If a new Telegram note arrived AFTER PI committed its last NEXT plan
       // but BEFORE browser dispatch, PI must review it before any new Send.
@@ -167,7 +190,11 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
     const rotateChat=nextPlan?.action==='HANDOFF'||
       ((i>0||adopted)&&store.piChatObservedTurns(missionId)>=MAX_PI_CHAT_TURNS);
     const received:BrowserTurnOutcome|(BrowserTurnOutcome&{page:Page;url:string})=
-      i===0&&!adopted?await executeBrowserRollover({
+      i===0&&chainParentId?await executeBrowserRollover({
+        ...payload,sourcePage:page,sourceUrl:url,
+        prompt:browserNewChatPrompt(origin.goal,origin.acceptance,
+          nextPlan!.summary,nextPlan!.nextPrompt,latestBrowserAnswer,writeWorkspace),
+      }):i===0&&!adopted?await executeBrowserRollover({
         ...payload,sourcePage:page,sourceUrl:url,
         prompt:browserFreshTaskPrompt(origin.goal,writeWorkspace),
       }):rotateChat?await executeBrowserRollover({
@@ -198,6 +225,13 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
  * Telegram. Do not equate that failure with an uncertain browser Send. */
 export function pauseFailedPiPlanning(store:Store,id:string,reason:string):void {
   const current=store.get(id);
+  if(current.state==='READY'&&store.piChainParent(id)&&!current.stopRequested){
+    // A new chained Mission has not reserved a Send. Never silently retry a
+    // changed/unavailable parent tab or repeatedly launch child conversations.
+    store.update(id,current.version,{state:'BLOCKED',lastError:reason.slice(0,500)},
+      'pi.autopilot_interrupted',{reason:reason.slice(0,500)});
+    return;
+  }
   if(current.state==='PAUSED'&&!current.stopRequested && !store.piPlan(id)?.action?.match(/DONE|BLOCKED/)){
     store.update(id,current.version,{lastError:reason.slice(0,500)},
       'pi.autopilot_interrupted',{reason:reason.slice(0,500)});

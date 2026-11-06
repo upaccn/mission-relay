@@ -214,6 +214,8 @@ export class TelegramBridge {
   async pollOnce(timeoutSeconds=8):Promise<void> {
     if(this.store.getMeta('telegram.notifications_cursor')===null)
       this.store.setMeta('telegram.notifications_cursor',String(this.store.maxEventId()));
+    if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
+      for(const m of this.engine.list())this.store.createPiSuccessor(m.id);
     await this.deliverPendingReplies();
     await this.deliverNotifications();
     const offset=Number(this.store.getMeta('telegram.inbox_cursor') ?? '0');
@@ -374,12 +376,19 @@ export class TelegramBridge {
 
   private async recoverObservedPiCheckpoint():Promise<void> {
     if(this.activeMission||this.activeTask||this.store.channelDrainRequested(this.source))return;
+    // Reconstruct a missing successor after a controller crash between PI's
+    // durable LIMIT decision and the child creation. The SQLite request key
+    // makes this step idempotent; it does not send a browser message.
+    for(const prior of this.engine.list())this.store.createPiSuccessor(prior.id);
     const candidates=this.engine.list().filter(m=>
       this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1' &&
-      m.state==='PAUSED'&&!m.stopRequested&&!m.lastError&&
-      (m.turnCount>0||this.store.chatAdoption(m.id)!==null)&&
+      !m.stopRequested&&!m.lastError&&
+      ((m.state==='READY'&&m.turnCount===0&&!!this.store.piChainParent(m.id))||
+      (m.state==='PAUSED'&&
+        (m.turnCount>0||this.store.chatAdoption(m.id)!==null)))&&
       m.turnCount<=m.maxTurns&&
-      (this.store.piPlan(m.id)?.round!==m.turnCount||
+      (this.store.piChainParent(m.id)&&m.turnCount===0||
+       this.store.piPlan(m.id)?.round!==m.turnCount||
         (m.turnCount<m.maxTurns&&
          ['NEXT','HANDOFF'].includes(this.store.piPlan(m.id)?.action??''))));
     if(!candidates.length)return;
@@ -395,10 +404,10 @@ export class TelegramBridge {
     try{
       session=await this.browserConnector(url,{browserId});
       const snapshot=await inspectChatPage(session.page,url);
-      const previous=this.store.chatBrowserTurn(m.id);
+      const previous=this.store.chatBrowserTurn(this.store.piChainParent(m.id)??m.id);
       const lastUserHash=await lastVisibleUserPromptSha256(session.page);
       if(!snapshot.composerReady||snapshot.generating||
-        !previous||!this.store.hasVerifiedPiBrowserCheckpoint(m.id)||
+        !previous||!this.store.hasVerifiedPiBrowserCheckpoint(this.store.piChainParent(m.id)??m.id)||
         createHash('sha256').update(snapshot.lastAssistant).digest('hex')!==previous.assistantSha256||
         lastUserHash!==previous.promptSha256)
         throw new Error('PI recovery refused: current Chrome user/assistant turns differ from the last durable receipt');
@@ -463,7 +472,12 @@ export class TelegramBridge {
           this.store.setMeta('telegram.notifications_cursor',String(cursor));
           continue;
         }
-        const body=event.type==='pi.decision'
+        const successor=event.type==='pi.autopilot_finished'
+          ?this.store.piChainSuccessor(event.missionId):null;
+        const body=successor&&
+          (event.payload as {action?:unknown})?.action==='LIMIT'
+          ?`PI Mission ${event.missionId} reached ${this.store.get(event.missionId).maxTurns} turns; the owner goal remains open.\nAutomatically continued as Mission ${successor}.\nStatus: /status ${successor}`
+          :event.type==='pi.decision'
           ?formatPiProgress(this.store.get(event.missionId),event)
           :event.type==='pi.autopilot_finished'||event.type==='pi.autopilot_interrupted'
           ?formatPiNotification(this.store.get(event.missionId),event)
@@ -670,7 +684,7 @@ export class TelegramBridge {
     if(cmd==='/help'||cmd==='/start') return [
       'Mission Relay (single authorized user)',
       '/list — latest missions',
-      'Plain text, ChatGPT: and /auto — PI plans up to 32 read-only turns, max 8 per chat',
+      'Plain text, ChatGPT: and /auto — PI plans 32 read-only turns per Mission, max 8 per chat, with verified successor Missions',
       '/auto <task> — start PI-managed read-only ChatGPT autopilot',
       '/build <task> — owner-authorized repository implementation in locally approved project',
       'While PI is working, send plain text to queue owner instructions for its next decision',
@@ -709,6 +723,8 @@ export class TelegramBridge {
       ...(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'
         ?[`PI coordinator: ${this.store.piPlan(id)?.action??'analyzing / awaiting the first answer'}`,
           `Pending owner instructions: ${this.store.pendingPiOwnerDirectives(id).length}`]:[]),
+      ...(this.store.piChainParent(id)?[`Previous Mission: ${this.store.piChainParent(id)}`]:[]),
+      ...(this.store.piChainSuccessor(id)?[`Continued as: ${this.store.piChainSuccessor(id)}`]:[]),
       ...(m.lastError?[`Last controller error: ${compactTelegramText(m.lastError,250)}`]:[]),
       `Last summary: ${(m.lastSummary ?? 'none').slice(0,1000)}`].join('\n');
     if(cmd==='/handoff') {
@@ -720,11 +736,9 @@ export class TelegramBridge {
     // A safety stop must not fail because executor progress increments the revision.
     if(cmd==='/pause') {
       if(words.length) throw new Error('Use /pause <mission-id> without a revision');
-      if(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'&&m.state==='PAUSED'
-        &&!m.stopRequested){
-        this.store.update(id,m.version,{stopRequested:true},'mission.pause_requested',
-          {reason:'Owner stopped PI before another ChatGPT turn'});
-        return 'PI pause recorded. No new browser Send will be submitted.';
+      if(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'){
+        this.store.pausePiChain(id);
+        return 'PI chain pause recorded. No further browser Send will be submitted after any in-flight response is reconciled.';
       }
       return `Pause recorded: ${this.engine.pause(id).state}`;
     }
