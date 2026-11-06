@@ -363,6 +363,54 @@ test('a PI NEXT after five observed sends starts exactly one fresh chat and pres
   }finally{f.cleanup();}
 });
 
+test('five-to-six PI rollover rechecks the exact source after its initial DOM preflight and before reserving a Send',async()=>{
+  const f=fixture();try{
+    const m=f.store.create({goal:'Verify safe rollover at five turns',
+      acceptance:['Never append a sixth Send to a changed conversation'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:7,checks:[],requestKey:'pi-race-five'});
+    const linked=f.store.linkChat(m.id,SOURCE,m.version).mission;
+    const bound=f.store.bindChatBrowser(m.id,'install:Chrome:fake',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
+    const answer='First NetBox research answer\n[MISSION_RELAY:DONE]';
+    const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
+    for(let round=1;round<=5;round++){
+      const request=`pi-race-five-${round}`;
+      f.store.reserveChatBrowserTurn(m.id,f.store.get(m.id).version,
+        request,sha('Previously submitted user prompt'),
+        round===1?{newConversation:true}:{});
+      f.store.finishChatBrowserTurn(m.id,request,{kind:'observed',
+        assistantSha256:sha(answer),summary:answer,
+        ...(round===1?{newChatUrl:DEST}:{})});
+      f.store.commitPiPlan(m.id,sha(answer),[],{
+        action:'NEXT',summary:`Verified stage ${round}`,
+        nextPrompt:'Check the remaining evidence'});
+    }
+    assert.equal(f.store.piChatObservedTurns(m.id),5);
+    f.primeRecovered();
+    let assistantReads=0;
+    const source={...f.fresh,locator:(selector:string)=>{
+      const original=f.fresh.locator(selector);
+      if(!selector.includes('data-message-author-role="assistant"'))return original;
+      const changed:any={...original,innerText:async()=>
+        ++assistantReads===1?answer:'An unrelated assistant response appeared'};
+      changed.first=()=>changed;changed.last=()=>changed;
+      return changed;
+    }} as unknown as Page;
+    await assert.rejects(()=>drivePiAutopilot({store:f.store,planner:{decide:async()=>{
+      throw new Error('PI must not run before the changed source is rejected');
+    }},missionId:m.id,revision:f.store.get(m.id).version,
+      requestPrefix:'pi-race-five',page:source,url:DEST,
+      recoveredAnswer:{responseSha256:sha(answer),lastAssistant:answer}}),
+    /Source ChatGPT history changed before new-tab Send reservation/);
+    assert.equal(assistantReads,2,'The rollover must inspect the source again');
+    assert.equal(f.results().sends,0);
+    assert.equal(f.results().newPages,0);
+    assert.equal(f.store.get(m.id).turnCount,5);
+    assert.equal(f.store.chatBrowserTurn(m.id)?.status,'observed');
+    assert.equal(f.store.events(m.id).filter(e=>e.type==='chatgpt.browser_reserved').length,5);
+  }finally{f.cleanup();}
+});
+
 test('after a crash at five observed turns, PI recovers the exact checkpoint and sends the sixth only in a new chat',async()=>{
   const f=fixture();try{
     const created=f.store.create({goal:'Long-running recovery at the five-turn boundary',

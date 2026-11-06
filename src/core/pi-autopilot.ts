@@ -223,6 +223,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
   }
   for(let i=origin.turnCount;i<origin.maxTurns;i++){
     const before=store.get(missionId);
+    let exactSource:{promptSha256:string;assistantSha256:string}|undefined;
     if(before.stopRequested) return;
     if(writeWorkspace&&(
       store.getMeta('telegram.build.project')!==writeWorkspace||
@@ -254,6 +255,11 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
         createHash('sha256').update(snapshot.lastAssistant).digest('hex')!==nextPlan!.responseSha256||
         userSha!==previous.promptSha256)
         throw new Error('PI next browser Send refused: visible ChatGPT history differs from the last observed receipt');
+      // The source can change AGAIN after this read, while the rollover
+      // prompt is being constructed. Recheck both exact hashes at the final
+      // pre-reservation boundary, including for automatic 5→6 rotation.
+      exactSource={promptSha256:previous.promptSha256,
+        assistantSha256:previous.assistantSha256!};
     }
     const requestKey=`${requestPrefix}-${i+1}`;
     const payload={store,missionId,revision,requestKey,
@@ -273,6 +279,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
         ...payload,sourcePage:page,sourceUrl:url,
         prompt:browserNewChatPrompt(origin.goal,origin.acceptance,
           nextPlan!.summary,nextPlan!.nextPrompt,latestBrowserAnswer,writeWorkspace),
+        expectedSource:exactSource,
       }):await executeBrowserTurn({
         ...payload,page,url,prompt:nextPiBrowserPrompt(origin.goal,nextPlan!,writeWorkspace),
         requireFinalMarker:true,
