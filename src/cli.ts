@@ -7,6 +7,7 @@ import { statSync, readFileSync } from 'node:fs';
 import { Engine } from './core/engine.js';
 import { Store } from './core/store.js';
 import {inspectPiEvidence,inspectPiChainEvidence} from './core/pi-evidence.js';
+import {inspectBrowserBinding} from './core/browser-binding-diagnostic.js';
 import {LazyExecutor,registerExecutorPlugin,registeredExecutorPlugins,defaultExecutorId,
   setDefaultExecutor,removeExecutorPlugin,executorPreflight} from './core/executor-plugins.js';
 import { TelegramBridge, TelegramHttpTransport } from './plugins/telegram.js';
@@ -86,6 +87,7 @@ Commands:
   handoff <id>          Show existing ChatGPT chat link and manual continuation prompt
   browser-list          List connected Playwriter browser IDs (no profile emails)
   browser-candidates --browser-id <approved Chrome ID>   Read-only connected ChatGPT URL inventory
+  browser-binding-health <mission-id>  Read-only exact-tab/last-prompt diagnostic (no Send, no raw URL)
   browser-watch --browser-id <approved Chrome ID>  Opt in to new Playwriter-connected ChatGPT chats
   browser-watch --clear  Stop discovery and prevent watched Missions from further turns
   browser-watch-status   Show the pinned profile and whether discovery is enabled
@@ -121,7 +123,7 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
   const [command, id, ...rest] = argv;
   if (!command || ['help','--help','-h'].includes(command)) return help();
   const home = stateHome();
-  const diagnostic=['pi-health','pi-evidence','pi-chain-evidence'].includes(command);
+  const diagnostic=['pi-health','pi-evidence','pi-chain-evidence','browser-binding-health'].includes(command);
   const store = new Store(join(home,'missions.sqlite'),{readOnly:diagnostic});
   const engine = new Engine(store,new LazyExecutor(store));
   try {
@@ -353,6 +355,21 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       result={scope:'selected Playwriter-connected Chrome profile',
         warning:'Only enabled tabs are observable; inventory does not require or imply any tab-group membership.',
         candidates:await listConnectedChatCandidates(option(flags(argv.slice(1)),'browser-id'))};
+    } else if (command === 'browser-binding-health' && id) {
+      if(!/^[0-9a-f-]{36}$/i.test(id)||rest.length)
+        throw new Error('Provide exactly one bound Mission UUID');
+      const linkedUrl=store.chatLink(id),browserId=store.chatBrowserBinding(id);
+      if(!linkedUrl||!browserId)
+        throw new Error('Mission has no existing linked ChatGPT URL and approved Chrome binding');
+      // Never bootstrap a tab, open the linked conversation, change SQLite,
+      // click Send/Retry or interpret candidate assistant response text.
+      const candidates=await listConnectedChatCandidates(browserId,linkedUrl);
+      const mission=store.get(id);
+      result=inspectBrowserBinding({
+        missionId:id,missionState:mission.state,turnCount:mission.turnCount,
+        linkedUrl,receipt:store.chatBrowserTurn(id),
+        enabledChatCandidates:candidates,
+      });
     }
     else if (command === 'show' && id) result = engine.get(id);
     else if (command === 'events' && id) result = store.events(id);

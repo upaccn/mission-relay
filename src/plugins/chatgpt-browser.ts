@@ -90,11 +90,14 @@ export interface BrowserSession {
 /** Read-only inventory of Playwriter-enabled ChatGPT tabs in ONE pinned
  * Chrome profile. Tab groups do not restrict this inventory. An unenabled
  * Chrome tab is NOT exposed by the public Playwriter extension API. */
-export async function listConnectedChatCandidates(browserId:string):Promise<Array<{
+export async function listConnectedChatCandidates(browserId:string,
+  onlyReadUserPromptForUrl?:string):Promise<Array<{
   url:string;urlSha256:string;duplicate:boolean;lastUserSha256:string|null
 }>> {
   if(!/^[A-Za-z0-9:._-]{1,200}$/.test(browserId))
     throw new Error('A pinned Chrome browser ID is required');
+  const selectedUrl=onlyReadUserPromptForUrl?
+    normalizeChatGPTUrl(onlyReadUserPromptForUrl):null;
   process.env.PLAYWRITER_AUTO_ENABLE='false';
   process.env.PLAYWRITER_TELEMETRY ??='0';
   const {connectViaExtension}=await import('playwriter');
@@ -108,7 +111,11 @@ export async function listConnectedChatCandidates(browserId:string):Promise<Arra
     for(const {page,url} of pages) {
       // One malformed/changed page cannot prevent discovery of other tabs.
       let lastUserSha256:string|null=null;
-      try {lastUserSha256=await lastVisibleUserPromptSha256(page);}
+      // Exact-binding diagnostics have no reason to inspect user messages
+      // in OTHER enabled chats. Existing owner-approved watch discovery still
+      // uses the original all-candidates behavior without this filter.
+      try {if(!selectedUrl||selectedUrl===url)
+        lastUserSha256=await lastVisibleUserPromptSha256(page);}
       catch {/* A loading, inaccessible or unsupported DOM is not adoptable. */}
       result.push({url,urlSha256:createHash('sha256').update(url).digest('hex'),
         duplicate:pages.filter(item=>item.url===url).length!==1,lastUserSha256});

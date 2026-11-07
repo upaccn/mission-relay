@@ -7,6 +7,14 @@ the **durably verified previous assistant SHA-256** (not only a transient
 post-click DOM baseline); never credit unchanged prior bytes unless a distinct,
 non-fallback assistant message identity proves an intentional identical reply.
 Keep the original one-Send reservation, timeout and fail-closed semantics.
+The local read-only `browser-binding-health <mission-id>` diagnostic must
+compare only hashed exact pinned ChatGPT URLs against Playwriter-enabled tab
+inventory. Read the last-user prompt SHA only from the single matching tab,
+never from unrelated connected chats. A missing match cannot distinguish
+closed, navigated or extension-disabled tabs. It must not imply an original
+Send was never submitted, open/enable tabs, click Send/Retry, write SQLite or
+authorize reconciliation. An exact visible prompt alone never confirms the
+complete assistant answer.
 Previously misattributed production rounds require separate, append-only,
 independently evidenced correction; a source fix does not repair old SQLite.
 The local `browser-correct-attribution` recovery requires the pinned original
