@@ -1,5 +1,30 @@
 # Mission Relay
 
+**32-to-successor physical-tab retirement:** Once the parent reaches a
+verified 32-turn LIMIT with PI NEXT/HANDOFF, the child opens a fresh Chat
+and commits its first full answer. Before retiring the predecessor's
+Relay-created tab, the controller must match both the parent's original
+new-tab Chrome Target fingerprint (SHA-256 of pinned Playwriter 0.9
+Page _targetId, with read-only page-scoped CDP as a fail-closed fallback)
+and the current source Page's Target fingerprint, plus stable original
+user/assistant message hashes, reciprocal parent-child Mission links,
+matching Chrome profiles and absence of other Mission bindings. The tab
+is closed only after these checks, and a hashed, append-only child event
+links the parent migration, child migration and observed answer. No raw
+Target ID is retained. Unsupported CDP, a browser restart that changes
+the target, pre-upgrade parent migrations without fingerprints, or a
+changed/ambiguous tab leave the old tab open; no URL-only fallback and no
+automatic historical cleanup. Same-controller in-memory Page ownership
+still permits ordinary five-turn cleanup. Browser close readbacks are
+controller-reported and must not be confused with independent physical
+Chrome inventory.
+The real GMK browser was independently checked: Page _guid changed between
+two fresh Playwriter extension connections, while _targetId remained stable.
+That pinned-version integration is preferable to the current GMK
+newCDPSession implementation, which returned a protocol error for
+Target.attachToBrowserTarget. If Playwriter changes its internal _targetId
+interface, unverified source tabs are retained, not closed by matching URL.
+
 **Non-mutating pending-answer inspection:** The optional
 `browser-pending-evidence <mission-id>` opens SQLite in read-only mode and
 inspects only the currently bound, uniquely Playwriter-connected ChatGPT

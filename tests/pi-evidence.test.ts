@@ -504,7 +504,8 @@ const createVerifiedSuccessor=(store:Store)=>{
       sha(`private submitted prompt ${round}`),
       migration.newChatUrl?{newConversation:true}:{});
     store.finishChatBrowserTurn(parentId,requestKey,{kind:'observed',
-      assistantSha256:sha(answer),summary:answer,...migration});
+      assistantSha256:sha(answer),summary:answer,...migration,
+      ...(migration.newChatUrl?{newChatTargetSha256:sha(`parent-target-${round}`)}:{})});
     store.commitPiPlan(parentId,sha(answer),[],{
       action:'NEXT',summary:`Stage ${round} confirmed, more remains`,
       nextPrompt:'Verify remaining stages'});
@@ -553,6 +554,85 @@ test('real store lineage reader verifies 32-to-1 successor creation, inherited s
     assert.ok(!output.includes('Owner-approved chained evidence review'));
     assert.ok(!output.includes('Private stage'));
     assert.ok(!output.includes('chatgpt.com'));
+  }finally{f.cleanup();}
+});
+
+test('32-to-1 successor closes only a proven Relay-created predecessor, with a linked immutable receipt',()=>{
+  const f=fixture();try{
+    const {parentId,childId}=createVerifiedSuccessor(f.store);
+    const priorUrl=f.store.chatLink(parentId)!;
+    const fingerprint=sha('parent-target-31');
+    assert.notEqual(priorUrl,source,'Parent is no longer the owner-linked anchor');
+    assert.equal(f.store.canRetirePiChainSourceTab(childId,priorUrl,second,fingerprint),false,
+      'Never close a parent tab before its successor answer has committed');
+    const request='verified-child-new-tab';
+    f.store.reserveChatBrowserTurn(childId,f.store.get(childId).version,request,
+      sha('Child continued task'),{newConversation:true});
+    f.store.finishChatBrowserTurn(childId,request,{kind:'observed',
+      assistantSha256:sha('Child full reply'),summary:'Child full reply',
+      newChatUrl:second});
+    assert.equal(f.store.canRetirePiChainSourceTab(childId,source,second,fingerprint),false,
+      'Original human anchor is not an owned predecessor page');
+    assert.equal(f.store.canRetirePiChainSourceTab(childId,priorUrl,second,sha('different physical tab')),false,
+      'Same URL in a different physical Chrome tab must not authorize deletion');
+    assert.equal(f.store.canRetirePiChainSourceTab(childId,priorUrl,second,null),false,
+      'An unsupported CDP identity cannot be treated as confirmed ownership');
+    assert.equal(f.store.canRetirePiChainSourceTab(childId,priorUrl,second,fingerprint),true);
+    f.store.recordPiChainSourceTabRetired(childId,priorUrl,second,fingerprint);
+    assert.throws(()=>f.store.recordPiChainSourceTabRetired(childId,priorUrl,second,fingerprint),
+      /provenance was not verified/,'Do not mint duplicate physical-close receipts');
+    const report=inspectPiChainEvidence(f.store,childId);
+    assert.equal(report.chainConsistent,true,report.violations.join(','));
+    const one=report.missions[1]!.tabRetirementReceipts;
+    assert.equal(one.length,1);
+    assert.equal(one[0]!.parentId,parentId);
+    assert.equal(one[0]!.retiredUrlSha256,sha(priorUrl));
+    assert.equal(one[0]!.sourceTabTargetSha256,fingerprint);
+    assert.equal(one[0]!.activeUrlSha256,sha(second));
+    assert.equal(JSON.stringify(report).includes('chatgpt.com'),false);
+    const receipt=f.store.events(childId).find(e=>e.type==='chatgpt.browser_tab_retired')!;
+    const tampered={...(receipt.payload as object),parentMigrationEventId:987654};
+    f.store.db.prepare('UPDATE events SET payload_json=? WHERE id=?')
+      .run(JSON.stringify(tampered),receipt.id);
+    const invalid=inspectPiChainEvidence(f.store,childId);
+    assert.equal(invalid.chainConsistent,false);
+    assert.ok(invalid.violations.includes('mission_event_ledger_inconsistent'));
+    assert.ok(invalid.missions[1]!.violations.includes('invalid_browser_tab_retirement'));
+  }finally{f.cleanup();}
+});
+
+test('32-to-1 predecessor tab is never retired while an unrelated Mission also claims the source',()=>{
+  const f=fixture();try{
+    const {parentId,childId}=createVerifiedSuccessor(f.store);
+    const shared=f.store.chatLink(parentId)!;
+    const fingerprint=sha('parent-target-31');
+    f.store.reserveChatBrowserTurn(childId,f.store.get(childId).version,
+      'valid-child-first',sha('Child new Chat'),{newConversation:true});
+    f.store.finishChatBrowserTurn(childId,'valid-child-first',{kind:'observed',
+      assistantSha256:sha('Child first answer'),summary:'Child first answer',
+      newChatUrl:second});
+    assert.equal(f.store.canRetirePiChainSourceTab(childId,shared,second,fingerprint),true);
+    const unrelated=f.store.create({goal:'Separate human-owned investigation',
+      acceptance:['Keep original conversation'],workspace:'',sandbox:'read-only',
+      mode:'supervised',maxTurns:1,checks:[],requestKey:'shared-human-link'});
+    f.store.linkChat(unrelated.id,shared,unrelated.version);
+    assert.equal(f.store.canRetirePiChainSourceTab(childId,shared,second,fingerprint),false);
+    assert.throws(()=>f.store.recordPiChainSourceTabRetired(childId,shared,second,fingerprint),
+      /provenance was not verified/);
+    assert.equal(f.store.events(childId).filter(e=>e.type==='chatgpt.browser_tab_retired').length,0);
+  }finally{f.cleanup();}
+});
+
+test('invalid Chrome Target identity in an existing migration is an audit violation',()=>{
+  const f=fixture();try{
+    observe(f.store,f.id,1,first);
+    const migrated=f.store.events(f.id).find(e=>e.type==='chatgpt.browser_migrated')!;
+    f.store.db.prepare('UPDATE events SET payload_json=? WHERE id=?')
+      .run(JSON.stringify({...migrated.payload,newTabTargetSha256:'unsafe target id'}),migrated.id);
+    const report=inspectPiEvidence(f.store,f.id);
+    assert.equal(report.ledgerConsistent,false);
+    assert.ok(report.violations.includes('invalid_migration_target_sha256'));
+    assert.equal(report.tabRetirementReceipts.length,0);
   }finally{f.cleanup();}
 });
 

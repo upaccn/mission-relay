@@ -702,6 +702,9 @@ export class Store {
     consumedInstruction?:string|null;
     /** Only on a successfully observed new-tab rollover, commit the new URL in this same transaction. */
     newChatUrl?:string;
+    /** Optional SHA-256 of the new Chrome Target ID, never the raw ID.
+     * This is physical tab provenance, not authorization to close it. */
+    newChatTargetSha256?:string;
     /** Telegram multi-turn continuation emits only its final summary, never intermediate turns. */
     telegramBatch?:{terminal:boolean;flowSignal:'NEXT'|'DONE'|'BLOCKED'|'HANDOFF'|'UNMARKED';
       piManaged?:boolean};
@@ -715,6 +718,9 @@ export class Store {
       const observed=outcome.kind==='observed';
       const previousUrl=this.chatLink(id);
       const migratedUrl=outcome.newChatUrl?normalizeChatGPTUrl(outcome.newChatUrl):null;
+      if(outcome.newChatTargetSha256&&
+        (!migratedUrl||!observed||!/^[0-9a-f]{64}$/.test(outcome.newChatTargetSha256)))
+        throw new Error('New ChatGPT target fingerprint requires an observed migration and valid SHA-256');
       if(observed&&record.newConversation&&!migratedUrl)
         throw new Error('New-conversation Send cannot be credited without a distinct observed ChatGPT URL');
       if(migratedUrl && (!observed||!previousUrl||migratedUrl===previousUrl))
@@ -736,6 +742,7 @@ export class Store {
         this.event(id,'chatgpt.browser_migrated',{
           previousUrlSha256:createHash('sha256').update(previousUrl!).digest('hex'),
           newUrlSha256:createHash('sha256').update(migratedUrl).digest('hex'),
+          ...(outcome.newChatTargetSha256?{newTabTargetSha256:outcome.newChatTargetSha256}:{}),
           requestKey,
         });
       }
@@ -799,6 +806,78 @@ export class Store {
         retiredUrlSha256:oldSha,activeUrlSha256:newSha,
         migrationEventId:migration.id,observedEventId:observed.id,
       });
+    });
+  }
+  /** Strict cross-Mission custody proof. The 32-turn predecessor must have
+   * created the precise source Chat itself, ended with a verified continuing
+   * decision, and have no active/pending Send. The successor must have
+   * independently committed its FIRST new-chat answer. Presence in SQLite
+   * does not prove a physical tab is closed or authorize unattended cleanup. */
+  private verifiedChainTabSource(childId:string,oldUrl:string,newUrl:string,
+    sourceTargetSha256:string|null):{
+    parentId:string;parentMigrationEventId:number;parentAnswerSha256:string;
+    migrationEventId:number;observedEventId:number;
+    retiredUrlSha256:string;activeUrlSha256:string;sourceTabTargetSha256:string;
+  }|null {
+    if(!sourceTargetSha256||!/^[0-9a-f]{64}$/.test(sourceTargetSha256))return null;
+    const parentId=this.piChainParent(childId);
+    if(!parentId||this.piChainSuccessor(parentId)!==childId)return null;
+    const previous=normalizeChatGPTUrl(oldUrl),active=normalizeChatGPTUrl(newUrl);
+    const retiredUrlSha256=createHash('sha256').update(previous).digest('hex');
+    const activeUrlSha256=createHash('sha256').update(active).digest('hex');
+    const parent=this.get(parentId),child=this.get(childId);
+    const parentReceipt=this.chatBrowserTurn(parentId),childReceipt=this.chatBrowserTurn(childId);
+    const plan=this.piPlan(parentId);
+    if(previous===active||this.chatLink(parentId)!==previous||
+      this.chatLink(childId)!==active||
+      this.chatBrowserBinding(parentId)!==this.chatBrowserBinding(childId)||
+      parent.turnCount!==32||parent.maxTurns!==32||parent.state!=='PAUSED'||
+      parent.ownerPid!==null||parent.stopRequested||parent.lastError||
+      !parentReceipt||parentReceipt.status!=='observed'||
+      !plan||plan.round!==32||!['NEXT','HANDOFF'].includes(plan.action)||
+      parentReceipt.assistantSha256!==plan.responseSha256||
+      !this.hasVerifiedPiBrowserCheckpoint(parentId)||
+      child.turnCount<1||!childReceipt||childReceipt.status!=='observed')
+      return null;
+    // A different Mission binding means the same page may be user-owned or
+    // part of an unrelated in-flight chain. Never touch that tab.
+    if(this.list().some(m=>m.id!==childId&&m.id!==parentId&&this.chatLink(m.id)===previous))
+      return null;
+    const pe=this.events(parentId),ce=this.events(childId);
+    const parentOrigin=pe.filter(e=>e.type==='chatgpt.browser_migrated'&&
+      (e.payload as {newUrlSha256?:string}).newUrlSha256===retiredUrlSha256).at(-1);
+    const limit=pe.find(e=>e.type==='pi.autopilot_finished'&&
+      (e.payload as {action?:string;round?:number}).action==='LIMIT'&&
+      (e.payload as {round?:number}).round===32);
+    const migrated=ce.find(e=>e.type==='chatgpt.browser_migrated');
+    const p=migrated?.payload as {requestKey?:string;previousUrlSha256?:string;
+      newUrlSha256?:string}|undefined;
+    const observed=ce.find(e=>e.type==='chatgpt.browser_observed'&&e.id>(migrated?.id??Infinity)&&
+      (e.payload as {requestKey?:string}).requestKey===p?.requestKey);
+    if(!parentOrigin||!limit||!migrated||!observed||
+      (parentOrigin.payload as {newTabTargetSha256?:string}).newTabTargetSha256!==sourceTargetSha256||
+      (observed.payload as {round?:number}).round!==1||
+      p?.previousUrlSha256!==retiredUrlSha256||p.newUrlSha256!==activeUrlSha256||
+      ce.some(e=>e.type==='chatgpt.browser_tab_retired'&&
+        (e.payload as {retiredUrlSha256?:string}).retiredUrlSha256===retiredUrlSha256))
+      return null;
+    return {parentId,parentMigrationEventId:parentOrigin.id,
+      parentAnswerSha256:plan.responseSha256,migrationEventId:migrated.id,
+      observedEventId:observed.id,retiredUrlSha256,activeUrlSha256,
+      sourceTabTargetSha256:sourceTargetSha256};
+  }
+  canRetirePiChainSourceTab(childId:string,oldUrl:string,newUrl:string,
+    sourceTargetSha256:string|null):boolean {
+    return this.verifiedChainTabSource(childId,oldUrl,newUrl,sourceTargetSha256)!==null;
+  }
+  /** Called only AFTER the executing controller reads Page.isClosed()=true.
+   * Both Mission lineages are checked again atomically. Never backfill. */
+  recordPiChainSourceTabRetired(childId:string,oldUrl:string,newUrl:string,
+    sourceTargetSha256:string|null):void {
+    this.transaction(()=>{
+      const evidence=this.verifiedChainTabSource(childId,oldUrl,newUrl,sourceTargetSha256);
+      if(!evidence)throw new Error('Cross-Mission tab retirement provenance was not verified');
+      this.event(childId,'chatgpt.browser_tab_retired',evidence);
     });
   }
   /** Commit the Mission state, browser record, conversation lock and both audit

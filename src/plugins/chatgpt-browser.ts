@@ -54,6 +54,38 @@ export async function lastVisibleUserPromptSha256(page:Page):Promise<string|null
   return last===null?null:createHash('sha256').update(last).digest('hex');
 }
 
+/** A read-only Chrome Target fingerprint for EXACT physical tab custody.
+ * A ChatGPT URL is not a tab identity: an owner can reopen the same URL in a
+ * different tab. Pinned Playwriter 0.9 exposes the physical Chrome target on
+ * its Page as _targetId; this was independently observed stable across two
+ * GMK extension connections, unlike the transient Playwright _guid. Use a
+ * public page-scoped CDP read only if that local Playwriter implementation
+ * supports it. The private field is not assumed to exist in future versions.
+ * Never persist or expose raw target IDs; on unsupported/changed sessions
+ * return null so cross-Mission cleanup fails closed. Same-loop object-owned
+ * cleanup does not depend on this optional extension capability. */
+export async function chatTabTargetSha256(page:Page):Promise<string|null>{
+  const valid=(id:unknown):id is string=>
+    typeof id==='string'&&/^[A-Za-z0-9_.:-]{8,256}$/.test(id);
+  // No CDP debugger reattachment is needed for normal Playwriter 0.9 pages.
+  // This internal read is a pinned-version integration, not a general API.
+  const direct=(page as Page&{_targetId?:unknown})._targetId;
+  if(valid(direct))return createHash('sha256').update(direct).digest('hex');
+  let session:Awaited<ReturnType<ReturnType<Page['context']>['newCDPSession']>>|null=null;
+  try{
+    session=await page.context().newCDPSession(page);
+    const result=await session.send('Target.getTargetInfo') as
+      {targetInfo?:{targetId?:unknown}};
+    const id=result?.targetInfo?.targetId;
+    return valid(id)
+      ?createHash('sha256').update(id).digest('hex'):null;
+  }catch{
+    return null;
+  }finally{
+    if(session)try{await session.detach();}catch{/* read-only diagnostic unavailable */ }
+  }
+}
+
 /** Exact correlation for a pending Send. A later PI/owner prompt may quote
  * the complete earlier prompt; substring containment would misattribute the
  * later assistant answer to the earlier Send. */

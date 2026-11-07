@@ -1,5 +1,21 @@
 # Mission Relay contributor instructions
 
+32-to-successor Chat retirement: do not treat a matching ChatGPT URL as
+physical tab ownership. A successor may close its predecessor's tab ONLY
+after its own first new Chat URL + complete answer were committed and the
+predecessor has a verified 32-turn LIMIT/PI NEXT or HANDOFF. Require the
+parent's original Relay-created migration event to include a SHA-256 of
+the physical Chrome Target ID, and require a fresh Page read of the same
+stable target identity via pinned Playwriter 0.9 _targetId (or supported
+page-scoped CDP) to match that hash. Double-read the predecessor's full user/assistant
+exchange and reject generating, changed, stale or shared Mission bindings.
+Only then close that exact Page object and check isClosed() before writing
+an append-only cross-Mission retirement receipt. Never close user-owned,
+reopened-same-URL, unconfirmed, or extension-disabled tabs. No physical
+fingerprint (including legacy pre-upgrade events or Target identity unavailable) means
+NO cleanup. A receipt is still controller-reported, not independent Chrome
+inventory proof; do not backfill from a URL or a model claim.
+
 For an original-conversation pending browser Send, the read-only
 browser-pending-evidence diagnostic may inspect one uniquely connected,
 already-authorized ChatGPT tab twice and return only the original reservation

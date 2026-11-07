@@ -3,7 +3,7 @@ import {createHash} from 'node:crypto';
 import {withReadOnlyDeadline} from './read-only-deadline.js';
 import type {Page} from 'playwriter';
 import type {Store,PiPlan} from './store.js';
-import {inspectChatPage,lastVisibleUserPromptSha256,submitChatTurn,submitNewChatTurn,MAX_BROWSER_TURN_TIMEOUT_MS} from '../plugins/chatgpt-browser.js';
+import {inspectChatPage,lastVisibleUserPromptSha256,chatTabTargetSha256,submitChatTurn,submitNewChatTurn,MAX_BROWSER_TURN_TIMEOUT_MS} from '../plugins/chatgpt-browser.js';
 import {validateRemoteProjectPath} from './pi-planner.js';
 
 // One Telegram message has a 4096-character limit; leave room for "/build ".
@@ -66,7 +66,10 @@ export async function executeBrowserTurn(input:{
 
 export type BrowserDecision='NEXT'|'DONE'|'BLOCKED'|'HANDOFF'|'UNMARKED';
 
-/** Only a page returned by a successful Relay new-tab Send may be retired.
+/** Only a proven Relay-created page may be retired. The normal same-loop
+ * caller retains its own Page; PI chain cleanup separately verifies the
+ * predecessor Mission's original creation and unchanged source DOM BEFORE
+ * calling this bounded close. Never trust a SQLite URL alone for that.
  * Do not close the owner's original/attached tab, a navigated tab, or the
  * currently active destination. The new response and URL must already have
  * committed to SQLite before the caller invokes this best-effort cleanup. */
@@ -305,6 +308,10 @@ export async function executeBrowserRollover(input:{
   try {
     const page=await input.sourcePage.context().newPage();
     const {url,receipt}=await submitNewChatTurn(page,prompt,input.timeoutMs);
+    // Optional physical tab proof; failure cannot reclassify an already
+    // observed external Send as uncertain or block its SQLite settlement.
+    const newChatTargetSha256=await withReadOnlyDeadline(
+      chatTabTargetSha256(page),5000).catch(()=>null);
     const assistantSha256=createHash('sha256').update(receipt.lastAssistant).digest('hex');
     const flow=browserDecision(receipt.lastAssistant);
     const terminal=input.telegramBatch?.lastAuthorizedTurn||
@@ -312,6 +319,7 @@ export async function executeBrowserRollover(input:{
     const m=store.finishChatBrowserTurn(missionId,requestKey,{kind:'observed',
       assistantSha256,summary:receipt.lastAssistant.slice(-1000),
       consumedInstruction:input.consumedInstruction,newChatUrl:url,
+      ...(newChatTargetSha256?{newChatTargetSha256}:{}),
       ...(input.telegramBatch?{telegramBatch:{terminal,flowSignal:flow,
         piManaged:input.telegramBatch.piManaged}}:{})});
     return {missionId,requestKey,state:m.state,revision:m.version,turnCount:m.turnCount,

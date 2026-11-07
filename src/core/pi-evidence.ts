@@ -7,7 +7,9 @@ type EvidencePayload = {requestKey?:unknown;round?:unknown;assistantSha256?:unkn
   previousUrlSha256?:unknown;newUrlSha256?:unknown;promptSha256?:unknown;
   observedEventId?:unknown;decisionEventId?:unknown;originalAssistantSha256?:unknown;
   correctionEventId?:unknown;retiredUrlSha256?:unknown;activeUrlSha256?:unknown;
-  migrationEventId?:unknown};
+  migrationEventId?:unknown;parentId?:unknown;parentMigrationEventId?:unknown;
+  parentAnswerSha256?:unknown;newTabTargetSha256?:unknown;
+  sourceTabTargetSha256?:unknown};
 export interface PiRoundEvidence {
   round:number;observedEventId:number;observedAt:string;
   observation:'normal'|'recovered-turn'|'recovered-new-chat';
@@ -43,6 +45,8 @@ export interface PiEvidenceReport {
   tabRetirementReceipts:Array<{
     eventId:number;migrationEventId:number;observationEventId:number;
     retiredUrlSha256:string;activeUrlSha256:string;
+    parentId?:string;parentMigrationEventId?:number;
+    sourceTabTargetSha256?:string;
   }>;
   /** Same response bytes on distinct rounds is suspicious, not proof of error. */
   repeatedAnswerCandidates:number[];
@@ -120,6 +124,8 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
         typeof p.newUrlSha256!=='string'||!SHA.test(p.newUrlSha256)||
         p.previousUrlSha256===p.newUrlSha256)
         warn('invalid_migration_url_sha256');
+      if(p.newTabTargetSha256!==undefined&&!SHA.test(String(p.newTabTargetSha256)))
+        warn('invalid_migration_target_sha256');
       if(lastDestinationUrlSha256&&p.previousUrlSha256!==lastDestinationUrlSha256)
         warn('migration_source_url_discontinuity');
       if(typeof p.newUrlSha256==='string'&&SHA.test(p.newUrlSha256))
@@ -185,14 +191,40 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     if(e.type==='chatgpt.browser_tab_retired'){
       const earlier=events.filter(x=>x.id<e.id);
       const migration=earlier.filter(x=>x.type==='chatgpt.browser_migrated').at(-1);
-      const source=earlier.some(x=>x.id<(migration?.id??0)&&
-        x.type==='chatgpt.browser_migrated'&&
-        payload(x).newUrlSha256===p.retiredUrlSha256);
+      const crossMission=p.parentId!==undefined;
+      let source=false;
+      if(crossMission&&typeof p.parentId==='string'&&
+        store.piChainParent(id)===p.parentId&&store.piChainSuccessor(p.parentId)===id){
+        const parent=store.get(p.parentId),pe=store.events(p.parentId);
+        const parentMigration=pe.find(x=>x.id===p.parentMigrationEventId&&
+          x.type==='chatgpt.browser_migrated');
+        const ending=pe.find(x=>x.type==='pi.autopilot_finished'&&
+          payload(x).action==='LIMIT'&&payload(x).round===32&&
+          payload(x).responseSha256===p.parentAnswerSha256);
+        const final=pe.find(x=>x.type==='pi.decision'&&
+          payload(x).round===32&&
+          payload(x).responseSha256===p.parentAnswerSha256&&
+          ['NEXT','HANDOFF'].includes(String(payload(x).action)));
+        source=Boolean(parent.turnCount===32&&parent.maxTurns===32&&
+          parentMigration&&ending&&final&&
+          payload(parentMigration).newUrlSha256===p.retiredUrlSha256&&
+          SHA.test(String(p.sourceTabTargetSha256))&&
+          payload(parentMigration).newTabTargetSha256===p.sourceTabTargetSha256&&
+          earlier.some(x=>x.type==='pi.chain_started'&&
+            payload(x).parentId===p.parentId));
+      }else if(!crossMission){
+        source=earlier.some(x=>x.id<(migration?.id??0)&&
+          x.type==='chatgpt.browser_migrated'&&
+          payload(x).newUrlSha256===p.retiredUrlSha256);
+      }
       const reply=earlier.find(x=>x.id>=(migration?.id??Number.MAX_SAFE_INTEGER)&&
         x.type==='chatgpt.browser_observed'&&
         payload(x).requestKey===payload(migration!).requestKey);
       if(!SHA.test(String(p.retiredUrlSha256))||!SHA.test(String(p.activeUrlSha256))||
         p.retiredUrlSha256===p.activeUrlSha256||!migration||!source||!reply||
+        (crossMission&&(
+          !SHA.test(String(p.parentAnswerSha256))||
+          payload(reply).round!==1))||
         p.migrationEventId!==migration.id||p.observedEventId!==reply.id||
         payload(migration).previousUrlSha256!==p.retiredUrlSha256||
         payload(migration).newUrlSha256!==p.activeUrlSha256||
@@ -202,6 +234,9 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
         eventId:e.id,migrationEventId:migration.id,observationEventId:reply.id,
         retiredUrlSha256:p.retiredUrlSha256 as string,
         activeUrlSha256:p.activeUrlSha256 as string,
+        ...(crossMission?{parentId:p.parentId as string,
+          parentMigrationEventId:p.parentMigrationEventId as number,
+          sourceTabTargetSha256:p.sourceTabTargetSha256 as string}:{}),
       });
     }
     if(!hasOwn(observationTypes,e.type))continue;

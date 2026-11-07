@@ -8,6 +8,7 @@ import {Store} from '../src/core/store.js';
 import {Engine} from '../src/core/engine.js';
 import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUrl,
   bootstrapMissingChatAnchor,
+  chatTabTargetSha256,
   tolerateRolloverNavigation,rolloverUrlClass,newChatBootstrapDelayMs,
   shouldReloadBlankNewChat,reloadBlankDirectNewChat,isFreshResponseLoadFailure,
   canonicalVisibleUserPrompt,matchesSubmittedUserPrompt,matchesReservedPromptHash,isNewAssistantReply,
@@ -27,6 +28,42 @@ import type {AgentAdapter} from '../src/core/types.js';
 import type {Page} from 'playwriter';
 
 const SHA=createHash('sha256').update('test browser prompt').digest('hex');
+
+test('physical Chrome tab identity is hashed, read-only and unavailable on unsupported CDP',async()=>{
+  const target='1234567890ABCDEF1234567890ABCDEF';
+  let privateLookupCDPCalls=0;
+  const privatePage={_targetId:target,context:()=>({newCDPSession:async()=>{
+    privateLookupCDPCalls++;
+    throw new Error('Unexpected session attach');
+  }})} as unknown as Page;
+  assert.equal(await chatTabTargetSha256(privatePage),
+    createHash('sha256').update(target).digest('hex'));
+  assert.equal(privateLookupCDPCalls,0,
+    'Pinned Playwriter physical Target ID does not require CDP debugger reattachment');
+  let reads=0,detaches=0;
+  const page={context:()=>({newCDPSession:async()=>({
+    send:async(method:string)=>{
+      assert.equal(method,'Target.getTargetInfo');
+      reads++;
+      return {targetInfo:{targetId:target}};
+    },detach:async()=>{detaches++;},
+  })})} as unknown as Page;
+  const hashed=await chatTabTargetSha256(page);
+  assert.equal(hashed,createHash('sha256').update(target).digest('hex'));
+  assert.equal(reads,1);
+  assert.equal(detaches,1);
+  assert.ok(!hashed?.includes(target),'Never expose raw browser target identity');
+  const unsupported={context:()=>({newCDPSession:async()=>{
+    throw new Error('CDP extension unavailable');
+  }})} as unknown as Page;
+  assert.equal(await chatTabTargetSha256(unsupported),null);
+  const invalid={context:()=>({newCDPSession:async()=>({
+    send:async()=>({targetInfo:{targetId:'invalid ID with spaces'}}),
+    detach:async()=>{detaches++;},
+  })})} as unknown as Page;
+  assert.equal(await chatTabTargetSha256(invalid),null);
+  assert.equal(detaches,2,'Even invalid CDP reads must detach their session');
+});
 
 test('coordinator-only heading and third-person owner boilerplate are omitted from executor prompts',()=>{
   const goal='Deliver a verified release.\n这是所有者明确授权的 workspace-write 任务。\nThe owner authorized real code implementation for this task.\n【执行与自治规则】\nPI decides all orchestration.\nFive sends max.\n【v1.0 核心交付】\nImplement the feature and test it.';
@@ -1004,7 +1041,10 @@ class RelayOwnedIntermediatePage extends SyntheticNewChatPage {
   context(){return {newPage:async()=>{
     if(!this.nextPage)throw new Error('Synthetic next tab not configured');
     return this.nextPage;
-  }};}
+  },newCDPSession:async()=>({
+    send:async()=>({targetInfo:{targetId:'ABCDEFABCDEFABCDEFABCDEFABCDEF12'}}),
+    detach:async()=>{},
+  })};}
 }
 class DistinctLastNewChatPage extends RelayOwnedIntermediatePage {
   override url(){
@@ -1040,6 +1080,12 @@ test('a verified second rollover retires only its prior Relay-owned tab, never t
       assert.equal(destination.sends,1);
       assert.equal(f.store.chatLink(f.linked.id),destination.url());
       assert.equal(f.store.events(f.linked.id).filter(e=>e.type==='chatgpt.browser_migrated').length,2);
+      const firstMigration=f.store.events(f.linked.id)
+        .find(e=>e.type==='chatgpt.browser_migrated')!.payload as
+        {newTabTargetSha256?:string};
+      assert.equal(firstMigration.newTabTargetSha256,
+        createHash('sha256').update('ABCDEFABCDEFABCDEFABCDEFABCDEF12').digest('hex'),
+        'New-tab physical identity is committed with its observed URL, never as raw Target ID');
       const retirements=f.store.events(f.linked.id).filter(e=>e.type==='chatgpt.browser_tab_retired');
       assert.equal(retirements.length,failClose?0:1,
         'Only a positive owned-Page closed readback may append a retirement receipt');

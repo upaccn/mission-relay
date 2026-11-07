@@ -1,5 +1,54 @@
 # Mission Relay project state
 
+## 2026-11-07 32-to-successor old-tab custody hardening (AIOS source only)
+
+- Independently re-read clean AIOS/GitHub main
+  `542cc9d0dfc43466e0375a30382116298299db01`; GitHub Actions
+  `42351474047` for that exact SHA completed successfully on Windows,
+  Ubuntu and macOS.
+- Read-only GMK `pi-health`/SQLite ledger: `#357` original ninth-round
+  browser reservation, `#358` complete observed answer SHA-256
+  `48eff91e80892e1a503b9d60501acad5bc83028dd8e44e3c026bd614c0d18eef`,
+  `#359` verified PI NEXT; new round-ten request `#360` was reserved
+  on healthy Worker PID 31756. Exactly nine observed turns across two
+  Chats, no PI ledger violations; GMK HEAD still `66925b1`.
+  Maintenance checker Exit 3; no worker restart, pull, Chrome close or
+  replay performed.
+- Source gap identified: the old-tab ownership Page pointer is reset
+  when PI creates the 32-to-successor Mission, so ordinary same-loop
+  retirement cannot close that prior Relay-created tab. Added
+  cross-Mission source provenance and post-child-answer cleanup, with a
+  mandatory physical Chrome Target SHA-256 stored on new-tab migrations
+  and independently re-read before closing the exact page. Parent
+  LIMIT/PI answer and two source message digests, exclusive Mission
+  binding, destination migration, observed child answer, browser
+  fingerprint and isClosed() are mandatory. Append-only child retirement
+  events link the parent migration and child event IDs. No raw URLs or
+  Target IDs are saved in these retirement events.
+- Historic migrations on the currently deployed GMK do not have physical
+  Target fingerprints. No retroactive old-tag cleanup is authorized for
+  them; future live acceptance needs a safely deployed version and a
+  newly recorded Relay-created page. The new implementation and tests
+  are **not** proof of a live 32-to-successor production rollover.
+- Real GMK read-only Playwriter capability probe: target information using
+  page-scoped newCDPSession failed in the current extension bridge
+  (Target.attachToBrowserTarget unsupported); ordinary page.evaluate worked,
+  and two separate extension connections showed the transient Page _guid
+  changed while Playwriter 0.9 Page _targetId remained stable for the exact
+  original anchor tab. The implementation now hashes the verified
+  _targetId directly, using page-scoped CDP only if supported; neither raw
+  IDs nor tab URLs are persisted in retirement receipts. If unavailable or
+  changed, skip the close rather than fall back to URL matching. This
+  read-only probe did not close, navigate or modify any Chrome tab.
+- After the pinned-version fingerprint fix, Linux Node 24 passed
+  `npm run check`, `npm run privacy-check`, `npm run build`,
+  `git diff --check` and the **complete 282-test suite**:
+  **279 passed, 0 failed, 3 Windows-only skips**.
+  Cross-Mission browser cleanup and forged/shared-tab refusal were tested
+  with synthetic page objects and SQLite, while the physical _targetId
+  stability was separately checked read-only against GMK Chrome.
+  This is still not a production close receipt or a 32-to-1 live rollover.
+
 ## 2026-11-07 readonly in-flight browser answer candidate
 
 - Independently verified clean AIOS and remote GitHub main at

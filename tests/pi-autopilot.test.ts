@@ -14,6 +14,7 @@ import type {PiPlanner,PiTurnContext} from '../src/core/pi-planner.js';
 const SOURCE='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
 const DEST='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174001';
 const DEST2='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174002';
+const CHROME_SOURCE_TARGET_ID='1234567890ABCDEF1234567890ABCDEF';
 
 test('initial and new-chat PI prompts admit all four completion/continuation markers',()=>{
   const first=browserFreshTaskPrompt('Perform a three-stage, read-only audit');
@@ -25,13 +26,13 @@ test('initial and new-chat PI prompts admit all four completion/continuation mar
   }
 });
 
-function fixture() {
+function fixture(ownerLinkedUrl=SOURCE) {
   const dir=mkdtempSync(join(tmpdir(),'relay-pi-autopilot-'));
   const store=new Store(join(dir,'db.sqlite'));
   const created=store.create({goal:'Audit NetBox IP lookup',
     acceptance:['Explain source and evidence gaps'],workspace:'',
     sandbox:'read-only',mode:'supervised',maxTurns:3,checks:[],requestKey:'pi-fake'});
-  const linked=store.linkChat(created.id,SOURCE,created.version).mission;
+  const linked=store.linkChat(created.id,ownerLinkedUrl,created.version).mission;
   const mission=store.bindChatBrowser(linked.id,'install:Chrome:fake',linked.version).mission;
   let currentUrl='about:blank',sends=0,newPages=0,latestPrompt='',baseTurns=0;
   const fresh={
@@ -59,9 +60,17 @@ function fixture() {
       return obj;
     },
   } as unknown as Page;
+  let anchorClosed=false;
   const anchor={
-    url:()=>SOURCE,isClosed:()=>false,
-    context:()=>({newPage:async()=>{newPages++;return fresh;}}),
+    url:()=>SOURCE,isClosed:()=>anchorClosed,
+    close:async()=>{anchorClosed=true;},
+    context:()=>({
+      newPage:async()=>{newPages++;return fresh;},
+      newCDPSession:async()=>({
+        send:async()=>({targetInfo:{targetId:CHROME_SOURCE_TARGET_ID}}),
+        detach:async()=>{},
+      }),
+    }),
     getByRole:()=>({count:async()=>0,first:()=>({isVisible:async()=>false})}),
     locator:(selector:string)=>{
       const role=selector.includes('prompt-textarea')?'composer':
@@ -75,7 +84,7 @@ function fixture() {
       return obj;
     },
   } as unknown as Page;
-  return {dir,store,mission,anchor,fresh,
+  return {dir,store,mission,anchor,fresh,anchorClosed:()=>anchorClosed,
     primeRecovered:()=>{currentUrl=DEST;baseTurns=1;latestPrompt='Previously submitted user prompt';},
     modifyVisibleUser:(value:string)=>{latestPrompt=value;},
     results:()=>({sends,newPages,latestPrompt}),
@@ -137,6 +146,8 @@ test('exhausted 32-turn PI NEXT creates one durable successor and continues in a
     assert.equal(f.results().newPages,1);
     assert.equal(f.store.get(child.id).turnCount,1);
     assert.equal(f.store.chatLink(child.id),DEST);
+    assert.equal(f.anchorClosed(),false,
+      'The original human-owned ChatGPT anchor must never be retired');
     assert.equal(f.store.piPlan(child.id)?.action,'DONE');
     assert.equal(f.store.events(child.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
     assert.equal(f.store.events(child.id).filter(e=>e.type==='pi.autopilot_finished').length,1);
@@ -230,7 +241,60 @@ test('a late owner note racing the successor reservation is automatically re-pla
         f.store.queuePiOwnerDirective(child.id,'1993','Add the final security regression');
       }
       return original(id,revision,key,sha,options);
-    };
+};
+
+test('verified 32-to-1 new Chat retires the predecessor Relay-created tab, never the human anchor',async()=>{
+  // The fixture's independent owner-linked Mission is NOT in the source
+  // conversation here. An unrelated binding to that conversation would
+  // intentionally prevent cleanup, even if the predecessor had created it.
+  const f=fixture(DEST2);try{
+    const sha=(x:string)=>createHash('sha256').update(x).digest('hex');
+    const created=f.store.create({goal:'Continue the exact 32-turn owner task',
+      acceptance:['Verify the remaining work across Missions'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:32,checks:[],
+      requestKey:'owned-predecessor-32'});
+    const linked=f.store.linkChat(created.id,DEST2,created.version).mission;
+    const parent=f.store.bindChatBrowser(created.id,'install:Chrome:fake',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${parent.id}`,'1');
+    const rolloverRounds=new Set([1,6,11,16,21,26,31]);
+    for(let round=1;round<=32;round++){
+      const newConversation=rolloverRounds.has(round);
+      const newChatUrl=round===31?SOURCE:
+        `https://chatgpt.com/c/123e4567-e89b-42d3-a456-${426614175000+round}`;
+      const key=`parent-owned-32-${round}`;
+      f.store.reserveChatBrowserTurn(parent.id,f.store.get(parent.id).version,key,
+        sha('Prior anchor user turn'),newConversation?{newConversation:true}:{});
+      f.store.finishChatBrowserTurn(parent.id,key,{kind:'observed',
+        assistantSha256:sha('Prior anchor response'),summary:'Prior anchor response',
+        ...(newConversation?{newChatTargetSha256:sha(
+          round===31?CHROME_SOURCE_TARGET_ID:`parent-target-${round}`)}:{}),
+        ...(newConversation?{newChatUrl}:{})});
+      f.store.commitPiPlan(parent.id,sha('Prior anchor response'),[],{
+        action:'NEXT',summary:'Parent work still remains',
+        nextPrompt:'Continue verifying outstanding requirements'});
+    }
+    const child=f.store.createPiSuccessor(parent.id)!;
+    assert.ok(child);
+    assert.equal(f.store.chatLink(child.id),SOURCE);
+    assert.equal(f.store.canRetirePiChainSourceTab(child.id,SOURCE,DEST,sha(CHROME_SOURCE_TARGET_ID)),false,
+      'A not-yet-completed child may not retire its source');
+    const planner:PiPlanner={decide:async()=>({
+      action:'DONE',summary:'Synthetic successor finished',nextPrompt:'',
+    })};
+    await drivePiAutopilot({store:f.store,planner,missionId:child.id,
+      revision:child.version,requestPrefix:child.requestKey,page:f.anchor,url:SOURCE});
+    assert.equal(f.results().sends,1);
+    assert.equal(f.anchorClosed(),true,'Only the verified Relay-created parent tab closes');
+    assert.equal(f.store.chatLink(child.id),DEST);
+    assert.equal(f.store.get(child.id).turnCount,1);
+    const events=f.store.events(child.id);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_tab_retired').length,1);
+    const receipt=events.find(e=>e.type==='chatgpt.browser_tab_retired')!.payload as
+      {parentId:string;retiredUrlSha256:string};
+    assert.equal(receipt.parentId,parent.id);
+    assert.equal(receipt.retiredUrlSha256,sha(SOURCE));
+  }finally{f.cleanup();}
+});
     const planner:PiPlanner={decide:async context=>{
       if(context.turnCount===0){
         piPreflightCalls++;

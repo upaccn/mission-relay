@@ -2,7 +2,7 @@ import type {Page} from 'playwriter';
 import {createHash} from 'node:crypto';
 import type {Store,PiPlan} from './store.js';
 import type {PiPlanner,PiDecision} from './pi-planner.js';
-import {inspectChatPage,lastVisibleUserPromptSha256} from '../plugins/chatgpt-browser.js';
+import {inspectChatPage,lastVisibleUserPromptSha256,chatTabTargetSha256} from '../plugins/chatgpt-browser.js';
 import {executeBrowserTurn,executeBrowserRollover,retireSupersededRelayTab,browserFreshTaskPrompt,
   browserNewChatPrompt,browserTaskPolicy,executorTaskGoal,type BrowserTurnOutcome} from './browser-controller.js';
 import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
@@ -129,6 +129,46 @@ async function dispatchPiChainFirstTurn(input:{
     }
   }
   throw new Error('PI successor owner messages kept changing; no new chat was submitted');
+}
+/** A successor's old page was opened by the *previous* Mission, not by this
+ * control loop. It is eligible only when SQLite proves exact Relay-created
+ * custody AND both original user/assistant messages are still unchanged.
+ * This is best-effort housekeeping after the first child answer is committed:
+ * any mismatch leaves both audit and Chrome untouched. */
+export async function retireVerifiedPiChainSource(input:{
+  store:Store;childId:string;sourcePage:Page;newPage:Page;
+  sourceUrl:string;newUrl:string;
+}):Promise<boolean>{
+  const {store,childId,sourcePage,newPage,sourceUrl,newUrl}=input;
+  const sourceTargetSha256=await withReadOnlyDeadline(
+    chatTabTargetSha256(sourcePage),5000).catch(()=>null);
+  if(!store.canRetirePiChainSourceTab(childId,sourceUrl,newUrl,sourceTargetSha256))return false;
+  try{
+    const parentId=store.piChainParent(childId);
+    if(!parentId)return false;
+    const previous=store.chatBrowserTurn(parentId);
+    if(previous?.status!=='observed'||!previous.assistantSha256)return false;
+    const first=await withReadOnlyDeadline(inspectChatPage(sourcePage,sourceUrl));
+    const firstUser=await withReadOnlyDeadline(lastVisibleUserPromptSha256(sourcePage));
+    if(first.generating||!first.composerReady||
+      firstUser!==previous.promptSha256||
+      createHash('sha256').update(first.lastAssistant).digest('hex')!==previous.assistantSha256)
+      return false;
+    await new Promise(resolve=>setTimeout(resolve,1500));
+    const second=await withReadOnlyDeadline(inspectChatPage(sourcePage,sourceUrl));
+    const secondUser=await withReadOnlyDeadline(lastVisibleUserPromptSha256(sourcePage));
+    if(second.generating||!second.composerReady||
+      second.lastAssistant!==first.lastAssistant||
+      secondUser!==firstUser||
+      !store.canRetirePiChainSourceTab(childId,sourceUrl,newUrl,sourceTargetSha256))return false;
+    if(!await retireSupersededRelayTab(sourcePage,newPage,sourceUrl))return false;
+    try{store.recordPiChainSourceTabRetired(childId,sourceUrl,newUrl,sourceTargetSha256);}
+    catch{console.error('Verified predecessor tab closed, but cross-Mission audit could not be committed');}
+    return true;
+  }catch{
+    console.error('PI chain old-tab cleanup skipped: source provenance or stable page readback unavailable');
+    return false;
+  }
 }
 /** A bounded, supervised-by-PI loop over the ALREADY approved ChatGPT browser.
  * Browser observations and owner input are durable. A missing/invalid PI
@@ -312,6 +352,10 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
       if(await retireSupersededRelayTab(ownedPage,page,formerUrl)){
         try{store.recordOwnedChatTabRetired(missionId,formerUrl,url);}
         catch{console.error('Verified old tab closed, but retirement audit could not be committed');}
+      }
+      if(chainParentId&&i===0){
+        await retireVerifiedPiChainSource({store,childId:missionId,
+          sourcePage:formerPage,newPage:page,sourceUrl:formerUrl,newUrl:url});
       }
       ownedPage=page===formerPage?null:page;
     }
