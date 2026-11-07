@@ -15,8 +15,12 @@ test('Windows Telegram worker refuses Session 0 but permits interactive desktop 
     const check=`${source.slice(start,end)}\n`+
       `Assert-InteractiveSession -sessionId 1; `+
       `try { Assert-InteractiveSession -sessionId 0; throw 'Session 0 was allowed' } `+
-      `catch { if ($_.Exception.Message -notlike '*Session 0 is prohibited*') { throw } }`;
+      `catch { if ($_.Exception.Message -notlike '*Session 0 is prohibited*') { throw } }; `+
+      // PowerShell propagates the last thrown command's failure exit status
+      // even after a matching catch unless a final successful command runs.
+      `Write-Output 'interactive-session-guard-pass'`;
     const run=spawnSync('pwsh',['-NoProfile','-NonInteractive','-Command',check],
       {encoding:'utf8',timeout:10000});
-    assert.equal(run.status,0,run.stderr||run.stdout);
+    assert.equal(run.status,0,`PowerShell guard test failed: ${run.error??''} ${run.stderr} ${run.stdout}`);
+    assert.match(run.stdout,/interactive-session-guard-pass/);
 });

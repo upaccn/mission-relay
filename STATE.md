@@ -26,6 +26,14 @@
   by platform (its real execution is deferred to Windows CI). `check`,
   `privacy-check`, `build`, and `git diff --check` passed in source checkout.
   These are local source results, not Windows production or v1.0 acceptance.
+- **Cross-platform CI diagnostic:** Initial new-head run `42341193340` passed
+  Ubuntu/macOS but failed the single newly added Windows Session 0 test. A
+  read-only GMK reproduction isolated the test harness error: PowerShell
+  returns exit code 1 when its final statement is a *caught* expected throw,
+  unless a successful final command follows. The actual Session 0 guard
+  correctly rejected explicit 0 and accepted interactive 1. The test now
+  ends with an explicit success assertion. Follow-up exact-head CI is required
+  before treating this as a cross-platform-qualified fix.
 
 Updated: 2026-11-07
 
