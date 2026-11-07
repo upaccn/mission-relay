@@ -54,6 +54,9 @@ test('cooperative maintenance pause settles existing original Send then resumes 
     assert.equal(settled.turnCount,1);
     assert.equal(settled.stopRequested,true);
     assert.equal(f.store.chatBrowserTurn(f.id)?.status,'observed');
+    assert.throws(()=>f.engine.resume(f.id,settled.version),
+      /PI-owned Mission cannot use generic resume/,
+      'native resume cannot strand a PI checkpoint in generic READY');
     const original=f.store.events(f.id);
     const resumed=f.store.resumePausedPiCheckpoint(f.id,settled.version);
     assert.equal(resumed.state,'PAUSED','must never become generic READY');
@@ -88,6 +91,14 @@ test('local PI resume requires explicit acknowledgement and live revision, witho
     const unauthorized=command();
     assert.notEqual(unauthorized.status,0);
     assert.match(unauthorized.stderr,/explicit --acknowledge-side-effects/);
+    assert.equal(f.store.events(f.id).length,before);
+    const wrongCommand=spawnSync(process.execPath,
+      ['--import','tsx','src/cli.ts','resume',f.id],{
+        cwd:process.cwd(),encoding:'utf8',timeout:15000,
+        env:{...process.env,MISSION_RELAY_HOME:f.dir},
+      });
+    assert.notEqual(wrongCommand.status,0);
+    assert.match(wrongCommand.stderr,/PI-owned Mission cannot use generic resume/);
     assert.equal(f.store.events(f.id).length,before);
     const ok=command(['--acknowledge-side-effects']);
     assert.equal(ok.status,0,ok.stderr);

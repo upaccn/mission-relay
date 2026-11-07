@@ -146,6 +146,8 @@ export class Engine {
   resume(id: string, expectedVersion?: number): Mission {
     const m = this.store.get(id);
     this.expectVersion(m, expectedVersion);
+    if(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1')
+      throw new Error('PI-owned Mission cannot use generic resume; use local pi-resume after a settled, verified checkpoint');
     if (!['PAUSED','BLOCKED'].includes(m.state)) throw new Error(`Cannot resume ${m.state}`);
     if (m.turnCount >= m.maxTurns) throw new Error('Turn budget exhausted; create a follow-up mission');
     return this.store.update(id,m.version,{state:'READY',lastError:null,stopRequested:false},'mission.resumed',{});
