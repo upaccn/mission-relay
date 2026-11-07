@@ -3,8 +3,10 @@
 **GMK pull-only upgrade:** After the original browser Send has settled and an
 explicit cooperative maintenance pause has made the SQLite idle gate pass,
 `scripts/windows/telegram-task.ps1 -Action Upgrade -ExpectedSha <verified-main-sha>`
-uses the **existing** interactive-user Scheduled Task. It refuses dirty or
-divergent GMK checkouts, Session 0, active work, missing local build tools and
+uses the **existing** interactive-user Scheduled Task. The maintainer may run
+from remote Session 0 because it never launches Chrome; the actual Worker
+must remain in a verified interactive, limited-privilege task and refuses
+Session 0. It rejects dirty or divergent GMK checkouts, active work, missing local build tools and
 an unexpected fetched GitHub SHA. Under the atomic drain it stops the old
 worker, fast-forwards only `main`, builds using existing dependencies (never
 `npm ci` on a locked DLL), and verifies the restarted single poller. Failed

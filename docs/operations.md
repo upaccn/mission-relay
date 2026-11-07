@@ -4,6 +4,10 @@
 owner pause has settled its original browser Send, and after exact GitHub
 `main` SHA plus matching three-platform CI have been verified, the existing
 enrolled interactive-user task supports `-Action Upgrade -ExpectedSha <sha>`.
+The upgrade coordinator itself may run in a remote Session 0 because it
+never launches Chrome; it verifies the existing Scheduled Task uses an
+interactive-user, limited-privilege principal. The Worker *must* run in
+Session 1 or another interactive desktop session and refuses Session 0.
 If the owner-paused Mission should continue after promotion, add
 `-ResumeMissionId <uuid>`. This action is intentionally **not** scheduled: it
 rejects a still-running Mission or reserved Send, acquires the existing

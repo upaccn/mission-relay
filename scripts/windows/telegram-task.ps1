@@ -73,6 +73,11 @@ function Assert-OurTask {
     if (-not ($task.Actions | Where-Object { $_.Arguments -like "*${expected}*" -and $_.Arguments -like '*-Action Worker*' })) {
         throw 'Existing task has a different action; refusing to modify it'
     }
+    if (-not $task.Principal.UserId -or
+        [string]$task.Principal.LogonType -ne 'Interactive' -or
+        [string]$task.Principal.RunLevel -ne 'Limited') {
+        throw 'Scheduled Task must remain interactive-user and least-privilege; refusing lifecycle changes'
+    }
     return $task
 }
 
@@ -355,9 +360,11 @@ switch ($Action) {
     }
     'Upgrade' {
         # A single, explicit pull-only upgrade after the original Send has
-        # settled. Never initiate this while Exit 3 blocks maintenance.
+        # settled. Never initiate this while Exit 3 blocks maintenance. The
+        # maintenance CLI may run in Session 0: it NEVER launches Chrome,
+        # and starts only the enrolled INTERACTIVE task whose Worker itself
+        # rejects Session 0 before touching credentials or the browser.
         Assert-Prerequisites
-        Assert-InteractiveSession
         $null=Assert-OurTask
         Assert-UpgradeTarget $ExpectedSha
         Assert-SafeRestart

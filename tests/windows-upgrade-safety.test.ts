@@ -13,7 +13,8 @@ test('GMK pull-only upgrade is ordered behind the SQLite drain and never install
   assert.ok(start>0&&end>start,'Separate optional Upgrade action must exist');
   const upgrade=script.slice(start,end);
   const steps=[
-    'Assert-InteractiveSession',
+    'Assert-Prerequisites',
+    '$null=Assert-OurTask',
     'Assert-UpgradeTarget $ExpectedSha',
     'Assert-SafeRestart',
     '$drainId=Request-ChannelDrain',
@@ -33,6 +34,10 @@ test('GMK pull-only upgrade is ordered behind the SQLite drain and never install
     previous=position;
   }
   assert.match(upgrade,/\$remoteSha -cne \$ExpectedSha/);
+  assert.match(script,/function Assert-OurTask \{[\s\S]*?Principal\.LogonType -ne 'Interactive'[\s\S]*?Principal\.RunLevel -ne 'Limited'/);
+  assert.match(script,/'Worker'\s*\{\s*Assert-Prerequisites\s+Assert-InteractiveSession/);
+  assert.doesNotMatch(upgrade,/Assert-InteractiveSession\s*$/m,
+    'Session 0 may coordinate a known interactive task but must never run a Chrome Worker itself');
   assert.match(upgrade,/\$oldPid -and \$current\.pollerPid -eq \$oldPid/);
   assert.match(upgrade,/\$head -cne \$ExpectedSha.*\$rollbackSafe=\$false/s);
   assert.match(upgrade,/git -C \$root reset --hard \$oldSha/);

@@ -21,7 +21,8 @@
   protections with pull-only update, build, rollback and eligible PI resume.
 - Added **opt-in, locally invoked** `telegram-task.ps1 -Action Upgrade
   -ExpectedSha <sha> [-ResumeMissionId <uuid>]`: explicit interactive-user
-  preflight and exact target, clean main, installed build tools, idle gate,
+  Worker-task-principal validation and exact target, clean main, installed
+  build tools, idle gate,
   one SQLite drain and enrolled task stop before fast-forward pull/build;
   exact HEAD and healthy new worker readback; rollback only when original
   clean checkout and compiled `dist` can be reconstructed. A failed rollback
@@ -30,6 +31,13 @@
   scope. Static ordering and Windows PowerShell syntax/foreign-owner safety
   tests added. The backup must finish before any build; a partial backup is
   never substituted for healthy old `dist` on failure.
+- Live GMK tool execution reports Session 0; the existing scheduled Telegram
+  task uses the owner's interactive principal (`LogonType=3`, limited run level),
+  while observed Chrome processes are in Session 1. Initial implementation
+  unnecessarily rejected any Session 0 maintenance coordinator. Corrected
+  source to allow remote, non-browser upgrade orchestration only through the
+  already enrolled interactive, least-privilege Scheduled Task. The Worker
+  itself still rejects Session 0 before loading credentials or Chrome.
 - **Linux source verification:** Node 24 `npm run check`, `privacy-check`,
   `npm run build`, `git diff --check` passed. Full `npm test` **271 tests,
   269 passed, zero failed, two Windows-only skips**. Cross-platform exact
