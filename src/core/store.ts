@@ -58,6 +58,7 @@ export class Store {
       mkdirSync(dirname(filename), { recursive: true, mode: 0o700 });
     }
     this.db = new DatabaseSync(filename, { timeout: 5000,readOnly });
+    try {
     this.db.exec('PRAGMA foreign_keys = ON');
     if(readOnly){
       // No implicit CREATE TABLE / schema upgrade / PRAGMA journal_mode
@@ -67,8 +68,8 @@ export class Store {
       this.db.exec('PRAGMA query_only = ON');
       const version=this.db.prepare('SELECT value FROM meta WHERE key = ?')
         .get('schema_version') as {value:string}|undefined;
-      if(version?.value!=='3')
-        throw new Error('Read-only PI diagnostic requires existing schema v3; upgrade separately under maintenance');
+      if(!['3','4'].includes(version?.value??''))
+        throw new Error('Read-only PI diagnostic requires existing schema v3 or v4; upgrade separately under maintenance');
       return;
     }
     this.db.exec('PRAGMA journal_mode = WAL');
@@ -99,7 +100,7 @@ export class Store {
         this.db.exec("ALTER TABLE missions ADD COLUMN checks_json TEXT NOT NULL DEFAULT '[]'");
         this.db.prepare('UPDATE meta SET value=? WHERE key=?').run('2','schema_version');
       });
-    } else if (!['2','3'].includes(version.value)) throw new Error(`Unsupported database schema ${version.value}; upgrade explicitly`);
+    } else if (!['2','3','4'].includes(version.value)) throw new Error(`Unsupported database schema ${version.value}; upgrade explicitly`);
     const currentVersion=(this.db.prepare('SELECT value FROM meta WHERE key=?').get('schema_version') as {value:string}).value;
     if (currentVersion === '2') this.transaction(()=>{
       this.db.exec(`CREATE TABLE IF NOT EXISTS channel_commands (
@@ -109,6 +110,79 @@ export class Store {
       )`);
       this.db.prepare('UPDATE meta SET value=? WHERE key=?').run('3','schema_version');
     });
+    // Goal management is additive: historical Mission IDs, browser reservations,
+    // events and exact-prompt recovery records are not rewritten or backfilled.
+    // The version update and every DDL statement commit or roll back together.
+    if ((this.db.prepare('SELECT value FROM meta WHERE key=?').get('schema_version') as {value:string}).value === '3')
+      this.transaction(()=>{
+        this.db.exec(`
+          CREATE TABLE goals (
+            id TEXT PRIMARY KEY, request_key TEXT NOT NULL UNIQUE,
+            objective TEXT NOT NULL, priority INTEGER NOT NULL CHECK(priority BETWEEN 0 AND 100),
+            status TEXT NOT NULL CHECK(status IN ('DRAFT','ACTIVE','PAUSED','BLOCKED')),
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+          );
+          CREATE TABLE goal_plans (
+            id TEXT PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES goals(id),
+            request_key TEXT NOT NULL, ordinal INTEGER NOT NULL CHECK(ordinal > 0),
+            summary TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('DRAFT','APPROVED','SUPERSEDED','CANCELLED')),
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            UNIQUE(goal_id,request_key), UNIQUE(goal_id,ordinal),
+            UNIQUE(id,goal_id)
+          );
+          CREATE UNIQUE INDEX goal_single_approved_plan ON goal_plans(goal_id) WHERE status='APPROVED';
+          CREATE TABLE goal_work_items (
+            id TEXT PRIMARY KEY, goal_id TEXT NOT NULL REFERENCES goals(id),
+            plan_id TEXT NOT NULL REFERENCES goal_plans(id),
+            item_key TEXT NOT NULL, title TEXT NOT NULL, description TEXT NOT NULL,
+            priority INTEGER NOT NULL CHECK(priority BETWEEN 0 AND 100),
+            status TEXT NOT NULL CHECK(status IN
+              ('PENDING','READY','IN_PROGRESS','REVIEW','PASSED','BLOCKED','FAILED')),
+            evidence_json TEXT NOT NULL DEFAULT '[]',
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            UNIQUE(plan_id,item_key), UNIQUE(id,goal_id,plan_id),
+            FOREIGN KEY(plan_id,goal_id) REFERENCES goal_plans(id,goal_id)
+          );
+          CREATE TABLE goal_dependencies (
+            goal_id TEXT NOT NULL, plan_id TEXT NOT NULL,
+            item_id TEXT NOT NULL, depends_on_id TEXT NOT NULL,
+            PRIMARY KEY(item_id,depends_on_id),
+            CHECK(item_id <> depends_on_id),
+            FOREIGN KEY(item_id,goal_id,plan_id) REFERENCES goal_work_items(id,goal_id,plan_id),
+            FOREIGN KEY(depends_on_id,goal_id,plan_id) REFERENCES goal_work_items(id,goal_id,plan_id)
+          );
+          CREATE TABLE goal_acceptance (
+            id TEXT PRIMARY KEY, item_id TEXT NOT NULL REFERENCES goal_work_items(id),
+            criterion TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('PENDING','PASS','PARTIAL','FAIL','BLOCKED')),
+            evidence_json TEXT NOT NULL DEFAULT '[]',
+            version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+          );
+          CREATE TABLE goal_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            goal_id TEXT NOT NULL REFERENCES goals(id),
+            created_at TEXT NOT NULL, type TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+          );
+          CREATE INDEX goal_events_by_goal ON goal_events(goal_id,id);
+          CREATE TRIGGER goal_events_no_update BEFORE UPDATE ON goal_events
+            BEGIN SELECT RAISE(ABORT,'Goal audit events are append-only'); END;
+          CREATE TRIGGER goal_events_no_delete BEFORE DELETE ON goal_events
+            BEGIN SELECT RAISE(ABORT,'Goal audit events are append-only'); END;
+          CREATE TABLE goal_operations (
+            goal_id TEXT NOT NULL REFERENCES goals(id),
+            operation_key TEXT NOT NULL, request_sha256 TEXT NOT NULL,
+            result_json TEXT NOT NULL,
+            PRIMARY KEY(goal_id,operation_key)
+          );
+        `);
+        this.db.prepare('UPDATE meta SET value=? WHERE key=?').run('4','schema_version');
+      });
     this.db.exec(`CREATE TABLE IF NOT EXISTS channel_leases (
       source TEXT PRIMARY KEY,owner_pid INTEGER NOT NULL,owner_host TEXT NOT NULL,
       lease_key TEXT NOT NULL,created_at TEXT NOT NULL
@@ -123,6 +197,12 @@ export class Store {
       ON pi_owner_directives(mission_id,consumed_round,id);`);
     if (filename !== ':memory:' && process.platform !== 'win32') {
       try { chmodSync(filename, 0o600); } catch { /* host ACL may manage permissions */ }
+    }
+    } catch(error) {
+      // A failed in-place schema migration must release the SQLite handle,
+      // particularly on Windows where an unclosed file blocks backup/restore.
+      try { this.db.close(); } catch { /* Keep the original migration error. */ }
+      throw error;
     }
   }
   close(): void { this.db.close(); }

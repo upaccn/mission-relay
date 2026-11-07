@@ -173,7 +173,7 @@ test('v1 SQLite database upgrades in place without losing mission history',()=>{
     const upgraded=new Store(file);
     assert.equal(upgraded.get('old').goal,'Preserve old goal');
     assert.deepEqual(upgraded.get('old').checks,[]);
-    assert.equal((upgraded.db.prepare('SELECT value FROM meta WHERE key=?').get('schema_version') as {value:string}).value,'3');
+    assert.equal((upgraded.db.prepare('SELECT value FROM meta WHERE key=?').get('schema_version') as {value:string}).value,'4');
     upgraded.close();
     const reopen=new Store(file);assert.equal(reopen.get('old').goal,'Preserve old goal');reopen.close();
   }finally{rmSync(dir,{force:true,recursive:true});}

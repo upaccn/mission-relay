@@ -1,5 +1,14 @@
 # Mission Relay project state
 
+## 2026-11-07 Goal-driven v1.0 WP1 (AIOS source; GMK not touched)
+
+- Initial inspected clean AIOS/GitHub `main` baseline `463db8a546bf8e2122e7cd74d857e245f404acbb`; matching three-platform Actions run `42354864228` succeeded. Existing SQLite was schema v3, and prior Goal-only project structures did not exist.
+- Implemented additive SQLite v4 Goal, Plan, Work Item, dependency, Acceptance, operation-idempotency and append-only Goal audit tables on the existing `Store` connection. Legacy Mission/Chrome/PI schemas and historical Send/response/recovery prompts remain unchanged. Writable v1/v2/v3 stores migrate to v4 within the existing transactional primitive; read-only PI diagnostics continue to accept v3 or v4 without schema writes.
+- New `GoalLedger` offers durable goal/plan CRUD foundation, optimistic versions, duplicate request rejection/replay, validated cross-plan-safe dependency DAG, persisted evidence pointers and guarded work/acceptance statuses. Reported PASS is **not** independent acceptance and Goal DONE is deliberately unavailable until later PI/controller/release-gate work packages; no second execution controller was added.
+- The existing GMK deployment remained behind latest main with an active reserved browser Send when WP1 started; no GMK migration, pull, process restart, Chrome Send, retry, tab close, Telegram command or private-state write was part of WP1. Synthetic tests cannot replace independent live acceptance.
+- WP1 acceptance gate: isolated migration conservation and rollback, independent Mission life cycle, concurrent version conflicts, idempotent replay, dependency validation, restart persistence, complete source tests/check/privacy/build, Git commit+push, three-platform exact-head CI. Update this entry only with actual post-change test/CI evidence.
+- **WP1 source verification:** AIOS Node 24 `npm run check`, `npm run privacy-check`, `npm test`, `npm run build` and `git diff --check` completed; the full Linux run reported **295 tests / 292 passed / 0 failed / 3 Windows-only skips**. A later narrow hardening of failed-constructor SQLite handle release passed the isolated **21/21** goal/migration and existing verifier tests plus TypeScript check. Exact final-head CI on Ubuntu/macOS/Windows remains mandatory before release qualification. No production Goal migration or PI selection has occurred.
+
 ## 2026-11-07 new-Chat maintenance pause and GMK Git transport (AIOS development)
 
 - Independently verified AIOS HEAD / GitHub main at
