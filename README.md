@@ -1,5 +1,14 @@
 # Mission Relay
 
+**Read-only pending-request provenance:** `pi-evidence <mission-id>` now
+includes `activeRequestEvidence` for a currently `reserved` or `uncertain`
+request, containing only the unique original reservation event ID, pending
+round, prompt SHA-256, receipt status and new-chat *intent*. The reader
+rejects missing, duplicated or mismatching reservations as a ledger violation.
+This is not proof that Playwriter clicked Send or received an answer, and does
+not reveal prompt text, request keys, URLs or user messages. A completed
+request has no active pending evidence; examine `rounds` instead.
+
 **New-chat diagnostic:** `pi-health.browserNewChatReserved` and `pi-evidence.pendingNewChatReservation` identify only the existing SQLite reservation's new-conversation intent. Telegram `/status` labels this *reserved only*; it does not prove the new tab, submitted message, URL migration or answer exists. A 5/5 old-chat count plus an unobserved sixth reservation is not completed rotation evidence.
 
 **Pinned browser binding health:** `browser-binding-health <mission-id>` is a read-only check of the exact linked conversation against the already Playwriter-enabled tabs in its approved Chrome profile. It returns whether exactly one matching tab is exposed and (only for a reserved/uncertain request in that tab) whether the latest user-message hash matches the original request. It never exposes raw Chat URLs, browser IDs, request keys or prompt text, never reads unrelated chat messages, opens a tab or submits Send/Retry, and never treats a matching prompt as proof that the assistant finished.

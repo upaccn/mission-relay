@@ -24,6 +24,12 @@ export interface PiEvidenceReport {
   chatSegments:number;maxObservedTurnsInOneChat:number;
   decisionsVerified:number;pendingPiReviewRounds:number[];
   pendingBrowserRequest:boolean;
+  /** Content-free attribution for the ONE active unobserved request. This is
+   * reservation evidence, never evidence of an external Send or final answer. */
+  activeRequestEvidence:{
+    reservationEventId:number;round:number;promptSha256:string;
+    status:'reserved'|'uncertain';newConversationIntent:boolean;
+  }|null;
   /** Intent in the current SQLite reservation; no browser migration is credited. */
   pendingNewChatReservation:boolean;
   successorId:string|null;parentId:string|null;
@@ -237,6 +243,23 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     !observations.some(o=>o.round===decision))warn('pi_decision_without_observed_round');
   const current=store.chatBrowserTurn(id);
   const latest=observations.at(-1);
+  let activeRequestEvidence:PiEvidenceReport['activeRequestEvidence']=null;
+  if(current&&['reserved','uncertain'].includes(current.status)){
+    const candidates=events.filter(e=>e.type==='chatgpt.browser_reserved'&&
+      payload(e).requestKey===current.requestKey);
+    const currentReservation=candidates[0];
+    const lastReservation=events.filter(e=>e.type==='chatgpt.browser_reserved').at(-1);
+    const linked=candidates.length===1&&currentReservation===lastReservation&&
+      payload(currentReservation!).promptSha256===current.promptSha256&&
+      SHA.test(current.promptSha256)&&!used.has(current.requestKey)&&
+      !current.assistantSha256&&
+      (latest===undefined||currentReservation!.id>(decisions.get(latest.round)?.id??latest.observedEventId));
+    if(!linked)warn('active_request_reservation_unlinked');
+    else activeRequestEvidence={reservationEventId:currentReservation!.id,
+      round:mission.turnCount+1,promptSha256:current.promptSha256,
+      status:current.status as 'reserved'|'uncertain',
+      newConversationIntent:current.newConversation===true};
+  }
   // A verified correction supersedes ONLY the last completed reply. After
   // PI independently re-reviews it, the legitimate next Send overwrites the
   // active receipt with a new RESERVED request. Never compare that pending
@@ -276,6 +299,7 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     maxObservedTurnsInOneChat:maxPerChat,decisionsVerified:verified,
     pendingPiReviewRounds:pending,
     pendingBrowserRequest:current?.status==='reserved',
+    activeRequestEvidence,
     pendingNewChatReservation:current?.status==='reserved'&&current.newConversation===true,
     successorId:store.piChainSuccessor(id),parentId:store.piChainParent(id),
     violations,ledgerConsistent:violations.length===0,rounds:observations,

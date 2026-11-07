@@ -32,6 +32,44 @@ const observe=(store:Store,id:string,round:number,newChatUrl?:string)=>{
     summary:`Stage ${round} independently reviewed`,nextPrompt:round===9?'':'Continue one stage'});
 };
 
+test('read-only PI evidence attributes pending and uncertain requests to the original reservation',()=>{
+  const f=fixture();try{
+    const promptSha256=sha('private pending prompt');
+    f.store.reserveChatBrowserTurn(f.id,f.store.get(f.id).version,
+      'private-first-request',promptSha256,{newConversation:true});
+    const event=f.store.events(f.id).find(e=>e.type==='chatgpt.browser_reserved')!;
+    const before=f.store.maxEventId();
+    const pending=inspectPiEvidence(f.store,f.id);
+    assert.equal(pending.ledgerConsistent,true);
+    assert.deepEqual(pending.activeRequestEvidence,{
+      reservationEventId:event.id,round:1,promptSha256,status:'reserved',
+      newConversationIntent:true,
+    });
+    assert.equal(pending.pendingBrowserRequest,true);
+    assert.equal(pending.observedTurns,0);
+    assert.equal(f.store.maxEventId(),before);
+    const printed=JSON.stringify(pending);
+    for(const secret of ['private pending prompt','private-first-request',
+      'chatgpt.com','install:Chrome:synthetic'])assert.ok(!printed.includes(secret));
+    f.store.finishChatBrowserTurn(f.id,'private-first-request',{
+      kind:'uncertain',error:'Synthetic uncertain effect, never replay'});
+    const uncertain=inspectPiEvidence(f.store,f.id);
+    assert.equal(uncertain.ledgerConsistent,true);
+    assert.equal(uncertain.pendingBrowserRequest,false);
+    assert.equal(uncertain.activeRequestEvidence?.status,'uncertain');
+    assert.equal(uncertain.activeRequestEvidence?.reservationEventId,event.id);
+    const key=`chatgpt.browser.active.${f.id}`;
+    const original=f.store.getMeta(key)!;
+    f.store.setMeta(key,JSON.stringify({...JSON.parse(original),
+      promptSha256:sha('forged later request')}));
+    const forged=inspectPiEvidence(f.store,f.id);
+    assert.equal(forged.ledgerConsistent,false);
+    assert.equal(forged.activeRequestEvidence,null);
+    assert.ok(forged.violations.includes('active_request_reservation_unlinked'));
+    f.store.setMeta(key,original);
+  }finally{f.cleanup();}
+});
+
 test('PI ledger audits nine observed sends across exact five-turn chat boundary without claiming business completion',()=>{
   const f=fixture();try{
     for(let i=1;i<=9;i++)observe(f.store,f.id,i,i===1?first:i===6?second:undefined);

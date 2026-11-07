@@ -1,5 +1,33 @@
 # Mission Relay project state
 
+## 2026-11-07 second-turn reservation provenance check (AIOS source)
+
+- AIOS and GitHub main independently read back at clean
+  `c7ec6c7c508545da44a7d3c45108da3e26a5ba58`; exact commit CI
+  `42341634389` completed successfully for Node 24 Ubuntu, macOS and Windows.
+- GMK remains on clean pull-only `66925b1b2fe37bbaaefa9d45060fbcf5884cb5cc`.
+  Active Mission `fee3e087-26f1-4386-beee-197ad94d171e` successfully
+  observed its first reply (SQLite event #333; SHA
+  `a0a0ba46fc54a6792bcedb80d7d0b3c8a2382fc897b7f7f44ac6bf6e3bf35d7c`)
+  from first reservation #331 and PI NEXT #334 matched the response digest.
+  Its second same-chat reservation was still active at this read; exact
+  Playwriter tab was visible and latest-user hash matched the stored pending
+  prompt, but the assistant full answer was NOT yet durable. A live original
+  owner process and maintenance preflight exit 3 prohibit GMK restart/pull.
+- Historical Mission `c3574261-9a25-4a96-b0f1-1d7204732a6e` is CANCELLED,
+  with eight audited replies/decisions, seventh-round attribution amendment
+  #314 and corrected PI decision #315 intact; no pending browser request.
+- Source-only improvement under qualification: expose one unique, SHA-matched
+  original event ID and prompt digest for the active `reserved/uncertain`
+  request in read-only `pi-evidence`. Reject forged/missing active reservation
+  provenance and preserve all raw task content and external Send state. New
+  exact-head tests and CI plus safe production deployment remain separate gates.
+- **Completed Linux source tests for this change:** Node 24 `npm run check`,
+  `privacy-check`, `build`, `git diff --check` passed; full `npm test`
+  reported **266 tests, 265 passed, zero failed, one Windows-only test
+  skipped**. Targeted `tests/pi-evidence.test.ts` reported 17/17 passed.
+  Exact-head three-platform CI and GMK production activation remain separate.
+
 ## 2026-11-07 compact PI Chat handoff and interactive-session guard (development)
 
 - **Current inspected boundary:** AIOS and GMK checked out clean GitHub `main`

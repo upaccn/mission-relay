@@ -8,6 +8,10 @@ not inferred from an assistant answer. Manual `browser-recover-rollover` must
 also reconstruct pre-upgrade legacy prompts by their original reserved SHA;
 neither format authorizes a second Send. The Windows Telegram Scheduled Task
 worker must fail in Session 0 rather than attempt to control desktop Chrome.
+The read-only `pi-evidence.activeRequestEvidence` exposes only the original
+unique browser reservation event ID, prompt digest, round, receipt status and
+new-tab intent for an unobserved reserved/uncertain request. Reject an unlinked
+or rewritten receipt; never expose request keys or infer Send completion.
 
 For an existing-chat continuation, a newly matching latest user prompt is not
 proof that the visible assistant belongs to that prompt. ChatGPT can re-render
