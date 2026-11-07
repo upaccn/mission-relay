@@ -97,7 +97,8 @@ Commands:
          [--browser-id <id>] [--timeout-ms 3600000]  Bounded ChatGPT multi-turn loop
   browser-reconcile <id> --acknowledge-side-effects  Manual ambiguous-turn recovery
   browser-recover-turn <id> --revision <n> --acknowledge-side-effects
-         Verify a complete reply in the original chat without resending, then credit its observed turn
+         Verify an uncertain reply or a dead-owner reserved existing-chat reply;
+         never replay or credit an unmarked/incomplete response
   browser-correct-attribution <id> --revision <n> --acknowledge-side-effects
          Independently re-observe an incorrectly credited latest PI answer; append correction,
          preserve old events and require new PI review before any further Send
@@ -443,24 +444,27 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       const revision=Number(option(f,'revision'));
       const m=store.get(id),url=store.chatLink(id),record=store.chatBrowserTurn(id);
       const bound=store.chatBrowserBinding(id);
-      if(!url||!bound||m.version!==revision||m.state!=='NEEDS_RECONCILIATION'||
-        record?.status!=='uncertain')
-        throw new Error('No eligible uncertain, bound existing ChatGPT conversation turn at this revision');
+      const uncertain=m.state==='NEEDS_RECONCILIATION'&&record?.status==='uncertain';
+      const abandoned=store.isAbandonedBrowserReservation(id);
+      if(!url||!bound||!record||m.version!==revision||(!uncertain&&!abandoned)||
+        record.newConversation===true)
+        throw new Error('No eligible uncertain or dead-owner reserved existing-chat turn; a live owner must finish its own Send');
       // PI-authored continuations cannot be reconstructed from the mission goal.
       // The original exact submitted prompt hash is already durable in SQLite.
       // Compare it with the latest visible user turn; never accept a quote of
       // an earlier prompt or replay the uncertain Send.
-      const session=await connectChatPage(url,{browserId:bound});
+      const session=await withReadOnlyDeadline(connectChatPage(url,{browserId:bound}),
+        30_000,late=>late.close());
       const answer=await withBrowserSession(session,async page=>{
-        const first=await inspectChatPage(page,url);
-        if(first.generating||!first.lastAssistant.trim()||
+        const first=await withReadOnlyDeadline(inspectChatPage(page,url));
+        if(first.generating||!first.composerReady||!first.lastAssistant.trim()||
           !['DONE','NEXT','BLOCKED','HANDOFF'].includes(browserDecision(first.lastAssistant))||
-          !matchesReservedPromptHash(await lastVisibleUserPromptSha256(page),record.promptSha256))
+          !matchesReservedPromptHash(await withReadOnlyDeadline(lastVisibleUserPromptSha256(page)),record.promptSha256))
           throw new Error('Original chat does not show the exact reserved user request and a complete marked assistant reply');
         await new Promise(resolve=>setTimeout(resolve,3000));
-        const second=await inspectChatPage(page,url);
-        if(second.generating||second.lastAssistant!==first.lastAssistant||
-          !matchesReservedPromptHash(await lastVisibleUserPromptSha256(page),record.promptSha256))
+        const second=await withReadOnlyDeadline(inspectChatPage(page,url));
+        if(second.generating||!second.composerReady||second.lastAssistant!==first.lastAssistant||
+          !matchesReservedPromptHash(await withReadOnlyDeadline(lastVisibleUserPromptSha256(page)),record.promptSha256))
           throw new Error('Original ChatGPT reply was unstable or no longer corresponds to the reserved request');
         return second.lastAssistant;
       });
@@ -469,7 +473,9 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
         requestPromptSha256:record.promptSha256,assistantSha256,summary:answer,
       });
       result={...recovered,assistantSha256,verifiedDecision:browserDecision(answer),
-        note:'Recovered the observed original-chat reply with no new Send. Historical uncertain event preserved; model DONE is not independent verification.'};
+        note:abandoned?
+          'Recovered a dead-owner original reservation after independent read-only browser verification. No second Send; old reservation preserved; PI still must review this answer.':
+          'Recovered the observed original-chat reply with no new Send. Historical uncertain event preserved; model DONE is not independent verification.'};
     }
     else if (command === 'browser-correct-attribution' && id) {
       const f=flags(rest);

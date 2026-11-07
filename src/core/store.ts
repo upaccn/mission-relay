@@ -317,6 +317,7 @@ export class Store {
       const reservationTime=receipt?.status==='reserved'?Date.parse(receipt.createdAt):NaN;
       const age=Number.isFinite(reservationTime)?Math.max(0,Math.floor((now-reservationTime)/1000)):null;
       const phase=m.state==='NEEDS_RECONCILIATION'?'reconciliation_required_do_not_resend':
+        this.isAbandonedBrowserReservation(m.id)?'dead_owner_reserved_inspect_only_do_not_resend':
         receipt?.status==='reserved'?'browser_answer_pending_do_not_resend':
         m.state==='READY'?'awaiting_controller_dispatch':
         m.state==='PAUSED'&&m.lastError?.startsWith('Corrected answer attribution awaits')?
@@ -427,6 +428,17 @@ export class Store {
     this.raw(id);
     const value=this.getMeta(this.browserTurnKey(id));
     return value?JSON.parse(value) as ChatBrowserTurn:null;
+  }
+  /** A dead local Send owner may have submitted its reserved request before
+   * exiting. This predicate authorizes only independent inspection, NEVER a
+   * retry, lock removal or automatic credit. A foreign/unknown or live owner
+   * remains conservatively in-flight. New-chat reservations need their own
+   * distinct-destination recovery protocol. */
+  isAbandonedBrowserReservation(id:string):boolean {
+    const m=this.get(id),receipt=this.chatBrowserTurn(id);
+    return m.state==='RUNNING'&&receipt?.status==='reserved'&&
+      receipt.newConversation!==true&&m.ownerPid!==null&&m.ownerPid>0&&
+      m.ownerHost===hostname()&&!this.isOwnerAlive(m);
   }
   /** A PI checkpoint may be a normally observed reply or a separately
    * inspected recovery. Merely acknowledging ambiguous side effects is NOT
@@ -755,7 +767,7 @@ export class Store {
         assistantSha256:input.assistantSha256,observedAt:now}));
       this.db.prepare('DELETE FROM meta WHERE key=?').run(this.browserUrlLockKey(record.urlHash));
       this.db.prepare(`UPDATE missions SET state='PAUSED',owner_pid=NULL,owner_host=NULL,
-        turn_count=turn_count+1,last_summary=?,last_error=NULL,stop_requested=0,
+        turn_count=turn_count+1,last_summary=?,last_error=NULL,
         version=version+1,updated_at=? WHERE id=? AND version=?`)
         .run(input.summary.slice(-1000),now,id,m.version);
       this.event(id,'mission.reconciled',{acknowledged:true,kind:'observed-browser-rollover'});
@@ -769,10 +781,11 @@ export class Store {
       return this.get(id);
     });
   }
-  /** Recover an *already submitted* existing-tab reply after a false timeout
-   * or obsolete load-error observation. The CLI must independently re-read
-   * the exact sent prompt and stable complete answer; no Send is permitted.
-   * Preserve the uncertain history while granting only one observed turn. */
+  /** Recover an *already submitted* existing-tab reply after an observer error,
+   * or a dead owner that never got to record an uncertainty event. The CLI
+   * independently reads the original prompt and stable complete answer;
+   * no Send is permitted. Preserve historical uncertainty when it exists,
+   * never invent it when the original reservation was abandoned. */
   recoverObservedBrowserTurn(id:string,revision:number,input:{
     requestPromptSha256:string;assistantSha256:string;summary:string;
   }):Mission {
@@ -782,26 +795,56 @@ export class Store {
     return this.transaction(()=>{
       const m=this.get(id),record=this.chatBrowserTurn(id),url=this.chatLink(id);
       if(m.version!==revision)throw new Error(`State conflict: expected v${revision}, current v${m.version}`);
-      if(m.state!=='NEEDS_RECONCILIATION'||record?.status!=='uncertain'||!url)
-        throw new Error('Only an uncertain existing-chat browser turn can be recovered');
+      const deadReserved=this.isAbandonedBrowserReservation(id);
+      const uncertain=m.state==='NEEDS_RECONCILIATION'&&record?.status==='uncertain';
+      if(!record||(!uncertain&&!deadReserved)||!url||record.newConversation===true)
+        throw new Error('Only an uncertain or independently inspected dead-owner existing-chat request can be recovered');
       if(m.ownerPid!==null&&this.isOwnerAlive(m))throw new Error('Browser owner may still be active');
       if(m.turnCount>=m.maxTurns)throw new Error('Recovery exceeds the authorized turn budget');
       if(record.promptSha256!==input.requestPromptSha256||
         record.urlHash!==createHash('sha256').update(url).digest('hex'))
         throw new Error('Observed reply cannot be linked to the exact original reserved prompt and chat');
+      if(deadReserved){
+        if(createHash('sha256').update(input.summary).digest('hex')!==input.assistantSha256||
+          !/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]\s*$/.test(input.summary))
+          throw new Error('Dead-owner recovery requires the complete SHA-matched final-marked answer');
+        const reservation=this.events(id).filter(e=>e.type==='chatgpt.browser_reserved'&&
+          (e.payload as {requestKey?:string}).requestKey===record.requestKey);
+        if(reservation.length!==1||
+          (reservation[0]!.payload as {promptSha256?:string}).promptSha256!==record.promptSha256)
+          throw new Error('Dead-owner reservation cannot be linked to one original immutable event');
+        let lock:{missionId?:string;requestKey?:string}|null=null;
+        try{lock=JSON.parse(this.getMeta(this.browserUrlLockKey(record.urlHash))??'null');}
+        catch{/* Malformed lock is not evidence of ownership. */}
+        if(lock?.missionId!==id||lock.requestKey!==record.requestKey)
+          throw new Error('Dead-owner browser lock differs from the original reservation');
+      }
+      // A re-rendered *previous* assistant after a newer exact user prompt
+      // caused the actual seventh-round false attribution. Without a stored
+      // distinct assistant identity, equal bytes cannot be independently
+      // credited as a new turn on either recovery path.
+      const prior=this.events(id).filter(e=>
+        ['chatgpt.browser_observed','chatgpt.browser_turn_recovered',
+          'chatgpt.browser_rollover_recovered',
+          'chatgpt.browser_attribution_corrected'].includes(e.type)).at(-1);
+      if(prior&&(prior.payload as {assistantSha256?:string}).assistantSha256===input.assistantSha256)
+        throw new Error('Cannot distinguish recovered answer from a stale prior assistant re-render');
       const now=new Date().toISOString();
       this.setMeta(this.browserTurnKey(id),JSON.stringify({...record,status:'reconciled',
         assistantSha256:input.assistantSha256,observedAt:now}));
       this.db.prepare('DELETE FROM meta WHERE key=?').run(this.browserUrlLockKey(record.urlHash));
       this.db.prepare(`UPDATE missions SET state='PAUSED',owner_pid=NULL,owner_host=NULL,
-        turn_count=turn_count+1,last_summary=?,last_error=NULL,stop_requested=0,
+        turn_count=turn_count+1,last_summary=?,last_error=NULL,
         version=version+1,updated_at=? WHERE id=? AND version=?`)
         .run(input.summary.slice(-1000),now,id,m.version);
-      this.event(id,'mission.reconciled',{acknowledged:true,kind:'observed-browser-turn'});
+      this.event(id,'mission.reconciled',{acknowledged:true,
+        kind:deadReserved?'observed-dead-owner-reservation':'observed-browser-turn'});
       this.event(id,'chatgpt.browser_turn_recovered',{
         requestKey:record.requestKey,round:m.turnCount+1,
         assistantSha256:input.assistantSha256,excerpt:input.summary.slice(-1000),
-        independentlyInspected:true,originalUncertainEventPreserved:true,
+        independentlyInspected:true,originalUncertainEventPreserved:!deadReserved,
+        originalReservationPreserved:true,
+        ...(deadReserved?{recoverySource:'dead-owner-reserved'}:{}),
       });
       return this.get(id);
     });
