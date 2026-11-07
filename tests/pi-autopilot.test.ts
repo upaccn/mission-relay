@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import type {Page} from 'playwriter';
 import {Store} from '../src/core/store.js';
+import {GoalLedger} from '../src/core/goal-store.js';
 import {drivePiAutopilot,pauseFailedPiPlanning} from '../src/core/pi-autopilot.js';
 import {browserFreshTaskPrompt,browserNewChatPrompt,browserRolloverRecoveryPrompt,
   browserRolloverPiPlan} from '../src/core/browser-controller.js';
@@ -90,6 +91,44 @@ function fixture(ownerLinkedUrl=SOURCE) {
     results:()=>({sends,newPages,latestPrompt}),
     cleanup:()=>{store.close();rmSync(dir,{recursive:true,force:true});}};
 }
+
+test('opt-in Goal PI uses the real existing browser controller and does not trust the browser DONE marker',async()=>{
+  const f=fixture();
+  try{
+    const ledger=new GoalLedger(f.store);
+    const goal=ledger.createGoal({requestKey:'pi-goal-browser-integration',
+      objective:f.mission.goal,priority:90});
+    f.store.setMeta(`pi.autopilot.enabled.${f.mission.id}`,'1');
+    ledger.bindPiMission(goal.id,f.mission.id,f.mission.version,'bind-goal-controller');
+    let planCalls=0,reviewCalls=0;
+    const pi:PiPlanner={
+      decide:async()=>{throw new Error('Goal-bound Mission may not use the legacy fallback');},
+      proposeGoalPlan:async()=>{
+        planCalls++;return {summary:'Execute scoped NetBox check',items:[
+          {key:'netbox',title:'Verify NetBox lookup',description:'Check VRF ambiguity',
+            priority:90,dependsOn:[],acceptance:['Evidence supports VRF lookup']},
+        ]};
+      },
+      reviewGoalWork:async x=>{
+        reviewCalls++;
+        assert.equal(x.workItem.key,'netbox');
+        return {verdict:'PASS',summary:'PI reviewed the browser answer',
+          nextPrompt:'',handoff:false,evidenceRefs:['claimed:test:netbox']};
+      },
+    };
+    await drivePiAutopilot({store:f.store,planner:pi,missionId:f.mission.id,
+      revision:f.mission.version,requestPrefix:'goal-controller',page:f.anchor,url:SOURCE});
+    assert.equal(planCalls,1);
+    assert.equal(reviewCalls,1);
+    assert.equal(f.results().sends,2,
+      'The first browser DONE must not end the Goal; no third Send after pending independent acceptance');
+    assert.equal(f.store.get(f.mission.id).turnCount,2);
+    assert.equal(f.store.piPlan(f.mission.id)?.action,'BLOCKED');
+    assert.equal(ledger.graph(goal.id).items[0]?.status,'PASSED');
+    assert.equal(ledger.getGoal(goal.id).status,'ACTIVE');
+    assert.equal(f.store.events(f.mission.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2);
+  }finally{f.cleanup();}
+});
 
 test('exhausted 32-turn PI NEXT creates one durable successor and continues in a fresh chat',async()=>{
   const f=fixture();try{

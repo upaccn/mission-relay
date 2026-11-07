@@ -157,6 +157,90 @@ export class GoalLedger {
     return (this.store.db.prepare('SELECT * FROM goals ORDER BY created_at,id').all() as GoalRow[])
       .map(toGoal);
   }
+  /** Opt-in association only. Existing Mission records, Chat URLs and request
+   * receipts are untouched. A 32-turn child inherits the association through
+   * the already-authoritative, reciprocal PI parent chain. */
+  bindPiMission(goalId:string,missionId:string,expectedMissionVersion:number,
+    operationKey:string):string{
+    return this.once(goalId,operationKey,{missionId,expectedMissionVersion},()=>{
+      const goal=this.getGoal(goalId),mission=this.store.get(missionId);
+      requireVersion(mission.version,expectedMissionVersion);
+      if(mission.turnCount!==0||!['READY','PAUSED'].includes(mission.state)||
+        this.store.chatBrowserTurn(missionId)||
+        this.store.getMeta(`pi.autopilot.enabled.${missionId}`)!=='1'||
+        mission.goal.trim()!==goal.objective)
+        throw new Error('Goal binding requires an unstarted PI Mission with the exact owner goal');
+      if(this.store.getMeta(`goal.pi.binding.${missionId}`))
+        throw new Error('PI Mission is already bound to another Goal');
+      // A Goal cannot be driven by two independent live Mission roots. The
+      // existing 32-to-successor lineage inherits its original root binding,
+      // rather than creating a competing second Goal controller.
+      const others=this.store.db.prepare(
+        "SELECT key FROM meta WHERE key LIKE 'goal.pi.binding.%' AND value=?"
+      ).all(goalId) as {key:string}[];
+      for(const other of others){
+        const rootId=other.key.slice('goal.pi.binding.'.length);
+        const parent=this.store.get(rootId);
+        const plan=this.store.piPlan(rootId);
+        const pending=this.store.chatBrowserTurn(rootId);
+        if(!['COMPLETED','CANCELLED','BLOCKED'].includes(parent.state) &&
+           (parent.state!=='PAUSED'||parent.stopRequested||
+            pending?.status==='reserved'||pending?.status==='uncertain'||
+            !plan||['NEXT','HANDOFF'].includes(plan.action)))
+          throw new Error('Goal already has a live PI Mission root');
+      }
+      this.store.setMeta(`goal.pi.binding.${missionId}`,goalId);
+      this.event(goalId,'goal.pi_mission_bound',{missionId,missionVersion:mission.version});
+      return goalId;
+    });
+  }
+  missionGoalId(missionId:string):string|null{
+    const visited=new Set<string>();
+    let current:string|null=missionId;
+    while(current){
+      if(visited.has(current))throw new Error('PI Mission ancestry cycle');
+      visited.add(current);
+      this.store.get(current);
+      const found=this.store.getMeta(`goal.pi.binding.${current}`);
+      if(found){
+        const original=this.getGoal(found);
+        if(this.store.get(missionId).goal.trim()!==original.objective)
+          throw new Error('PI Mission Goal binding scope changed');
+        return found;
+      }
+      current=this.store.piChainParent(current);
+    }
+    return null;
+  }
+  /** PI review is an attributable decision, not independent evidence proof. */
+  recordPiReview(goalId:string,missionId:string,itemId:string,round:number,
+    answerSha256:string,verdict:'PASS'|'PARTIAL'|'FAIL'|'REPLAN'|'BLOCKED',
+    evidenceRefs:string[],summary:string,operationKey:string):void {
+    if(!/^[a-f0-9]{64}$/.test(answerSha256)||!Number.isInteger(round)||round<0)
+      throw new Error('PI Goal review requires a verified browser answer SHA and round');
+    evidence(evidenceRefs);
+    content(summary,1000,'PI work review summary');
+    this.once(goalId,operationKey,{missionId,itemId,round,answerSha256,verdict,evidenceRefs,summary},()=>{
+      if(this.missionGoalId(missionId)!==goalId||this.getWork(goalId,itemId).status==='PASSED')
+        throw new Error('PI review is not linked to the current work package');
+      this.event(goalId,'goal.pi_review',{missionId,itemId,round,answerSha256,verdict,
+        evidenceRefs:[...evidenceRefs],summary});
+      return true;
+    });
+  }
+  recordPiPlanReview(goalId:string,missionId:string,planId:string,round:number,
+    answerSha256:string,operationKey:string):void{
+    if(!/^[a-f0-9]{64}$/.test(answerSha256)||!Number.isInteger(round)||round<0)
+      throw new Error('PI plan review requires a verified browser answer and round');
+    this.once(goalId,operationKey,{missionId,planId,round,answerSha256},()=>{
+      const plan=this.getPlan(goalId,planId);
+      if(this.missionGoalId(missionId)!==goalId||plan.status!=='APPROVED')
+        throw new Error('PI plan review must cite a linked, approved plan');
+      this.event(goalId,'goal.pi_plan_reviewed',{missionId,planId,planVersion:plan.version,
+        round,answerSha256});
+      return true;
+    });
+  }
   getPlan(goalId:string,planId:string):GoalPlan{
     const row=this.store.db.prepare('SELECT * FROM goal_plans WHERE goal_id=? AND id=?')
       .get(goalId,planId) as PlanRow|undefined;

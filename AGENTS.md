@@ -1,5 +1,20 @@
 # Mission Relay contributor instructions
 
+Goal-driven WP2 source rule: Goal enrollment is explicit, via
+`GoalLedger.bindPiMission` on an unstarted, exactly scoped PI Mission. The
+opt-in PI project-manager review uses the existing
+`drivePiAutopilot -> Store.commitPiPlan -> browser Send` authority;
+PI may report PASS/PARTIAL/FAIL/REPLAN/BLOCKED but is not an independent
+Git/CI/deployment verifier. All Goal ledger transitions and the corresponding
+PI checkpoint must commit in the SAME SQLite transaction, with full observed
+assistant SHA, versions and append-only audit. Prior owner-note revisions
+must never treat the previously observed planning answer as execution of
+the newly selected work item. Never automatically classify Goal DONE from
+work-item PASS; do not change archived or active production Mission states.
+Goal enrollment UI, task-only browser prompts and independent Goal DONE
+verification remain separate release work packages. Do not rebuild the
+browser controller or PI scheduler.
+
 32-to-successor Chat retirement: do not treat a matching ChatGPT URL as
 physical tab ownership. A successor may close its predecessor's tab ONLY
 after its own first new Chat URL + complete answer were committed and the

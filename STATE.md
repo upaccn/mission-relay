@@ -1,5 +1,13 @@
 # Mission Relay project state
 
+## 2026-11-07 Goal-driven WP2 PI project manager (AIOS development only)
+
+- **Independently rechecked WP1 prerequisite:** AIOS HEAD and GitHub main at clean `b6889e9558eb631ff938fdeddb3c22b6b620e3b8`, inspected actual Goal v4 source and original diff; exact commit GitHub Actions run `42359091925` had `success` for Ubuntu, macOS, Windows Node 24. This baseline is not proof of WP2 or a GMK rollout.
+- Added opt-in Goal ↔ PI Mission binding, automatic inheritance through existing 32-turn successor lineage, tool-free PI planning and current-work review, persisted plan approval and highest-priority dependency-ready selection, PI PASS/PARTIAL/FAIL/REPLAN/BLOCKED review, exact source SHA evidence refs and append-only plan/review events. Changes to the Goal ledger and the native PI `commitPiPlan` are within the same SQLite transaction; no independent dispatcher or new browser Send path.
+- Existing legacy Missions continue the original `PiPlanner.decide` route, and unlinked Goals never take control of existing tasks. Pending owner notes revise the current work directive without reviewing an earlier plan reply as completed work. An apparently all-PASS Goal still has no DONE transition: independently verified release is deferred to WP5, and work items' claimed refs are not external Git/CI verification.
+- WP2 source/test/CI qualification must be recorded below once actually executed. GMK production migration, controller restart, tab cleanup, 5→6 and 32→1 real acceptance remain separate and have not been performed by this work package.
+- **WP2 source qualification (AIOS Node 24):** `npm run check`, `npm run privacy-check`, full `npm test`, `npm run build` and `git diff --check` passed on the final development tree. Complete Linux suite: **311 tests / 308 passed / zero failures / 3 Windows-only skips**. Separate Goal/PI and Goal/store isolated tests passed, and a synthetic `drivePiAutopilot` two-Send integration verifies the first model DONE is not Goal DONE. A real PI inference call, GMK runtime test, final exact-SHA GitHub CI and production deployment are separate gates.
+
 ## 2026-11-07 Goal-driven v1.0 WP1 (AIOS source; GMK not touched)
 
 - Initial inspected clean AIOS/GitHub `main` baseline `463db8a546bf8e2122e7cd74d857e245f404acbb`; matching three-platform Actions run `42354864228` succeeded. Existing SQLite was schema v3, and prior Goal-only project structures did not exist.

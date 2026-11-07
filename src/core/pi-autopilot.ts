@@ -7,6 +7,8 @@ import {executeBrowserTurn,executeBrowserRollover,retireSupersededRelayTab,brows
   browserNewChatPrompt,browserTaskPolicy,executorTaskGoal,type BrowserTurnOutcome} from './browser-controller.js';
 import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 import {withReadOnlyDeadline} from './read-only-deadline.js';
+import {GoalLedger} from './goal-store.js';
+import {reviewGoalPiRound} from './goal-pi.js';
 
 const MAX_REPLANS=3;
 /** Independent of the Mission's total budget, avoid overlong ChatGPT chats. */
@@ -48,6 +50,18 @@ async function reviewPiRound(
     if(store.get(missionId).stopRequested)
       throw new Error('Owner requested a pause before PI could authorize another turn');
     const queued=store.pendingPiOwnerDirectives(missionId);
+    // An explicitly bound Goal delegates the SAME PI checkpoint to the
+    // project-manager review. No parallel dispatch loop or new Send authority.
+    if(new GoalLedger(store).missionGoalId(missionId)){
+      try{
+        return await reviewGoalPiRound({store,planner,missionId,responseSha256,
+          lastAssistant,round:turnCount,replaceExisting,ownerDirectives:queued});
+      }catch(error){
+        if(error instanceof Error&&error.message.includes('Owner updates changed during Goal planning'))
+          continue;
+        throw error;
+      }
+    }
     const plan=await planner.decide({
       goal:mission.goal,acceptance:mission.acceptance,
       turnCount,maxTurns:mission.maxTurns,

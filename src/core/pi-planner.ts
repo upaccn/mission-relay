@@ -2,6 +2,8 @@ import {spawn} from 'node:child_process';
 import {childEnvironment} from './child-env.js';
 import type {PiOwnerDirective,PiPlanAction} from './store.js';
 import type {Sandbox} from './types.js';
+import {goalPlanPrompt,goalReviewPrompt,parseGoalPlanProposal,parseGoalReview,
+  type GoalPlanContext,type GoalReviewContext,type GoalPlanProposal,type GoalReview} from './goal-pi.js';
 
 export interface PiTurnContext {
   goal:string; acceptance:string[];turnCount:number;maxTurns:number;
@@ -14,6 +16,9 @@ export interface PiDecision {
 }
 export interface PiPlanner {
   decide(input:PiTurnContext):Promise<PiDecision>;
+  /** Goal-driven opt-in: existing legacy PI planners need not implement this. */
+  proposeGoalPlan?(input:GoalPlanContext):Promise<GoalPlanProposal>;
+  reviewGoalWork?(input:GoalReviewContext):Promise<GoalReview>;
 }
 export interface PictlRemoteConfig {sshHost:string;project:string}
 
@@ -58,6 +63,19 @@ export class AiosPiPlanner implements PiPlanner {
     if(parsed.ok!==true||typeof parsed.result!=='string')
       throw new Error('PI controller returned an unsuccessful or malformed result');
     return parsePiDecision(parsed.result);
+  }
+  private async inferGoal(prompt:string):Promise<string>{
+    const output=await sshPictlInfer(prompt,this.remote);
+    const parsed=JSON.parse(output) as {ok?:unknown;result?:unknown};
+    if(parsed.ok!==true||typeof parsed.result!=='string')
+      throw new Error('PI Goal decision unavailable or malformed; no browser Send authorized');
+    return parsed.result;
+  }
+  async proposeGoalPlan(input:GoalPlanContext):Promise<GoalPlanProposal>{
+    return parseGoalPlanProposal(await this.inferGoal(goalPlanPrompt(input)));
+  }
+  async reviewGoalWork(input:GoalReviewContext):Promise<GoalReview>{
+    return parseGoalReview(await this.inferGoal(goalReviewPrompt(input)));
   }
 }
 
