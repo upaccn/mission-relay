@@ -1,5 +1,14 @@
 # Mission Relay project state
 
+## 2026-11-07 Goal-driven WP4 Owner ↔ PI entrypoint (AIOS source only)
+
+- Starting readback: clean AIOS checkout and GitHub `main` at `15a4a931558640fba160e5f1f3b1f8a1953559f7`; exact-head GitHub Actions `42362344056` completed `success` on Node 24 Ubuntu, macOS, Windows. Inspected AGENTS/README/STATE, Goal/PI/Prompt code and real Telegram routing before editing.
+- Added authenticated Telegram `/goal <objective>` read-only and `/goal-build <objective>` locally approved repository-write Owner entries. An accepted command creates the Goal, PI-enabled Mission and explicit Goal↔Mission binding in the **same SQLite transaction**; no second scheduler, prompt format or browser Send route. Read-only `/goals [page]` and `/goal-status <UUID>` show persistent work and reported evidence; legacy commands do not convert older Missions. Goal creation alone never declares business DONE.
+- Existing Telegram worker gains a fail-closed recovery branch for an already-linked, unstarted READY Goal root with no prior browser Send or PI decision. Reserved/uncertain Sends remain excluded, and the existing controller's exact browser reservation prevents duplicate dispatch. Isolated synthetic Telegram+PI tests cover entry→durable plan→work dependency PASS→next work→BLOCKED, restart without duplicate Send, idempotent Bot update, failed binding rollback, approval gating and legacy route behavior.
+- GMK remains an unchanged pull-only production copy. On this round's last independent read, its current Mission had an unobserved reserved Send and the Telegram poller reported stale transport; no production upgrade, backup/migration, Worker restart, Telegram owner message, Chrome tab action or retry was performed.
+- Final WP4 acceptance requires current source check/privacy/full tests/build/diff, Git commit+push, GitHub HEAD/three-OS exact-commit CI readback. Independently verified Goal DONE and real GMK release gates are **not** part of this source-only work package.
+- **WP4 local source verification:** AIOS Node 24 `npm run check`, `npm run privacy-check`, full `npm test`, `npm run build` and `git diff --check` succeeded against final code. **327 tests / 324 passed / 0 failures / 3 Windows-only Linux skips**. The seven new isolated Telegram+PI integration cases all passed, including rollback and replay guards; they are synthetic, not independent production acceptance. Exact new GitHub commit/CI proof remains a separate gate.
+
 ## 2026-11-07 Goal-driven WP3 work-Prompt isolation (AIOS source only)
 
 - Independent readback at WP3 start: AIOS and GitHub `main` both clean `319bdef585ee383013bcee233192dd4130a45177`; GitHub Actions `42360896384` succeeded on Node 24 Ubuntu, macOS and Windows. Checked actual WP2 Goal-PI integration and original browser prompt/recovery implementation. This does not prove WP3 CI or GMK readiness.

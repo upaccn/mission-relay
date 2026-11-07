@@ -14,6 +14,7 @@ import {driveChatConversation,executeBrowserRollover,browserFreshTaskPrompt} fro
 import {withReadOnlyDeadline} from '../core/read-only-deadline.js';
 import {drivePiAutopilot,pauseFailedPiPlanning} from '../core/pi-autopilot.js';
 import {AiosPiPlanner,validateRemoteProjectPath,type PiPlanner} from '../core/pi-planner.js';
+import {GoalLedger} from '../core/goal-store.js';
 import type {Mission,MissionEvent} from '../core/types.js';
 
 export const telegramPluginManifest:PluginManifest={
@@ -460,6 +461,7 @@ export class TelegramBridge {
     // durable LIMIT decision and the child creation. The SQLite request key
     // makes this step idempotent; it does not send a browser message.
     for(const prior of this.engine.list())this.store.createPiSuccessor(prior.id);
+    const ledger=new GoalLedger(this.store);
     const candidates=this.engine.list().filter(m=>{
       const receipt=this.store.chatBrowserTurn(m.id),plan=this.store.piPlan(m.id);
       const correctedPending=m.lastError?.startsWith('Corrected answer attribution awaits')&&
@@ -468,11 +470,13 @@ export class TelegramBridge {
         this.store.hasVerifiedPiBrowserCheckpoint(m.id);
       return this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1' &&
       !m.stopRequested&&(!m.lastError||correctedPending)&&
-      ((m.state==='READY'&&m.turnCount===0&&!!this.store.piChainParent(m.id))||
+      ((m.state==='READY'&&m.turnCount===0&&
+        (!!this.store.piChainParent(m.id)||ledger.missionGoalId(m.id)!==null))||
       (m.state==='PAUSED'&&
         (m.turnCount>0||this.store.chatAdoption(m.id)!==null)))&&
       m.turnCount<=m.maxTurns&&
       (correctedPending||this.store.piChainParent(m.id)&&m.turnCount===0||
+       m.turnCount===0&&ledger.missionGoalId(m.id)!==null||
        plan?.round!==m.turnCount||
         (m.turnCount<m.maxTurns&&
          ['NEXT','HANDOFF'].includes(plan?.action??'')));
@@ -509,8 +513,15 @@ export class TelegramBridge {
         console.error(`PI recovery ${m.id}: linked ChatGPT tab not idle; preserving exact checkpoint without Send`);
         return;
       }
-      const previous=this.store.chatBrowserTurn(this.store.piChainParent(m.id)??m.id);
-      if(!previous||!this.store.hasVerifiedPiBrowserCheckpoint(this.store.piChainParent(m.id)??m.id)||
+      const firstGoalSend=m.state==='READY'&&m.turnCount===0&&
+        !this.store.piChainParent(m.id)&&ledger.missionGoalId(m.id)!==null;
+      const previous=firstGoalSend?null:
+        this.store.chatBrowserTurn(this.store.piChainParent(m.id)??m.id);
+      if(firstGoalSend){
+        if(this.store.chatBrowserTurn(m.id)||this.store.piPlan(m.id))
+          throw new Error('Initial Goal recovery refused: a browser Send or PI decision already exists');
+      }else if(!previous||
+        !this.store.hasVerifiedPiBrowserCheckpoint(this.store.piChainParent(m.id)??m.id)||
         createHash('sha256').update(snapshot.lastAssistant).digest('hex')!==previous.assistantSha256||
         lastUserHash!==previous.promptSha256)
         throw new Error('PI recovery refused: current Chrome user/assistant turns differ from the last durable receipt');
@@ -521,10 +532,10 @@ export class TelegramBridge {
         store:this.store,planner:this.piPlanner,missionId:m.id,
         revision:m.version,requestPrefix:m.requestKey,
         page:held.page,url,
-        recoveredAnswer:{
+        ...(firstGoalSend?{}:{recoveredAnswer:{
           responseSha256:createHash('sha256').update(snapshot.lastAssistant).digest('hex'),
           lastAssistant:snapshot.lastAssistant,
-        },
+        }}),
       }).catch(error=>{
         const reason=error instanceof Error?error.message:'unknown PI recovery error';
         console.error(`PI recovery ${m.id}: ${reason}`);
@@ -599,9 +610,11 @@ export class TelegramBridge {
 
   /** PI stays tool-free. An explicit /build command grants ChatGPT a single
    * operator-approved source scope; ordinary text and /auto stay read-only. */
-  private async startPiChat(task:string,commandId:string,write=false):Promise<string> {
+  private async startPiChat(task:string,commandId:string,write=false,goalDriven=false):Promise<string> {
     const goal=task.trim();
     if(this.activeMission){
+      if(goalDriven)
+        throw new Error('A PI Mission is already active; /goal cannot silently replace it or become an owner note');
       if(write&&this.store.get(this.activeMission).sandbox!=='workspace-write')
         throw new Error('A read-only PI Mission is already active; /build cannot silently upgrade it');
       return this.queuePiOwnerText(goal,commandId);
@@ -627,8 +640,11 @@ export class TelegramBridge {
       return !finished;
     });
     if(unresolved&&this.store.chatAdoption(unresolved.id)!==null)
+      if(goalDriven)throw new Error(`Another PI Mission ${unresolved.id} is unresolved; /goal will not create a duplicate Goal or queue its text as another Mission instruction`);
+    if(unresolved&&this.store.chatAdoption(unresolved.id)!==null)
       return this.queuePiOwnerText(goal,commandId,unresolved.id);
     if(unresolved?.state==='READY'&&this.store.piChainParent(unresolved.id)){
+      if(goalDriven)throw new Error(`PI successor ${unresolved.id} is already awaiting continuation; /goal cannot create a competing Goal`);
       if(write&&unresolved.sandbox!=='workspace-write')
         throw new Error('A read-only PI successor cannot be upgraded by /build');
       return this.queuePiOwnerText(goal,commandId,unresolved.id);
@@ -660,26 +676,34 @@ export class TelegramBridge {
       // The external maintenance CLI may request a drain while PI preflight
       // or Chrome inspection is awaited. Publish the PI-ready intent, exact
       // browser binding and drain check as one SQLite transaction.
-      const bound=this.store.atomic(()=>{
+      const created=this.store.atomic(()=>{
         if(this.store.channelDrainRequested(this.source))
           throw new Error('Telegram maintenance drain active; PI task was not created');
+        const requestKey=goalDriven?`telegram-goal-${commandId}`:`telegram-pi-${commandId}`;
         const m=this.engine.create({
           goal,acceptance:[writeWorkspace?
             'Implement the owner goal inside the approved source repository, verify changed files, tests and Git/CI evidence before claiming completion':
             'Substantively answer the owner request with evidence within read-only permissions'],
           workspace:writeWorkspace??'',sandbox:writeWorkspace?'workspace-write':'read-only',mode:'supervised',maxTurns:32,
-          requestKey:`telegram-pi-${commandId}`,checks:[],
+          requestKey,checks:[],
         });
         const linked=this.store.linkChat(m.id,url,m.version).mission;
         const bound=this.store.bindChatBrowser(m.id,browserId,linked.version).mission;
         this.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
-        return bound;
+        const ownerGoal=goalDriven?new GoalLedger(this.store).createGoal({
+          requestKey,objective:goal,priority:50,
+        }):null;
+        if(ownerGoal)new GoalLedger(this.store).bindPiMission(ownerGoal.id,
+          bound.id,bound.version,`initial-${commandId}`);
+        return {bound,ownerGoal};
       });
+      const {bound,ownerGoal}=created;
       const m=bound;
       this.activeMission=m.id;
       this.activeTask=drivePiAutopilot({
         store:this.store,planner:this.piPlanner,missionId:m.id,
-        revision:bound.version,requestPrefix:`telegram-pi-${commandId}`,
+        revision:bound.version,
+        requestPrefix:goalDriven?`telegram-goal-${commandId}`:`telegram-pi-${commandId}`,
         page:session.page,url,
       }).catch(error=>{
         const message=error instanceof Error?error.message:'unknown PI autopilot error';
@@ -689,7 +713,7 @@ export class TelegramBridge {
         try{await session.close();}catch{console.error('PI Playwriter session cleanup warning');}
         finally{this.activeMission=null;this.activeTask=null;}
       });
-      return `PI-coordinated ChatGPT Mission ${m.id} accepted (${writeWorkspace?'workspace-write':'read-only'}, up to 32 turns, max ${MAX_RELAY_CHAT_TURNS} per chat).\n${writeWorkspace?`Approved source: ${writeWorkspace}\n`:''}PI reviews each complete ChatGPT answer and decides the next action.\nAdditional plain-text instructions are queued for PI. Progress: /status ${m.id}. Do not resend.`;
+      return `${ownerGoal?`Goal ${ownerGoal.id} created (persistent; not yet independently accepted).\n`:''}PI-coordinated ChatGPT Mission ${m.id} accepted (${writeWorkspace?'workspace-write':'read-only'}, up to 32 turns, max ${MAX_RELAY_CHAT_TURNS} per chat).\n${writeWorkspace?`Approved source: ${writeWorkspace}\n`:''}PI reviews each complete ChatGPT answer and decides the next action.\nAdditional plain-text instructions are queued for PI. Progress: /status ${m.id}.${ownerGoal?` Goal: /goal-status ${ownerGoal.id}.`:''} Do not resend.`;
     }catch(error){
       try{await session.close();}catch{console.error('PI source preflight cleanup warning');}
       throw error;
@@ -798,6 +822,9 @@ export class TelegramBridge {
       '/list [page] — tasks requiring attention, unresolved first',
       '/history [page] — full Mission history (kept for audit)',
       'Plain text, ChatGPT: and /auto — PI plans up to 32 read-only turns per Mission, max 5 per chat',
+      '/goal <long-term objective> — create one durable read-only Goal; PI manages work packages',
+      '/goal-build <long-term objective> — Goal with locally approved workspace-write scope',
+      '/goals [page] — list persistent Goals; /goal-status <goal-id> — plan, active work and evidence status',
       '/auto <task> — start PI-managed read-only ChatGPT autopilot',
       '/build <task> — implement in the configured repository',
       'While PI is working, send plain text to queue owner instructions for its next decision',
@@ -817,6 +844,40 @@ export class TelegramBridge {
       return this.startAgentTask(clean.replace(/^agent\s*[:：]\s*/i,''),commandId);
     if(/^chatgpt\s*[:：]/i.test(clean))
       return this.startPiChat(clean.replace(/^chatgpt\s*[:：]\s*/i,''),commandId);
+    if(cmd==='/goal')return this.startPiChat(clean.slice(5),commandId,false,true);
+    if(cmd==='/goal-build')return this.startPiChat(clean.slice(11),commandId,true,true);
+    if(cmd==='/goals'){
+      const goals=new GoalLedger(this.store).listGoals();
+      const {page,pages,start}=missionPage(id,words,goals.length);
+      return goals.length?[
+        `Persistent Goals: Page ${page}/${pages} (${goals.length} total; not independent acceptance)`,
+        ...goals.slice(start,start+TELEGRAM_MISSION_PAGE_SIZE).map(g=>
+          `${g.id.slice(0,8)}… — ${g.status} v${g.version}: ${compactTelegramText(g.objective,100)}\n/goal-status ${g.id}`),
+      ].join('\n'):'No Goal records. Existing /auto and /build Missions are not automatically converted.';
+    }
+    if(cmd==='/goal-status'){
+      if(!id||!/^[0-9a-f-]{36}$/i.test(id)||words.length)
+        throw new Error('Use /goal-status <complete Goal UUID>');
+      const graph=new GoalLedger(this.store).graph(id);
+      const approved=graph.plans.find(p=>p.status==='APPROVED');
+      const items=approved?graph.items.filter(x=>x.planId===approved.id):[];
+      const active=items.find(x=>['IN_PROGRESS','REVIEW'].includes(x.status));
+      const verified=items.filter(x=>x.status==='PASSED').length;
+      const owner=graph.events.find(e=>e.type==='goal.pi_mission_bound');
+      const missionId=typeof owner?.payload.missionId==='string'?owner.payload.missionId:null;
+      const lineage=missionId?[missionId,...this.engine.list()
+        .filter(m=>m.id!==missionId&&new GoalLedger(this.store).missionGoalId(m.id)===id)
+        .map(m=>m.id)]:[];
+      return [
+        `Goal ${graph.goal.id} [${graph.goal.status}] v${graph.goal.version}`,
+        `Objective: ${compactTelegramText(graph.goal.objective,420)}`,
+        `Plan: ${approved?`${approved.ordinal} [${approved.status}] v${approved.version}`:'awaiting PI review'}`,
+        `Work: ${verified}/${items.length} reported PASSED; ${active?`current ${active.key} [${active.status}] v${active.version}`:'none active'}`,
+        `Acceptance: ${graph.acceptance.filter(a=>a.status==='PASS').length}/${graph.acceptance.length} reported PASS (model-reviewed only)`,
+        'Goal DONE: not available until independent release verification',
+        ...lineage.slice(-3).map(mid=>`PI Mission: /status ${mid}`),
+      ].join('\n');
+    }
     if(cmd==='/auto')return this.startPiChat(clean.slice(5),commandId);
     if(cmd==='/build')return this.startPiChat(clean.slice(6),commandId,true);
     if(cmd==='/new')return this.startFreshChat(clean.slice(4),commandId);
@@ -864,6 +925,8 @@ export class TelegramBridge {
       return [`${m.id} [${m.state}] v${m.version}`,`Turn ${m.turnCount}/${m.maxTurns}`,
       `Mode: ${m.sandbox}${m.sandbox==='workspace-write'&&m.workspace?` (${m.workspace})`:''}`,
       `Goal: ${m.goal.slice(0,400)}`,
+      ...(new GoalLedger(this.store).missionGoalId(m.id)
+        ?[`Persistent Goal: /goal-status ${new GoalLedger(this.store).missionGoalId(m.id)} (not automatically DONE)`]:[]),
       ...(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'
         ?[`PI coordinator: ${this.store.piPlan(id)?.action??'analyzing / awaiting the first answer'}`,
           `Pending owner instructions: ${this.store.pendingPiOwnerDirectives(id).length}`]:[]),

@@ -57,6 +57,35 @@ The existing Node controller checks ordinary control-loop progress every 30 seco
 
 ## Supported commands
 
+### Goal-driven owner commands (WP4)
+
+The private, authenticated Owner may send `/goal <long-term objective>` for
+**read-only** PI-managed Goal development, or `/goal-build <long-term objective>`
+for development **only inside** the repository already approved through the
+existing local `telegram-pi-config` and `telegram-build-project` workflow.
+No task breakdown, planning fields, plugin selection or additional scheduler
+are required from the Owner; the existing PI proposes and approves a
+versioned, dependency-ordered Work Item plan after the first observed browser
+analysis, then selects and reviews each package. Status is available via
+`/goals [page]`, `/goal-status <complete UUID>`, or the linked Mission
+`/status <mission UUID>`. Goal status is independent of each Chat and
+Mission; PI continuations and successive Missions inherit the same Goal.
+Only the Owner's explicitly chosen `/goal-build` is workspace-write; `/goal`
+never gains write access by virtue of a configured build project.
+
+The initial creation uses a single durable SQLite transaction for Goal,
+fresh PI Mission, approved Chrome binding, and Goal↔Mission association.
+An accepted but unsubmitted READY Goal after a controller restart may be
+recovered using the same approved browser anchor and original request key.
+If a browser Send has already been reserved or is uncertain, the channel
+does **not** duplicate or silently reconcile it; the original evidence
+must be inspected through the existing controlled recovery flow. Telegram
+updates are idempotent; repeated update IDs do not create competing Goals.
+The channel does not backfill old `/auto`, `/build`, plain-text or
+one-turn `/new` requests. Current model-reported Work Item PASS or a
+terminal Mission is **not** independent business verification or Goal DONE.
+WP5/6 release gates and real GMK smoke testing remain separate.
+
 The vendor-neutral optional native route is `/agent <task>` or `Agent: <task>`, and requires an independently installed executor plugin plus a locally approved `telegram-agent-workspace`. Plain text and `ChatGPT:` remain browser-first without native executor selection. Vendor-specific aliases (`/codex`, `Codex:`) are **not** supported by the new CLI; they were used in earlier prototypes. See [plugin API](plugin-api.md).
 
 `/list [page]`, `/history [page]`, `/status <uuid>`, `/handoff <uuid>`, `/continue <uuid> v<revision>`, `/pause <uuid>`, `/resume <uuid> v<revision>`, `/instruct <uuid> v<revision> <text>`, `/cancel <uuid> v<revision>`.

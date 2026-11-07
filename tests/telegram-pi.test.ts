@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import type {Page} from 'playwriter';
 import {Store} from '../src/core/store.js';
+import {GoalLedger} from '../src/core/goal-store.js';
 import {Engine} from '../src/core/engine.js';
 import {TelegramBridge,type TelegramUpdate,type TelegramTransport} from '../src/plugins/telegram.js';
 import {pauseFailedPiPlanning} from '../src/core/pi-autopilot.js';
@@ -43,7 +44,8 @@ function rig(planner:PiPlanner,options:{failFirstRecoveryConnect?:boolean}={}){
       first:()=>obj,last:()=>obj,isVisible:async()=>role!=='other',
       isEnabled:async()=>Boolean(entered),
       innerText:async()=>role==='user'?fresh?entered:'Anchor user message':
-        fresh?(sends>=2?'Second synthetic complete answer\n[MISSION_RELAY:DONE]'
+        fresh?(sends>=3?'Third synthetic complete answer\n[MISSION_RELAY:DONE]':
+          sends>=2?'Second synthetic complete answer\n[MISSION_RELAY:DONE]'
           :'Synthetic complete answer\n[MISSION_RELAY:DONE]'):'Anchor assistant message',
       fill:async(s:string)=>{entered=s;},
       click:async()=>{sentPrompts.push(entered);sends++;location=DEST;},
@@ -82,7 +84,7 @@ function rig(planner:PiPlanner,options:{failFirstRecoveryConnect?:boolean}={}){
   const message=(id:number,text:string):TelegramUpdate=>({
     update_id:id,message:{text,from:{id:1001},chat:{id:2001,type:'private'}},
   });
-  return {store,engine,bridge,sent,message,
+  return {store,engine,bridge,sent,message,dbFile:join(dir,'missions.sqlite'),
     primeRecovered:(prompt:string)=>{location=DEST;entered=prompt;sends=1;},
     setUpdates:(items:TelegramUpdate[])=>{updates=items;},
     state:()=>({sends,newTabs,closed,sentPrompts,connectorOptions,connectorAttempts}),
@@ -90,6 +92,239 @@ function rig(planner:PiPlanner,options:{failFirstRecoveryConnect?:boolean}={}){
 }
 
 const APPROVED_PROJECT='/srv/ai/workspace/projects/mission-relay';
+
+function goalPlanner():PiPlanner{
+  return {
+    decide:async()=>{throw new Error('Goal-bound PI must not use legacy DONE');},
+    proposeGoalPlan:async()=>({
+      summary:'Review the current project goal and implement the two scoped packages',
+      items:[
+        {key:'first',title:'Research the root issue',description:'Verify relevant evidence',
+          priority:90,dependsOn:[],acceptance:['Concrete evidence for the root issue']},
+        {key:'second',title:'Implement the scoped change',
+          description:'Check code and tests',priority:75,dependsOn:['first'],
+          acceptance:['Independently inspectable test result']},
+      ],
+    }),
+    reviewGoalWork:async()=>({
+      verdict:'BLOCKED',summary:'Owner needs an independent verification receipt',
+      nextPrompt:'',handoff:false,evidenceRefs:[],
+    }),
+  };
+}
+
+test('WP4 /goal creates durable Goal plus one PI Mission; PI persists a reviewed plan and blocks without Goal DONE',async()=>{
+  const f=rig(goalPlanner());
+  try{
+    const objective='Long-term Goal: improve NetBox device ownership with auditable evidence';
+    f.setUpdates([f.message(3101,`/goal ${objective}`)]);
+    await f.bridge.pollOnce(0);
+    const ledger=new GoalLedger(f.store),goals=ledger.listGoals();
+    assert.equal(goals.length,1);
+    assert.equal(goals[0]!.objective,objective);
+    const task=f.engine.list().find(m=>m.goal===objective)!;
+    assert.ok(task);
+    assert.equal(task.sandbox,'read-only');
+    assert.equal(ledger.missionGoalId(task.id),goals[0]!.id);
+    assert.ok(f.sent.some(x=>x.includes(`Goal ${goals[0]!.id} created`)));
+    for(let i=0;i<160&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(f.state().closed,true);
+    const graph=ledger.graph(goals[0]!.id);
+    assert.equal(graph.plans.length,1);
+    assert.equal(graph.plans[0]?.status,'APPROVED');
+    assert.equal(graph.items.find(x=>x.key==='first')?.status,'BLOCKED');
+    assert.equal(graph.items.find(x=>x.key==='second')?.status,'PENDING');
+    assert.equal(graph.goal.status,'BLOCKED');
+    assert.equal(f.store.piPlan(task.id)?.action,'BLOCKED');
+    assert.equal(f.state().sends,2);
+    assert.ok(graph.events.some(e=>e.type==='goal.pi_plan_reviewed'));
+    assert.ok(graph.events.some(e=>e.type==='goal.pi_review'));
+    assert.equal(graph.events.filter(e=>e.type==='goal.pi_mission_bound').length,1);
+    assert.equal(f.store.events(task.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2);
+    f.setUpdates([f.message(3101,`/goal ${objective}`),
+      f.message(3102,`/goal-status ${graph.goal.id}`),
+      f.message(3103,'/goals'),f.message(3104,`/status ${task.id}`)]);
+    await f.bridge.pollOnce(0);
+    assert.equal(ledger.listGoals().length,1);
+    assert.ok(f.sent.some(x=>x.includes('Goal DONE: not available')));
+    assert.ok(f.sent.some(x=>x.includes('Persistent Goals: Page 1/1')));
+    assert.ok(f.sent.some(x=>x.includes(`Persistent Goal: /goal-status ${graph.goal.id}`)));
+    assert.equal(f.store.events(task.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2);
+  }finally{f.cleanup();}
+});
+
+test('WP4 owner Goal drives PI PASS into its dependent next package, then BLOCKED without Goal DONE',async()=>{
+  let reviews=0;
+  const planner:PiPlanner={
+    ...goalPlanner(),
+    reviewGoalWork:async context=>{
+      reviews++;
+      if(reviews===1){
+        assert.equal(context.workItem.key,'first');
+        return {verdict:'PASS',summary:'First task evidence is recorded',
+          nextPrompt:'',handoff:false,evidenceRefs:['git:synthetic-first']};
+      }
+      assert.equal(context.workItem.key,'second');
+      return {verdict:'BLOCKED',summary:'Independent final verification is still pending',
+        nextPrompt:'',handoff:false,evidenceRefs:[]};
+    },
+  };
+  const f=rig(planner);
+  try{
+    const objective='Owner Goal: build tested device ownership with correct cross-VRF isolation';
+    f.setUpdates([f.message(3151,`/goal ${objective}`)]);
+    await f.bridge.pollOnce(0);
+    for(let i=0;i<220&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(f.state().closed,true);
+    assert.equal(reviews,2);
+    assert.equal(f.state().sends,3);
+    const prompts=f.state().sentPrompts;
+    assert.ok(prompts[0]?.includes(objective),
+      'Only the initial owner planning turn retains full Goal context');
+    assert.match(prompts[1]!,/Work package: first — Research the root issue/);
+    assert.match(prompts[2]!,/Work package: second — Implement the scoped change/);
+    assert.ok(!prompts[1]!.includes(objective));
+    assert.ok(!prompts[2]!.includes(objective));
+    const ledger=new GoalLedger(f.store),graph=ledger.graph(ledger.listGoals()[0]!.id);
+    assert.equal(graph.items.find(x=>x.key==='first')?.status,'PASSED');
+    assert.equal(graph.items.find(x=>x.key==='second')?.status,'BLOCKED');
+    assert.deepEqual(graph.events.filter(e=>e.type==='goal.pi_review')
+      .map(e=>e.payload.verdict),['PASS','BLOCKED']);
+    assert.equal(graph.goal.status,'BLOCKED');
+    const mission=f.engine.list().find(x=>x.goal===objective)!;
+    assert.equal(f.store.piPlan(mission.id)?.action,'BLOCKED');
+    assert.equal(f.store.events(mission.id).filter(e=>e.type==='chatgpt.browser_reserved').length,3);
+  }finally{f.cleanup();}
+});
+
+test('WP4 /goal-build requires existing explicit local repository approval; failure leaves no Goal or Mission',async()=>{
+  const f=rig(goalPlanner());
+  try{
+    const objective='Build the validated private product from a long-term owner goal';
+    f.setUpdates([f.message(3201,`/goal-build ${objective}`)]);
+    await f.bridge.pollOnce(0);
+    assert.ok(f.sent.some(x=>/locally approved project/.test(x)));
+    assert.equal(new GoalLedger(f.store).listGoals().length,0);
+    assert.equal(f.engine.list().length,1,'The original ChatGPT anchor must be preserved');
+    assert.equal(f.state().sends,0);
+    f.store.setMeta('telegram.pi.project',APPROVED_PROJECT);
+    f.store.setMeta('telegram.build.project',APPROVED_PROJECT);
+    f.setUpdates([f.message(3202,`/goal-build ${objective}`)]);
+    await f.bridge.pollOnce(0);
+    const goal=new GoalLedger(f.store).listGoals()[0]!;
+    assert.equal(goal.objective,objective);
+    const mission=f.engine.list().find(x=>x.goal===objective)!;
+    assert.equal(mission.sandbox,'workspace-write');
+    assert.equal(mission.workspace,APPROVED_PROJECT);
+    assert.ok(f.sent.some(x=>x.includes(`Goal ${goal.id} created`)));
+    for(let i=0;i<150&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(f.state().closed,true);
+    assert.ok(f.state().sentPrompts[0]?.includes(APPROVED_PROJECT));
+    assert.equal(new GoalLedger(f.store).getGoal(goal.id).status,'BLOCKED');
+  }finally{f.cleanup();}
+});
+
+test('WP4 Goal and PI Mission creation are one transaction: injected binding failure rolls back both',async()=>{
+  const f=rig(goalPlanner());
+  try{
+    f.store.db.exec(`CREATE TRIGGER injected_goal_binding_failure
+      BEFORE INSERT ON goal_events WHEN NEW.type='goal.pi_mission_bound'
+      BEGIN SELECT RAISE(ABORT,'synthetic Goal binding failure'); END;`);
+    f.setUpdates([f.message(3301,'/goal Do not create an orphan state')]);
+    await f.bridge.pollOnce(0);
+    assert.ok(f.sent.some(x=>x.includes('synthetic Goal binding failure')));
+    assert.equal(new GoalLedger(f.store).listGoals().length,0);
+    assert.equal(f.engine.list().length,1);
+    assert.equal(f.state().sends,0);
+    assert.equal(f.store.db.prepare(
+      "SELECT COUNT(*) AS n FROM meta WHERE key LIKE 'goal.pi.binding.%'"
+    ).get().n,0);
+    f.store.db.exec('DROP TRIGGER injected_goal_binding_failure');
+    f.setUpdates([f.message(3302,'/goal Do not create an orphan state')]);
+    await f.bridge.pollOnce(0);
+    assert.equal(new GoalLedger(f.store).listGoals().length,1);
+    for(let i=0;i<180&&(f.bridge as unknown as {activeTask:Promise<void>|null}).activeTask;i++)
+      await new Promise(r=>setTimeout(r,50));
+    assert.equal((f.bridge as unknown as {activeTask:Promise<void>|null}).activeTask,null,
+      'The second accepted PI run must settle before closing the test SQLite');
+  }finally{f.cleanup();}
+});
+
+test('WP4 restart recovers an accepted READY Goal before its first Send, and never duplicates the event',async()=>{
+  const f=rig(goalPlanner());
+  try{
+    const objective='Owner Goal: resume exactly one browser request after controller restart';
+    const m=f.store.create({goal:objective,acceptance:['Check exact original browser reservation'],
+      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:32,
+      requestKey:'root-recovery',checks:[]});
+    const linked=f.store.linkChat(m.id,SRC,m.version).mission;
+    const bound=f.store.bindChatBrowser(m.id,'install:Chrome:synthetic',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
+    const ledger=new GoalLedger(f.store);
+    const goal=ledger.createGoal({requestKey:'recover-owner-goal',objective,priority:50});
+    ledger.bindPiMission(goal.id,m.id,bound.version,'bind-for-recovery');
+    assert.equal(f.store.chatBrowserTurn(m.id),null);
+    await (f.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>})
+      .recoverObservedPiCheckpoint();
+    for(let i=0;i<150&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(f.state().closed,true);
+    assert.equal(f.state().sends,2);
+    assert.equal(f.store.events(m.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2);
+    assert.equal(ledger.graph(goal.id).plans.length,1);
+    const events=ledger.graph(goal.id).events.length;
+    await (f.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>})
+      .recoverObservedPiCheckpoint();
+    assert.equal(f.state().sends,2);
+    assert.equal(ledger.graph(goal.id).events.length,events);
+    const reopened=new Store(f.dbFile,{readOnly:true});
+    try{
+      assert.deepEqual(new GoalLedger(reopened).graph(goal.id),ledger.graph(goal.id));
+      assert.equal(reopened.chatBrowserTurn(m.id)?.status,'observed');
+      assert.equal(reopened.piPlan(m.id)?.action,'BLOCKED');
+    }finally{reopened.close();}
+  }finally{f.cleanup();}
+});
+
+test('WP4 READY Goal is NOT replayed when an original browser Send is already reserved',async()=>{
+  const f=rig(goalPlanner());
+  try{
+    const objective='Owner Goal: never duplicate in-flight Chrome Send';
+    const base=f.store.create({goal:objective,acceptance:['Preserve original reservation'],
+      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:32,
+      requestKey:'existing-reservation',checks:[]});
+    const linked=f.store.linkChat(base.id,SRC,base.version).mission;
+    const bound=f.store.bindChatBrowser(base.id,'install:Chrome:synthetic',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${base.id}`,'1');
+    const ledger=new GoalLedger(f.store);
+    const goal=ledger.createGoal({requestKey:'goal-with-reservation',objective,priority:50});
+    ledger.bindPiMission(goal.id,base.id,bound.version,'bind-reservation-test');
+    const before=f.store.get(base.id);
+    const originalSha=createHash('sha256').update('Original browser task').digest('hex');
+    f.store.reserveChatBrowserTurn(base.id,before.version,'already-submitted',originalSha,
+      {newConversation:true});
+    await (f.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>})
+      .recoverObservedPiCheckpoint();
+    assert.equal(f.state().sends,0);
+    assert.equal(f.store.chatBrowserTurn(base.id)?.status,'reserved');
+    assert.equal(f.store.chatBrowserTurn(base.id)?.promptSha256,originalSha);
+    assert.equal(ledger.graph(goal.id).plans.length,0);
+    assert.equal(f.store.events(base.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+  }finally{f.cleanup();}
+});
+
+test('WP4 legacy plain-text and /auto PI Missions remain unbound to Goals',async()=>{
+  const f=rig({decide:async()=>({action:'BLOCKED',summary:'Legacy behavior retained',nextPrompt:''})});
+  try{
+    f.setUpdates([f.message(3501,'/auto Preserve existing PI semantics')]);
+    await f.bridge.pollOnce(0);
+    const mission=f.engine.list().find(x=>x.goal==='Preserve existing PI semantics')!;
+    assert.ok(mission);
+    assert.equal(new GoalLedger(f.store).missionGoalId(mission.id),null);
+    assert.equal(new GoalLedger(f.store).listGoals().length,0);
+    for(let i=0;i<100&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(f.store.piPlan(mission.id)?.action,'BLOCKED');
+  }finally{f.cleanup();}
+});
 
 test('owner can amend an unsent READY PI successor after restart without starting another mission',async()=>{
   const f=rig({decide:async()=>({action:'DONE',summary:'Not invoked',nextPrompt:''})});

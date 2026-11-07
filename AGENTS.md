@@ -1,5 +1,21 @@
 # Mission Relay contributor instructions
 
+WP4 Goal Owner entrypoint: Telegram `/goal <objective>` is the opt-in read-only
+long-lived Goal route; `/goal-build <objective>` uses ONLY the existing
+locally approved workspace-write repository. `/goals` and `/goal-status`
+are bounded read-only views of the persistent Goal, plan, item and claimed
+acceptance ledger. Legacy plain text, `/auto`, `/build` and `/new`
+must not implicitly convert historic Missions or send a duplicate request.
+Goal creation, its unstarted linked PI Mission, exact browser profile,
+PI enrollment and Goal binding MUST be one SQLite transaction after owner,
+workspace, PI and browser preflights. No new Send is authorized by Goal
+creation alone. A crash before the first Send may resume an exactly READY
+and bound Goal root from its approved anchor only when no browser receipt
+or PI decision exists; a reserved/uncertain request must NEVER replay.
+Keep PI's decision and Goal graph independent of the Mission/Chat lifetime.
+Model-reported work PASS does not establish Goal DONE. Do not deploy to
+GMK while any in-flight Send or maintenance gate prevents safe migration.
+
 WP3 Goal-executor prompt boundary: the initial first-round owner task retains
 the legacy full-goal prompt for PI planning, but every *subsequent*
 Goal-bound current-work Send (same Chat, 5-to-6 new Chat, or 32-to-successor
