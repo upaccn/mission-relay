@@ -7,8 +7,9 @@ import { statSync, readFileSync } from 'node:fs';
 import { Engine } from './core/engine.js';
 import { Store } from './core/store.js';
 import {GoalReleaseGate} from './core/goal-release.js';
-import {readRemoteGitMainSha,remoteReleaseProbe,
-  remoteActionsReleaseProbe} from './core/goal-release-remote.js';
+import {remoteReleaseProbe} from './core/goal-release-remote.js';
+import {githubRepositoryForRuntime,readGithubReleaseMainSha,
+  githubReleaseProbe} from './core/goal-release-github.js';
 import {inspectPiEvidence,inspectPiChainEvidence} from './core/pi-evidence.js';
 import {inspectBrowserBinding} from './core/browser-binding-diagnostic.js';
 import {assessPendingBrowserAnswer} from './core/browser-pending-evidence.js';
@@ -77,7 +78,9 @@ Commands:
   goal-release-target <goal-id> --sha <reviewed main SHA>
                        Begin independent verification after all PI work reports PASS
   goal-release-verify <goal-id> --requirement <check|privacy-check|test|build|ci-OS>
-                       [--run-id <GitHub Actions run>]   Run actual independent tools
+                       [--run-id <GitHub Actions run>]
+                       Verify exact-head GitHub CI steps, or execute a fixed
+                       source check via approved SSH when no run-id was given
   goal-release-finalize <goal-id>  DONE only after all evidence and fresh origin/main readback
   create --goal <text> --accept <criterion> [--accept <criterion>...] --workspace <path>
          [--sandbox read-only|workspace-write] [--mode supervised|autopilot]
@@ -327,20 +330,26 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       if(!sshHost||!project||project!==store.getMeta('telegram.pi.project'))
         throw new Error('Goal release requires the existing approved AIOS SSH project');
       const remote=validatePictlRemoteConfig({sshHost,project});
-      const gate=new GoalReleaseGate(store),mainSha=readRemoteGitMainSha(remote);
+      // GitHub main (not GMK's intentionally stale pull-only checkout) is
+      // the publication boundary. This read needs no AIOS SSH directory
+      // permission and cannot modify either host.
+      const githubRepository=githubRepositoryForRuntime();
+      const gate=new GoalReleaseGate(store),
+        mainSha=readGithubReleaseMainSha(githubRepository);
       if(command==='goal-release-target'){
         const f=flags(rest),target=option(f,'sha');
         if(target!==mainSha)throw new Error('Release target differs from independently read origin/main');
         result=gate.begin(id,target);
       }else if(command==='goal-release-verify'){
         const f=flags(rest),requirement=option(f,'requirement');
-        const probe=requirement.startsWith('ci-')
-          ?remoteActionsReleaseProbe(remote,option(f,'run-id'))
+        const runId=f['--run-id']?option(f,'run-id'):null;
+        const probe=requirement.startsWith('ci-')||runId
+          ?githubReleaseProbe(githubRepository,runId??option(f,'run-id'))
           :remoteReleaseProbe(remote,join(home,'goal-release-evidence'));
         result=await gate.inspect(id,requirement,probe);
       }else{
         if(rest.length)throw new Error('goal-release-finalize takes no options');
-        result=await gate.finalize(id,async()=>readRemoteGitMainSha(remote));
+        result=await gate.finalize(id,async()=>readGithubReleaseMainSha(githubRepository));
       }
     } else if (command === 'doctor') {
       result=await executorPreflight(store);

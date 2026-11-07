@@ -2,6 +2,21 @@
 
 ## Goal release gate (WP5)
 
+**WP6.1 GitHub-native release proof:** When the existing GMK SSH identity
+cannot read AIOS's private repository, the already-installed `gh` CLI
+uses the GMK checkout's original GitHub `origin` only for repository
+identity; the current GitHub `main` SHA and exact Actions run are fetched
+fresh from GitHub with a minimal subprocess environment. The verifier
+checks the run belongs to the exact repository and revision and that the
+mandatory `npm ci`, `privacy-check`, `check`, `test`, and `build`
+steps all succeeded. The four source-script Goal gates may be satisfied
+by their independently observed CI outcomes, but a green workflow does
+not grant the separate Chrome, Mission 32→successor, tab retirement,
+maintenance, GMK deployment or owner-business Goal criteria. The
+existing AIOS SSH fixed-command probe remains opt-in, never escalates
+permissions or changes another service. Source-only verification is not
+a production release.
+
 **WP6 cross-host implementation:** The release CLI is hosted beside the
 private Goal SQLite and real Chrome on Windows. `telegram.build.project`
 is the **approved remote AIOS path**, not a Windows-local directory. To

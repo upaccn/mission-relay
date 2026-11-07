@@ -1,5 +1,19 @@
 # Mission Relay contributor instructions
 
+WP6 GitHub release readback: GitHub `main` is the exact release boundary;
+the GMK pull-only checkout supplies ONLY its existing `origin` repository
+identity, never the release SHA. The already-installed GitHub CLI can read
+the exact GitHub main commit and a specific Actions run directly with a
+minimal environment (no Bot/PI secrets). A real completed, same-repository,
+exact-SHA CI run with successful required steps may attest the four
+source-script gates and three CI platform gates. This is NOT verification
+of an inaccessible AIOS working tree, live Chrome, Mission 32→successor,
+maintenance recovery, tab retirement, GMK deployment or any business
+criterion. SSH source checks remain optional and fail closed on denied
+access. Never convert an arbitrary PI claim, CI step alone, a model answer
+or an old GMK checkout into Goal DONE. Production migration must still
+pass the existing SQLite maintenance drain.
+
 WP6 source/runtime boundary: on Windows GMK, `telegram.pi.project` and
 `telegram.build.project` refer to the approved AIOS **Linux SSH project**,
 not a Windows filesystem directory. Operator-only release attestation

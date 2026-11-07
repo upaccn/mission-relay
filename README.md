@@ -1,9 +1,22 @@
 # Mission Relay
 
+**WP6.1 independent GitHub proof fallback (source-only; not yet deployed):**
+The GMK runtime already has GitHub CLI. Operator-only
+`goal-release-target` and `goal-release-finalize` can independently
+read GitHub `main` without SSH access to the AIOS source directory.
+`goal-release-verify <Goal UUID> --requirement <check|privacy-check|test|build|ci-ubuntu|ci-macos|ci-windows> --run-id <Actions run ID>`
+reads the real same-repository, exact-SHA GitHub Actions run and verifies
+its successful individual test/build steps. Omitting `--run-id` for a
+source-script requirement retains the fixed-command AIOS SSH probe,
+which fails closed on permissions errors. The GMK checkout supplies only
+the GitHub repository identity, not the published SHA. This does not
+replace separate AIOS worktree inspection, live Chrome or 32-turn evidence,
+business criteria, maintenance drain, or GMK production readback.
+
 **WP6 source/runtime evidence boundary:** GMK's private Goal ledger and
 interactive Chrome live on Windows; the canonical development repository is
 on AIOS Linux. The approved PI/build project path is REMOTE, not a GMK-local
-checkout path. Source/CI release readbacks use the already-enrolled SSH
+checkout path. Optional SSH source check readbacks use the already-enrolled SSH
 alias and exactly approved remote project, validate clean `main` against
 `origin/main`, run only fixed verification commands, and fail closed if
 the SSH identity cannot access the repository. This does not grant new

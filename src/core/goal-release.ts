@@ -56,6 +56,14 @@ const sourceFor=(requirement:string):string=>
   ['check','privacy-check','test','build'].includes(requirement)?'local-command':
   requirement.startsWith('ci-')?'github-actions':
   requirement==='gmk-production-readback'?'gmk-readback':'chrome-readback';
+/** A successful exact-head GitHub Actions job independently runs the same
+ * check/privacy/test/build scripts. Accept that evidence ONLY for those
+ * four source gates; browser, GMK and business criteria are never inferred
+ * from green CI or a matching Git commit. */
+const sourceAllowed=(requirement:string,source:string|null):boolean=>
+  source===sourceFor(requirement)||
+  (source==='github-actions'&&
+    ['check','privacy-check','test','build'].includes(requirement));
 const graphSignature=(graph:GoalGraph,planId:string):string=>digest({
   goalVersion:graph.goal.version,
   plan:graph.plans.filter(x=>x.id===planId).map(x=>[x.id,x.version,x.status]),
@@ -147,7 +155,7 @@ export class GoalReleaseGate {
         if(!matchesAudit||
           check.targetSha!==target.targetSha||check.revision!==target.revision||
           check.state!=='PASS'||!check.proofSha256||!proofPattern.test(check.proofSha256)||
-          check.source!==sourceFor(check.requirement)||
+          !sourceAllowed(check.requirement,check.source)||
           !check.reference||!check.verifiedAt||!check.expiresAt||
           !Number.isFinite(Date.parse(check.verifiedAt))||
           Date.parse(check.verifiedAt)>time||
@@ -197,7 +205,7 @@ export class GoalReleaseGate {
     if(!before.target||!before.checks.some(c=>c.requirement===requirement)||
       !before.blockers.every(b=>before.checks.some(c=>c.requirement===b)))
       throw new Error('Release target or Goal graph invalid; re-plan or re-target first');
-    if(probe.source!==sourceFor(requirement))
+    if(!sourceAllowed(requirement,probe.source))
       throw new Error('Independent evidence source does not match the requirement');
     const receipt=await probe.inspect(requirement,before.target.targetSha);
     if(!['PASS','FAIL','BLOCKED'].includes(receipt.state)||

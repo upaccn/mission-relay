@@ -193,6 +193,32 @@ test('expired and tampered records never establish freshness or independent trus
   }finally{f.close();}
 });
 
+test('exact-head GitHub CI can independently attest source gates, never Chrome/GMK or business criteria',async()=>{
+  const f=fixture();
+  try{
+    f.passed();f.gate.begin(f.goal.id,SHA);
+    for(const requirement of ['check','privacy-check','test','build']){
+      const probe={...independent(requirement),source:'github-actions'};
+      await f.gate.inspect(f.goal.id,requirement,probe);
+      assert.equal(f.gate.report(f.goal.id).checks.find(c=>c.requirement===requirement)?.source,
+        'github-actions');
+    }
+    const current=f.gate.report(f.goal.id);
+    assert.equal(current.ready,false);
+    assert.ok(current.blockers.includes('gmk-production-readback'));
+    assert.ok(current.blockers.includes('chrome-5-to-6'));
+    assert.ok(current.blockers.some(b=>b.startsWith('criterion:')));
+    await assert.rejects(f.gate.inspect(f.goal.id,'gmk-production-readback',{
+      ...independent('gmk-production-readback'),source:'github-actions',
+    }),/source/);
+    const criterion=current.checks.find(c=>c.requirement.startsWith('criterion:'))!;
+    await assert.rejects(f.gate.inspect(f.goal.id,criterion.requirement,{
+      ...independent(criterion.requirement),source:'github-actions',
+    }),/source/);
+    await assert.rejects(f.gate.finalize(f.goal.id,async()=>SHA),/evidence/);
+  }finally{f.close();}
+});
+
 test('a forged direct SQLite PASS without a matching immutable audit receipt is rejected',async()=>{
   const f=fixture();
   try{

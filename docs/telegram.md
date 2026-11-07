@@ -1,5 +1,14 @@
 # Telegram (experimental, optional)
 
+**WP6.1 release evidence update:** The owner-only Goal release CLI may
+read GitHub `main` and an exact Actions run directly through the
+already-installed `gh` binary. A `--run-id` on
+`goal-release-verify` uses same-commit CI evidence for the source
+script and platform gates even when the configured AIOS SSH identity
+cannot read the private workspace. No new authentication or Telegram
+command is introduced. Browser, business and GMK release gates remain
+independent and cannot be marked PASS by GitHub CI evidence.
+
 **WP5 release status:** Owner `/goal-status <UUID>` shows whether independent
 release verification is targeted, how many separately verified requirements
 exist, and current blockers. The underlying CLI
