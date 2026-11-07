@@ -18,7 +18,7 @@ const never:AgentAdapter={
   async execute(){throw new Error('Native agent must not execute PI ChatGPT Missions');},
   async verify(){throw new Error('Native verifier must not execute PI ChatGPT Missions');},
 };
-function rig(planner:PiPlanner){
+function rig(planner:PiPlanner,options:{failFirstRecoveryConnect?:boolean}={}){
   const dir=mkdtempSync(join(tmpdir(),'relay-telegram-pi-'));
   const store=new Store(join(dir,'missions.sqlite'));
   const engine=new Engine(store,never);
@@ -29,6 +29,7 @@ function rig(planner:PiPlanner){
   store.bindChatBrowser(m.id,'install:Chrome:synthetic',linked.version);
   store.setMeta('telegram.chatgpt.anchorMissionId',m.id);
   let sends=0,newTabs=0,closed=false,entered='',location='about:blank';
+  let connectorAttempts=0;
   const connectorOptions:Array<{browserId?:string;bootstrapMissingAnchor?:boolean}|undefined>=[];
   const sentPrompts:string[]=[];
   const roleLocator=(fresh:boolean)=>(selector:string)=>{
@@ -70,6 +71,9 @@ function rig(planner:PiPlanner){
   const bridge=new TelegramBridge(store,engine,transport,1001,2001,
     async()=>{throw new Error('Codex must not execute');},
     async(url,opts)=>{
+      connectorAttempts++;
+      if(options.failFirstRecoveryConnect&&connectorAttempts===1)
+        throw new Error('Playwriter relay reconnecting after Chrome restart');
       connectorOptions.push(opts);
       assert.ok([SRC,DEST].includes(url));
       assert.equal(opts?.browserId,'install:Chrome:synthetic');
@@ -81,7 +85,7 @@ function rig(planner:PiPlanner){
   return {store,engine,bridge,sent,message,
     primeRecovered:(prompt:string)=>{location=DEST;entered=prompt;sends=1;},
     setUpdates:(items:TelegramUpdate[])=>{updates=items;},
-    state:()=>({sends,newTabs,closed,sentPrompts,connectorOptions}),
+    state:()=>({sends,newTabs,closed,sentPrompts,connectorOptions,connectorAttempts}),
     cleanup:()=>{store.close();rmSync(dir,{recursive:true,force:true});}};
 }
 
@@ -356,6 +360,54 @@ test('Telegram receives bounded PI progress after NEXT and only one PI final sum
     await f.bridge.pollOnce(0);
     assert.equal(f.sent.filter(x=>/PI decision: NEXT/.test(x)).length,1);
     assert.equal(f.sent.filter(x=>/PI DONE/.test(x)).length,1);
+  }finally{f.cleanup();}
+});
+
+test('PI restart preserves a settled NEXT on transient Playwriter loss, retries without Send and resumes after reconnection',async()=>{
+  const sha=(s:string)=>createHash('sha256').update(s).digest('hex');
+  const planner:PiPlanner={decide:async()=>({
+    action:'DONE',summary:'Reconnected browser answer independently reviewed',nextPrompt:'',
+  })};
+  const f=rig(planner,{failFirstRecoveryConnect:true});try{
+    const prompt='Original verified browser prompt';
+    const answer='Synthetic complete answer\n[MISSION_RELAY:DONE]';
+    const created=f.store.create({goal:'Resume after temporary Playwriter outage',
+      acceptance:['No duplicate Send, keep durable PI checkpoint'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:3,
+      requestKey:'pi-connection-transient',checks:[]});
+    const linked=f.store.linkChat(created.id,SRC,created.version).mission;
+    const bound=f.store.bindChatBrowser(created.id,'install:Chrome:synthetic',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${created.id}`,'1');
+    f.store.reserveChatBrowserTurn(created.id,bound.version,'pi-connection-transient-1',sha(prompt));
+    f.store.finishChatBrowserTurn(created.id,'pi-connection-transient-1',{
+      kind:'observed',assistantSha256:sha(answer),summary:answer,newChatUrl:DEST,
+      telegramBatch:{terminal:false,flowSignal:'NEXT',piManaged:true},
+    });
+    f.store.commitPiPlan(created.id,sha(answer),[],{
+      action:'NEXT',summary:'One verified step remains',nextPrompt:'Complete next step',
+    });
+    const initialVersion=f.store.get(created.id).version;
+    const initialEvents=f.store.maxEventId();
+    f.primeRecovered(prompt);
+    await (f.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>}).recoverObservedPiCheckpoint();
+    assert.equal(f.state().connectorAttempts,1);
+    assert.equal(f.state().sends,1);
+    assert.equal(f.store.get(created.id).version,initialVersion);
+    assert.equal(f.store.maxEventId(),initialEvents);
+    assert.equal(f.store.get(created.id).lastError,null);
+    assert.equal(f.store.piPlan(created.id)?.action,'NEXT');
+    await (f.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>}).recoverObservedPiCheckpoint();
+    assert.equal(f.state().connectorAttempts,1,'Retry backoff must prevent tight polling');
+    (f.bridge as unknown as {lastTransientPiRecoveryAt:number}).lastTransientPiRecoveryAt=
+      Date.now()-60_001;
+    await (f.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>}).recoverObservedPiCheckpoint();
+    for(let i=0;i<100&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(f.state().connectorAttempts,2);
+    assert.equal(f.state().sends,2,'Only one NEW Send after the original observed request');
+    assert.equal(f.store.get(created.id).turnCount,2);
+    assert.equal(f.store.piPlan(created.id)?.action,'DONE');
+    assert.equal(f.store.events(created.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2);
+    assert.equal(f.store.events(created.id).filter(e=>e.type==='pi.autopilot_interrupted').length,0);
   }finally{f.cleanup();}
 });
 

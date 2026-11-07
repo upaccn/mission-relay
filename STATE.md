@@ -1,5 +1,32 @@
 # Mission Relay project state
 
+## 2026-11-07 transient Chrome/Playwriter PI checkpoint recovery (development)
+
+- Pre-change GitHub `main` and clean AIOS both independently matched
+  `1d998a3e224cb38d764e436696d327945b250fc2`; matching Actions run
+  `42342640384` succeeded for Ubuntu, macOS, Windows Node 24.
+- GMK read-only SQLite: Mission `fee3e087-26f1-4386-beee-197ad94d171e`
+  completed round two with browser observation #336, complete answer SHA
+  `ec27202296be910cb38e6b4cf3a3bf0fbaa6aff74100967c9b824146717dc559`,
+  PI NEXT decision #337 matched; round three remained originally reserved.
+  Healthy Telegram owner PID 31756, maintenance gate exit 3, no GMK write,
+  pull, restart, retry or production SQLite mutation authorized.
+- Source defect: previous `recoverObservedPiCheckpoint` permanently interrupted
+  an otherwise correctly observed and PI-reviewed PAUSED NEXT checkpoint
+  after any temporary Playwriter connector or idle-page preflight error,
+  excluding it from future automatic recovery scans after Chrome restarted.
+- Source repair: transient connector/read-only DOM errors and not-yet-idle
+  pinned pages now defer checkpoint recovery with 60-second retry backoff
+  without changing SQLite or sending again; actual prompt/full-answer SHA
+  mismatches continue to halt safely. Added regression for outage, throttling,
+  connection restoration and exact one-next-Send behavior.
+- Linux Node 24 verification completed: `npm run check`, `privacy-check`,
+  `npm run build` and `git diff --check` passed; **267 tests, 266 passed,
+  zero failed, one Windows-only Session 0 test skipped**. New transient
+  recovery test individually passed; existing exact source-mismatch fail-closed
+  regression also passed. Exact-head CI and live GMK restart/re-authorization
+  remain separate gates.
+
 ## 2026-11-07 second-turn reservation provenance check (AIOS source)
 
 - AIOS and GitHub main independently read back at clean

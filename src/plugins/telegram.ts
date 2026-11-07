@@ -252,6 +252,10 @@ export class TelegramBridge {
   private activeMission:string|null=null;
   private activeTask:Promise<void>|null=null;
   private lastBrowserWatchAt=0;
+  /** An idle, already-observed PI checkpoint may outlive a Chrome restart.
+   * A connector/read-only DOM outage must not poison its durable NEXT plan;
+   * retry only after bounded quiet time, never by replaying a browser Send. */
+  private lastTransientPiRecoveryAt=0;
   private readonly source='telegram';
   constructor(
     readonly store:Store, readonly engine:Engine, readonly transport:TelegramTransport,
@@ -474,6 +478,8 @@ export class TelegramBridge {
          ['NEXT','HANDOFF'].includes(plan?.action??'')));
     });
     if(!candidates.length)return;
+    if(this.lastTransientPiRecoveryAt&&
+      Date.now()-this.lastTransientPiRecoveryAt<60_000)return;
     // Queued adoptions are processed sequentially, not treated as conflicting
     // writers. Per-conversation SQLite locks still prevent duplicate Sends.
     const m=candidates.sort((a,b)=>a.createdAt.localeCompare(b.createdAt))[0]!;
@@ -484,16 +490,31 @@ export class TelegramBridge {
     }
     let session:BrowserSession|undefined;
     try{
-      session=await withReadOnlyDeadline(this.browserConnector(url,{browserId}),30_000,
-        lateSession=>lateSession.close());
-      const snapshot=await withReadOnlyDeadline(inspectChatPage(session.page,url));
+      // Only the side-effect-free connector/DOM read is transient. A real
+      // source hash mismatch below remains a durable, fail-closed interruption.
+      let snapshot:Awaited<ReturnType<typeof inspectChatPage>>;
+      let lastUserHash:string|null;
+      try {
+        session=await withReadOnlyDeadline(this.browserConnector(url,{browserId}),30_000,
+          lateSession=>lateSession.close());
+        snapshot=await withReadOnlyDeadline(inspectChatPage(session.page,url));
+        lastUserHash=await withReadOnlyDeadline(lastVisibleUserPromptSha256(session.page));
+      }catch(error){
+        this.lastTransientPiRecoveryAt=Date.now();
+        console.error(`PI recovery ${m.id}: Chrome read temporarily unavailable; retrying existing checkpoint without Send (${error instanceof Error?error.message:'unknown browser read error'})`);
+        return;
+      }
+      if(snapshot.generating||!snapshot.composerReady){
+        this.lastTransientPiRecoveryAt=Date.now();
+        console.error(`PI recovery ${m.id}: linked ChatGPT tab not idle; preserving exact checkpoint without Send`);
+        return;
+      }
       const previous=this.store.chatBrowserTurn(this.store.piChainParent(m.id)??m.id);
-      const lastUserHash=await withReadOnlyDeadline(lastVisibleUserPromptSha256(session.page));
-      if(!snapshot.composerReady||snapshot.generating||
-        !previous||!this.store.hasVerifiedPiBrowserCheckpoint(this.store.piChainParent(m.id)??m.id)||
+      if(!previous||!this.store.hasVerifiedPiBrowserCheckpoint(this.store.piChainParent(m.id)??m.id)||
         createHash('sha256').update(snapshot.lastAssistant).digest('hex')!==previous.assistantSha256||
         lastUserHash!==previous.promptSha256)
         throw new Error('PI recovery refused: current Chrome user/assistant turns differ from the last durable receipt');
+      this.lastTransientPiRecoveryAt=0;
       this.activeMission=m.id;
       const held=session;session=undefined;
       this.activeTask=drivePiAutopilot({

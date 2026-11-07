@@ -12,6 +12,13 @@ The read-only `pi-evidence.activeRequestEvidence` exposes only the original
 unique browser reservation event ID, prompt digest, round, receipt status and
 new-tab intent for an unobserved reserved/uncertain request. Reject an unlinked
 or rewritten receipt; never expose request keys or infer Send completion.
+After a controller restart, an already-PAUSED PI checkpoint with a complete
+observed response and matching NEXT/HANDOFF decision may retry **read-only**
+Chrome/Playwriter connector and page-idle preflight after a transient outage,
+with at least 60 seconds between failed attempts. Preserve the original PI
+decision and receipt without writing an interruption or repeating Send. An
+actual prompt/assistant SHA mismatch must still pause for inspection, not
+retry forever or be treated as a browser connectivity problem.
 
 For an existing-chat continuation, a newly matching latest user prompt is not
 proof that the visible assistant belongs to that prompt. ChatGPT can re-render

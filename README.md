@@ -1,5 +1,15 @@
 # Mission Relay
 
+**Unattended recovery after Chrome/Playwriter restart:** An independently
+settled PI NEXT/HANDOFF checkpoint remains eligible when the pinned Chrome
+connector temporarily fails or its page is still loading/generating. The
+single leased Telegram controller retries **read-only** preflight no more
+often than once per 60 seconds; it never repeats the previously observed
+request. A pinned prompt or assistant SHA mismatch still halts the task for
+inspection. Reserved/uncertain original Sends are excluded from this recovery
+and must never be replayed. The behavior is separately subject to actual GMK
+restart/re-authorization acceptance; synthetic regression is not live proof.
+
 **Read-only pending-request provenance:** `pi-evidence <mission-id>` now
 includes `activeRequestEvidence` for a currently `reserved` or `uncertain`
 request, containing only the unique original reservation event ID, pending
