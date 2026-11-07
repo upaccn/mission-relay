@@ -469,6 +469,63 @@ test('Telegram controller resumes only the corrected answer of an old falsely cr
   }finally{f.cleanup();}
 });
 
+test('controller resumes an owner-paused settled PI checkpoint after readback without replaying its first Send',async()=>{
+  const prompt='Original PI browser prompt preserved through maintenance';
+  const first='Synthetic complete answer\n[MISSION_RELAY:DONE]';
+  const second='Second synthetic complete answer\n[MISSION_RELAY:DONE]';
+  const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
+  const reviewed:number[]=[];
+  const f=rig({decide:async context=>{
+    reviewed.push(context.turnCount);
+    if(context.turnCount===1){
+      assert.equal(context.responseSha256,hash(first));
+      assert.equal(context.lastAssistant,first);
+      return {action:'NEXT',summary:'First settled answer needs one further step',
+        nextPrompt:'Complete the additional verified check'};
+    }
+    assert.equal(context.turnCount,2);
+    assert.equal(context.responseSha256,hash(second));
+    return {action:'DONE',summary:'All expected checks completed',nextPrompt:''};
+  }});try{
+    const created=f.store.create({goal:'Resume ongoing PI work after safe maintenance',
+      acceptance:['Do not resend previous request'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:4,checks:[],
+      requestKey:'pi-maintenance-resume'});
+    const linked=f.store.linkChat(created.id,SRC,created.version).mission;
+    const bound=f.store.bindChatBrowser(created.id,'install:Chrome:synthetic',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${created.id}`,'1');
+    f.store.reserveChatBrowserTurn(created.id,bound.version,'pi-maintenance-resume-1',
+      hash(prompt),{newConversation:true});
+    const requested=f.engine.pause(created.id);
+    assert.equal(requested.stopRequested,true);
+    assert.equal(requested.state,'RUNNING');
+    const settled=f.store.finishChatBrowserTurn(created.id,'pi-maintenance-resume-1',{
+      kind:'observed',assistantSha256:hash(first),summary:first,newChatUrl:DEST,
+      telegramBatch:{terminal:false,flowSignal:'DONE',piManaged:true},
+    });
+    assert.equal(settled.state,'PAUSED');
+    assert.equal(settled.stopRequested,true);
+    assert.equal(settled.turnCount,1);
+    f.primeRecovered(prompt);
+    const released=f.store.resumePausedPiCheckpoint(created.id,settled.version);
+    assert.equal(released.state,'PAUSED');
+    assert.equal(released.stopRequested,false);
+    assert.equal(f.state().sends,1);
+    await (f.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>})
+      .recoverObservedPiCheckpoint();
+    for(let i=0;i<260&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(f.state().closed,true);
+    assert.equal(f.state().sends,2,'one new Send after independently recovered original');
+    assert.deepEqual(reviewed,[1,2]);
+    assert.equal(f.store.get(created.id).turnCount,2);
+    assert.equal(f.store.piPlan(created.id)?.round,2);
+    assert.equal(f.store.piPlan(created.id)?.action,'DONE');
+    assert.equal(f.store.events(created.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2);
+    assert.equal(f.store.events(created.id).filter(e=>e.type==='chatgpt.browser_observed').length,2);
+    assert.equal(f.store.events(created.id).filter(e=>e.type==='pi.pause_released').length,1);
+  }finally{f.cleanup();}
+});
+
 test('PI startup refuses a changed last visible user prompt and never submits another browser turn',async()=>{
   const planner:PiPlanner={decide:async()=>{throw new Error('PI must not be called');}};
   const f=rig(planner);try{

@@ -460,6 +460,41 @@ export class Store {
         evidence.round===round && evidence.independentlyInspected===true;
     });
   }
+  /** Release an owner-requested cooperative PI pause AFTER the original Send
+   * has settled. Keep PAUSED (never generic READY) so the existing single
+   * Telegram controller can independently re-read the exact prior user
+   * prompt and full answer before PI review or any next Send. This method
+   * cannot itself open Chrome, call PI, or reserve a browser Send. */
+  resumePausedPiCheckpoint(id:string,revision:number):Mission {
+    return this.transaction(()=>{
+      const m=this.get(id),receipt=this.chatBrowserTurn(id),plan=this.piPlan(id);
+      if(m.version!==revision)
+        throw new Error(`State conflict: expected v${revision}, current v${m.version}`);
+      if(this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
+        m.state!=='PAUSED'||!m.stopRequested||m.ownerPid!==null||
+        m.turnCount<1||m.turnCount>=m.maxTurns||m.lastError||
+        !receipt||!this.hasVerifiedPiBrowserCheckpoint(id)||
+        (plan?.round===m.turnCount&&['DONE','BLOCKED'].includes(plan.action)))
+        throw new Error('PI resume requires an owner-paused, settled, nonterminal browser checkpoint');
+      if(m.sandbox==='workspace-write'&&
+        (this.getMeta('telegram.build.project')!==m.workspace||
+         this.getMeta('telegram.pi.project')!==m.workspace))
+        throw new Error('PI build approval changed or was revoked; cannot resume');
+      const parentId=this.piChainParent(id);
+      if(parentId&&this.get(parentId).stopRequested)
+        throw new Error('PI successor parent remains paused; resume the authorized lineage first');
+      const now=new Date().toISOString();
+      const updated=this.db.prepare(`UPDATE missions SET stop_requested=0,
+        version=version+1,updated_at=? WHERE id=? AND version=?`)
+        .run(now,id,revision);
+      if(updated.changes!==1)throw new Error('PI resume revision conflict');
+      this.event(id,'pi.pause_released',{
+        round:m.turnCount,assistantSha256:receipt.assistantSha256,
+        requiresIndependentBrowserReadback:true,
+      });
+      return this.get(id);
+    });
+  }
   /** Correct only the latest *already credited* PI answer after independently
    * observing the original request's exact user prompt and a different stable
    * complete assistant response. This is NOT another Send or another round.
@@ -730,7 +765,7 @@ export class Store {
           throw new Error('Execution may still be active. Refusing reconciliation');
         const now=new Date().toISOString();
         this.db.prepare(`UPDATE missions SET state='PAUSED',owner_pid=NULL,owner_host=NULL,
-          stop_requested=0,version=version+1,updated_at=?,
+          version=version+1,updated_at=?,
           next_instruction=? WHERE id=? AND version=?`)
           .run(now,'Operator reconciled the interrupted turn after inspecting actual side effects. Continue only remaining work.',id,m.version);
         this.event(id,'mission.reconciled',{acknowledged:true});

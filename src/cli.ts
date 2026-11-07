@@ -102,6 +102,9 @@ Commands:
   browser-correct-attribution <id> --revision <n> --acknowledge-side-effects
          Independently re-observe an incorrectly credited latest PI answer; append correction,
          preserve old events and require new PI review before any further Send
+  pi-resume <id> --revision <n> --acknowledge-side-effects
+         Release a settled owner-paused PI checkpoint for independent controller re-readback;
+         never change it to READY or replay its previous Send
   browser-recover-rollover <id> --revision <n> --new-url <exact new chat URL>
          --acknowledge-side-effects  Read-only inspect old/new chats, then atomic observed recovery
   instruct <id> --text <instruction>
@@ -570,6 +573,13 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       const preflight=await executorPreflight(store,id);
       if(!preflight.ok) throw new Error(preflight.message);
       result = await engine.run(id);
+    }
+    else if (command === 'pi-resume' && id) {
+      const f=flags(rest);
+      if(!f['--acknowledge-side-effects'])
+        throw new Error('PI autonomous resume needs explicit --acknowledge-side-effects');
+      const revision=Number(option(f,'revision'));
+      result=store.resumePausedPiCheckpoint(id,revision);
     }
     else if (command === 'pause' && id) result = engine.pause(id);
     else if (command === 'resume' && id) result = engine.resume(id);
