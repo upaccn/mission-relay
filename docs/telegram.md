@@ -8,6 +8,11 @@ browser Send or upgrading an old database. Source/CI release attestation
 commands remain local-operator-only and require the existing approved
 repository; Telegram is not a free-form PASS/DONE certification channel.
 Real GMK/Chrome proof remains a separate WP6 production release gate.
+WP6 corrects the Windows/Linux boundary for operator-only release
+commands: the already approved PI SSH alias and AIOS project are used
+for fixed source/CI checks. No new login or SSH credentials are collected;
+inaccessible remote directories fail closed rather than altering host
+permissions or trusting a model-provided test result.
 
 The Telegram adapter is a single-user **foreground process**. It uses the official Bot API's long polling and requires no public webhook or inbound port. It is not enabled by default. Telegram Bot chats are not end-to-end encrypted; do not send tokens, customer records, browser sessions or confidential model output to this channel.
 

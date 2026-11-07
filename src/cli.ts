@@ -7,7 +7,8 @@ import { statSync, readFileSync } from 'node:fs';
 import { Engine } from './core/engine.js';
 import { Store } from './core/store.js';
 import {GoalReleaseGate} from './core/goal-release.js';
-import {readGitMainSha,localReleaseProbe,githubActionsReleaseProbe} from './core/goal-release-probes.js';
+import {readRemoteGitMainSha,remoteReleaseProbe,
+  remoteActionsReleaseProbe} from './core/goal-release-remote.js';
 import {inspectPiEvidence,inspectPiChainEvidence} from './core/pi-evidence.js';
 import {inspectBrowserBinding} from './core/browser-binding-diagnostic.js';
 import {assessPendingBrowserAnswer} from './core/browser-pending-evidence.js';
@@ -322,10 +323,11 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       if(!id||!/^[0-9a-f-]{36}$/i.test(id))
         throw new Error('Goal release requires an exact Goal UUID');
       const project=store.getMeta('telegram.build.project');
-      if(!project||project!==store.getMeta('telegram.pi.project')||
-        !statSync(project).isDirectory())
-        throw new Error('Goal release requires the currently approved local build repository');
-      const gate=new GoalReleaseGate(store),mainSha=readGitMainSha(project);
+      const sshHost=store.getMeta('telegram.pi.sshHost');
+      if(!sshHost||!project||project!==store.getMeta('telegram.pi.project'))
+        throw new Error('Goal release requires the existing approved AIOS SSH project');
+      const remote=validatePictlRemoteConfig({sshHost,project});
+      const gate=new GoalReleaseGate(store),mainSha=readRemoteGitMainSha(remote);
       if(command==='goal-release-target'){
         const f=flags(rest),target=option(f,'sha');
         if(target!==mainSha)throw new Error('Release target differs from independently read origin/main');
@@ -333,13 +335,12 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       }else if(command==='goal-release-verify'){
         const f=flags(rest),requirement=option(f,'requirement');
         const probe=requirement.startsWith('ci-')
-          ?githubActionsReleaseProbe(project,option(f,'run-id'))
-          :localReleaseProbe({repository:project,
-            privateEvidenceDirectory:join(home,'goal-release-evidence')});
+          ?remoteActionsReleaseProbe(remote,option(f,'run-id'))
+          :remoteReleaseProbe(remote,join(home,'goal-release-evidence'));
         result=await gate.inspect(id,requirement,probe);
       }else{
         if(rest.length)throw new Error('goal-release-finalize takes no options');
-        result=await gate.finalize(id,async()=>readGitMainSha(project));
+        result=await gate.finalize(id,async()=>readRemoteGitMainSha(remote));
       }
     } else if (command === 'doctor') {
       result=await executorPreflight(store);

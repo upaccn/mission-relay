@@ -2,6 +2,18 @@
 
 ## Goal release gate (WP5)
 
+**WP6 cross-host implementation:** The release CLI is hosted beside the
+private Goal SQLite and real Chrome on Windows. `telegram.build.project`
+is the **approved remote AIOS path**, not a Windows-local directory. To
+avoid duplicating source checkouts, the release SHA/CI/check adapters use
+the existing validated `telegram.pi.sshHost` and exact remote project,
+with fixed, bounded SSH commands. Clean `main`, remote HEAD and
+`origin/main` must match before and after verification. SSH permission
+errors are blockers; no automatic sudo/ACL/group change is authorized.
+These tool readbacks must not be inferred from the old GMK checkout or
+from a PI work-item report. An in-flight production Send still forbids
+the maintenance drain and any GMK runtime promotion.
+
 The Goal ledger uses additive SQLite schema **v5**. `GoalReleaseGate` is an
 evidence verifier, not a PI dispatcher. It creates an exact Git SHA release
 target only after the approved plan's Work Items and their criteria all have

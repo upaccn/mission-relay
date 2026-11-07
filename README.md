@@ -1,5 +1,17 @@
 # Mission Relay
 
+**WP6 source/runtime evidence boundary:** GMK's private Goal ledger and
+interactive Chrome live on Windows; the canonical development repository is
+on AIOS Linux. The approved PI/build project path is REMOTE, not a GMK-local
+checkout path. Source/CI release readbacks use the already-enrolled SSH
+alias and exactly approved remote project, validate clean `main` against
+`origin/main`, run only fixed verification commands, and fail closed if
+the SSH identity cannot access the repository. This does not grant new
+filesystem rights or deploy GMK. Current owner-host diagnostics showed
+one ongoing browser reservation and a blocked restart preflight; a recorded
+real 5→6 is not independent Chrome/Goal DONE evidence. See
+[release architecture](docs/architecture.md#goal-release-gate-wp5).
+
 **WP5 Goal release gate (AIOS source, not yet deployed to GMK):** SQLite v5
 adds a durable version-pinned release target, 12 required software-release
 checks, and an independent check for each approved work-item criterion.

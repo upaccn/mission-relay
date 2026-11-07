@@ -60,6 +60,27 @@ interface GitHubRun {
   jobs:{name:string;status:string;conclusion:string;
     steps:{name:string;conclusion:string}[]}[];
 }
+/** Shared validator for the same exact-head CI JSON, independent of whether
+ * it was read by a local gh binary or via the approved AIOS SSH route. */
+export function assessGitHubActionsReadback(raw:string,requirement:string,
+  targetSha:string):EvidenceReadback{
+  if(!/^ci-(ubuntu|macos|windows)$/.test(requirement))
+    throw new Error('Unsupported GitHub Actions release gate');
+  const result=JSON.parse(raw) as GitHubRun;
+  if(result.headSha!==targetSha||result.status!=='completed'||
+    result.conclusion!=='success'||!/^https:\/\/github\.com\//.test(result.url))
+    throw new Error('GitHub Actions run is incomplete, failed or for another SHA');
+  const platform=requirement.slice(3);
+  const jobs=result.jobs.filter(job=>job.name===`test (${platform}-latest, 24)`);
+  if(jobs.length!==1)throw new Error('Missing or duplicate CI platform job');
+  const job=jobs[0]!;
+  const steps=['Run npm ci','Run npm run privacy-check','Run npm run check',
+    'Run npm test','Run npm run build'];
+  const matched=steps.every(name=>job.steps.some(s=>s.name===name&&s.conclusion==='success'));
+  const successful=job.status==='completed'&&job.conclusion==='success'&&matched;
+  return {state:successful?'PASS':'FAIL',reference:result.url,
+    proofSha256:sha(raw),observedSha:result.headSha};
+}
 /** GitHub's completed, exact-SHA three-platform workflow is read directly
  * with gh, never inferred from a ChatGPT/PI report or a run number alone. */
 export function githubActionsReleaseProbe(repository:string,runId:string):ReleaseProbe{
@@ -72,19 +93,6 @@ export function githubActionsReleaseProbe(repository:string,runId:string):Releas
       throw new Error('CI release verification requires the exact checked-out main');
     const raw=run('gh',['run','view',runId,'--json',
       'headSha,status,conclusion,url,jobs'],cwd);
-    const result=JSON.parse(raw) as GitHubRun;
-    if(result.headSha!==targetSha||result.status!=='completed'||
-      result.conclusion!=='success'||!/^https:\/\/github\.com\//.test(result.url))
-      throw new Error('GitHub Actions run is incomplete, failed or for another SHA');
-    const platform=requirement.slice(3);
-    const jobs=result.jobs.filter(job=>job.name===`test (${platform}-latest, 24)`);
-    if(jobs.length!==1)throw new Error('Missing or duplicate CI platform job');
-    const job=jobs[0]!;
-    const steps=['Run npm ci','Run npm run privacy-check','Run npm run check',
-      'Run npm test','Run npm run build'];
-    const matched=steps.every(name=>job.steps.some(s=>s.name===name&&s.conclusion==='success'));
-    const successful=job.status==='completed'&&job.conclusion==='success'&&matched;
-    return {state:successful?'PASS':'FAIL',reference:result.url,
-      proofSha256:sha(raw),observedSha:result.headSha} satisfies EvidenceReadback;
+    return assessGitHubActionsReadback(raw,requirement,targetSha);
   }};
 }

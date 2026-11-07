@@ -1,5 +1,20 @@
 # Mission Relay contributor instructions
 
+WP6 source/runtime boundary: on Windows GMK, `telegram.pi.project` and
+`telegram.build.project` refer to the approved AIOS **Linux SSH project**,
+not a Windows filesystem directory. Operator-only release attestation
+must use the existing safe SSH alias + exact remote path, fixed commands,
+BatchMode and no credential forwarding to subprocesses beyond SSH-agent
+discovery. A remote access-denied or stale/mismatched Git head is a
+BLOCKER, never permission to sudo, change ACLs, grant a new principal
+or fabricate a test receipt. GMK remains a pull-only runtime checkout;
+never use its stale source tree as the canonical build or release version.
+Production release stays blocked by any RUNNING Mission, reserved Send,
+lagging notification cursor or other SQLite maintenance gate. The
+legacy-worker restart preflight must remain read-only; no deployment,
+new Send, Retry, tab closure or database migration is implied by a
+healthy PI event ledger alone.
+
 WP5 independent Goal DONE boundary: writable Store schema v5 adds release
 target SHA, fixed software-release gates, each approved work criterion,
 source-specific independent evidence receipts, expiry, immutable DONE receipt
