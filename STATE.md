@@ -1,5 +1,22 @@
 # Mission Relay project state
 
+## 2026-11-07 exact Windows task identity enforcement
+
+- Independently inspected the GMK registered Worker: one PowerShell 7
+  worker action in the canonical checkout, IgnoreNew instance policy,
+  Interactive/Limited principal, and an account SID matching the local
+  maintenance invoker. Added exact executable, command-line, working
+  directory, SID and single-instance checks before restart/upgrade. A
+  Windows-only isolated test rejects altered worker arguments, parallel
+  scheduling and a foreign account without touching production Task
+  Scheduler. The active GMK Mission and its browser Send remain untouched.
+- Linux Node 24 verification for the task-identity change: TypeScript check,
+  public privacy boundary check, build, and diff check passed; full npm test
+  completed with **274 total, 271 passed, 0 failed, 3 Windows-only skips**.
+  The newly added isolated PowerShell action/SID/IgnoreNew rejection is
+  specifically subject to Windows CI; live GMK upgrade and PI recovery
+  remain independent production gates.
+
 ## 2026-11-07 live 5→6 turnover and tab-retirement evidence hardening (AIOS source)
 
 - First-upgrade bootstrap was also implemented in the **same** guarded

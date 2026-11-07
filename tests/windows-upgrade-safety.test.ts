@@ -40,6 +40,10 @@ test('GMK pull-only upgrade is ordered behind the SQLite drain and never install
     'A temporary bootstrap must not operate on task enrollment or generic restarts');
   assert.match(script,/\$expected = \[IO\.Path\]::GetFullPath\(\(Join-Path \$root 'scripts\\windows\\telegram-task\.ps1'\)\)/,
     'Foreign temporary scripts must validate the actual registered worker action');
+  assert.match(script,/\$actions\.Count -ne 1/);
+  assert.match(script,/\$actions\[0\]\.Arguments -cne \$workerArgs/);
+  assert.match(script,/\$taskSid -ne \[Security\.Principal\.WindowsIdentity\]::GetCurrent\(\)\.User\.Value/);
+  assert.match(script,/\$task\.Settings\.MultipleInstances -ne 'IgnoreNew'/);
   assert.match(script,/function Assert-ReviewedBootstrapScript\(\[string\]\$sha\)/);
   assert.match(script,/Get-FileHash -Algorithm SHA256 -LiteralPath \$PSCommandPath/);
   assert.match(script,/Get-FileHash -Algorithm SHA256 -LiteralPath \$blob/);
@@ -109,4 +113,35 @@ test('PowerShell parses guarded Upgrade script and its exact-SHA guard fails bef
       {encoding:'utf8',timeout:12000});
     assert.equal(foreign.status,0,`${foreign.stderr} ${foreign.stdout}`);
     assert.match(foreign.stdout,/foreign-owner-rejection-pass/);
+  });
+
+test('PowerShell rejects altered task action, parallel workers and a foreign account without touching Scheduler',
+  {skip:process.platform!=='win32'},()=>{
+    const begin=script.indexOf('function Assert-OurTask {');
+    const end=script.indexOf('\nfunction Assert-SafeRestart',begin);
+    assert.ok(begin>0&&end>begin);
+    const isolated=[
+      '$root=(Get-Location).Path',
+      script.slice(begin,end),
+      'function Get-Task { return $script:sample }',
+      "$workerPath=[IO.Path]::GetFullPath((Join-Path $root 'scripts\\windows\\telegram-task.ps1'))",
+      "$workerExe=[IO.Path]::GetFullPath((Join-Path $env:ProgramFiles 'PowerShell\\7\\pwsh.exe'))",
+      "$workerArgs='-NoProfile -NonInteractive -File ' + [char]34 + $workerPath + [char]34 + ' -Action Worker'",
+      "$script:sample=[pscustomobject]@{Actions=@([pscustomobject]@{Execute=$workerExe;Arguments=$workerArgs;WorkingDirectory=$root});Principal=[pscustomobject]@{UserId=[Security.Principal.WindowsIdentity]::GetCurrent().Name;LogonType='Interactive';RunLevel='Limited'};Settings=[pscustomobject]@{MultipleInstances='IgnoreNew'}}",
+      '$null=Assert-OurTask',
+      "function Assert-Refusal([string]$reason) { try { $null=Assert-OurTask; throw 'Unexpectedly accepted' } catch { if ($_.Exception.Message -notlike ('*'+$reason+'*')) { throw } } }",
+      "$script:sample.Settings.MultipleInstances='Parallel'",
+      "Assert-Refusal 'single-instance'",
+      "$script:sample.Settings.MultipleInstances='IgnoreNew'",
+      "$script:sample.Actions[0].Arguments += ' -UnexpectedFlag'",
+      "Assert-Refusal 'single enrolled Worker'",
+      "$script:sample.Actions[0].Arguments=$workerArgs",
+      "$script:sample.Principal.UserId='NT AUTHORITY\\SYSTEM'",
+      "Assert-Refusal 'different Windows account'",
+      "Write-Output 'task-identity-fail-closed-pass'",
+    ].join('\n');
+    const result=spawnSync('pwsh',['-NoProfile','-NonInteractive','-Command',isolated],
+      {encoding:'utf8',timeout:15000});
+    assert.equal(result.status,0,result.stderr+' '+result.stdout);
+    assert.match(result.stdout,/task-identity-fail-closed-pass/);
   });

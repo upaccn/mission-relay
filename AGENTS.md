@@ -1,5 +1,12 @@
 # Mission Relay contributor instructions
 
+Windows Scheduled Task lifecycle gate: match exactly one canonical PowerShell
+7 worker action (no extra arguments), the registered checkout directory,
+the invoking Windows account SID, an Interactive/Limited principal and the
+IgnoreNew single-instance policy before attempting restart or upgrade.
+Never use a different executable or principal, and do not bypass SQLite
+idle/drain preflight for an active Mission.
+
 PI chat rotation now uses a compact, deterministic browser handoff: retain the
 full owner goal, PI summary and next directive, but include no more than 800
 characters of the prior assistant response and, when PI-reviewed, the exact

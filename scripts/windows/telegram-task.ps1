@@ -83,13 +83,26 @@ function Assert-OurTask {
     # temporary Upgrade bootstrap path. The latter must not replace or launch
     # the registered Worker or create a second poller.
     $expected = [IO.Path]::GetFullPath((Join-Path $root 'scripts\windows\telegram-task.ps1'))
-    if (-not ($task.Actions | Where-Object { $_.Arguments -like "*${expected}*" -and $_.Arguments -like '*-Action Worker*' })) {
-        throw 'Existing task has a different action; refusing to modify it'
+    $workerArgs = '-NoProfile -NonInteractive -File "' + $expected + '" -Action Worker'
+    $workerExe = [IO.Path]::GetFullPath((Join-Path $env:ProgramFiles 'PowerShell\7\pwsh.exe'))
+    $actions = @($task.Actions)
+    if ($actions.Count -ne 1 -or
+        [string]$actions[0].Arguments -cne $workerArgs -or
+        [IO.Path]::GetFullPath([string]$actions[0].Execute) -ine $workerExe -or
+        [IO.Path]::GetFullPath([string]$actions[0].WorkingDirectory) -ine $root) {
+        throw 'Existing task action, executable or workspace differs from the single enrolled Worker; refusing lifecycle changes'
     }
     if (-not $task.Principal.UserId -or
         [string]$task.Principal.LogonType -ne 'Interactive' -or
         [string]$task.Principal.RunLevel -ne 'Limited') {
         throw 'Scheduled Task must remain interactive-user and least-privilege; refusing lifecycle changes'
+    }
+    $taskSid = ([Security.Principal.NTAccount]::new([string]$task.Principal.UserId)).Translate([Security.Principal.SecurityIdentifier]).Value
+    if ($taskSid -ne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value) {
+        throw 'Scheduled Task belongs to a different Windows account; do not run maintenance under an unrelated identity'
+    }
+    if ([string]$task.Settings.MultipleInstances -ne 'IgnoreNew') {
+        throw 'Scheduled Task must remain single-instance (IgnoreNew); refusing lifecycle changes'
     }
     return $task
 }

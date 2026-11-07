@@ -1,5 +1,12 @@
 # Mission Relay
 
+**Scheduled Task identity check:** A GMK worker restart or upgrade requires
+exactly one registered PowerShell 7 action pointing to the canonical checkout
+and worker script with no extra arguments, a matching Windows account SID,
+Interactive/Limited principal, and IgnoreNew single-instance task setting.
+Any mismatch refuses lifecycle changes before the SQLite drain; Status remains
+read-only. This check does not relax the active-Mission maintenance gate.
+
 **GMK pull-only upgrade:** After the original browser Send has settled and an
 explicit cooperative maintenance pause has made the SQLite idle gate pass,
 `scripts/windows/telegram-task.ps1 -Action Upgrade -ExpectedSha <verified-main-sha>`
