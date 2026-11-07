@@ -1,5 +1,14 @@
 # Mission Relay contributor instructions
 
+PI chat rotation now uses a compact, deterministic browser handoff: retain the
+full owner goal, PI summary and next directive, but include no more than 800
+characters of the prior assistant response and, when PI-reviewed, the exact
+round and complete response SHA-256. Git HEAD and CI must be verified by tools,
+not inferred from an assistant answer. Manual `browser-recover-rollover` must
+also reconstruct pre-upgrade legacy prompts by their original reserved SHA;
+neither format authorizes a second Send. The Windows Telegram Scheduled Task
+worker must fail in Session 0 rather than attempt to control desktop Chrome.
+
 For an existing-chat continuation, a newly matching latest user prompt is not
 proof that the visible assistant belongs to that prompt. ChatGPT can re-render
 the prior assistant while the new response is pending. Compare candidates with

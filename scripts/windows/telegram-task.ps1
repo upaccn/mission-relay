@@ -32,6 +32,14 @@ function Assert-Prerequisites {
     if (-not (Test-Path -LiteralPath $cli -PathType Leaf)) { throw 'Run npm run build before managing the Telegram task' }
 }
 
+function Assert-InteractiveSession([int]$sessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId) {
+    # The Playwriter-enabled Chrome profile belongs to the signed-in desktop.
+    # A service/Session 0 worker must never attempt to control or launch Chrome.
+    if ($sessionId -eq 0) {
+        throw 'Mission Relay Telegram worker requires an interactive Windows session; Session 0 is prohibited'
+    }
+}
+
 function Get-ChannelStatus {
     $text = (& $node $cli channel-status | Out-String)
     if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect Telegram channel state' }
@@ -103,6 +111,7 @@ function Release-ChannelDrain([string]$drainId) {
 switch ($Action) {
     'Worker' {
         Assert-Prerequisites
+        Assert-InteractiveSession
         if (-not (Test-Path -LiteralPath $tokenFile) -or -not (Test-Path -LiteralPath $settingsFile)) {
             throw 'Owner enrollment missing; no Telegram poller started'
         }

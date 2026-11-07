@@ -323,7 +323,8 @@ test('uncertain successor first-Send recovery reconstructs the owner-revised PI 
       reservedRequestKey:`${child.requestKey}-1`,sourceAnswer:'Prior anchor response',
       adopted:false,chainParent:true,piManaged:true};
     const submitted=browserNewChatPrompt(child.goal,child.acceptance,
-      revised.summary,revised.nextPrompt,'Prior anchor response',null);
+      revised.summary,revised.nextPrompt,'Prior anchor response',null,
+      {round:selected!.round,responseSha256:selected!.responseSha256});
     const recovered=browserRolloverRecoveryPrompt({...args,piPlan:selected});
     assert.equal(recovered,submitted);
     assert.notEqual(recovered,browserRolloverRecoveryPrompt({...args,

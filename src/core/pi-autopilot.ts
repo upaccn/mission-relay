@@ -113,7 +113,8 @@ async function dispatchPiChainFirstTurn(input:{
       parentPlan.responseSha256,input.parentAnswer,parentPlan);
     if(['DONE','BLOCKED'].includes(plan.action))return null;
     const prompt=browserNewChatPrompt(input.goal,input.acceptance,
-      plan.summary,plan.nextPrompt,input.parentAnswer,input.writeWorkspace);
+      plan.summary,plan.nextPrompt,input.parentAnswer,input.writeWorkspace,
+      {round:plan.round,responseSha256:plan.responseSha256});
     try {
       return await executeBrowserRollover({store,missionId,revision:input.revision,
         requestKey:input.requestKey,sourcePage:input.sourcePage,sourceUrl:input.sourceUrl,
@@ -296,7 +297,8 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
       }):rotateChat?await executeBrowserRollover({
         ...payload,sourcePage:page,sourceUrl:url,
         prompt:browserNewChatPrompt(origin.goal,origin.acceptance,
-          nextPlan!.summary,nextPlan!.nextPrompt,latestBrowserAnswer,writeWorkspace),
+          nextPlan!.summary,nextPlan!.nextPrompt,latestBrowserAnswer,writeWorkspace,
+          {round:nextPlan!.round,responseSha256:nextPlan!.responseSha256}),
         expectedSource:exactSource,
       }):await executeBrowserTurn({
         ...payload,page,url,prompt:nextPiBrowserPrompt(origin.goal,nextPlan!,writeWorkspace),

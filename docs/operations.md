@@ -1,5 +1,22 @@
 # Operations
 
+**Compact cross-Chat handoff (source enhancement, not a live acceptance claim):**
+The controller retains the full owner goal, validated execution scope, PI's
+at-most-1000-character evidence summary and next directive, but passes no more
+than 800 characters of the previous assistant answer into the new ChatGPT
+conversation. PI-managed rotations additionally carry the exact reviewed
+round and full-answer SHA-256. This is a correlation receipt, not proof of
+repository changes: independently recheck Git HEAD, CI, and runtime after the
+new Chat binds. PI receives the full source answer while reviewing that turn;
+SQLite retains the exact SHA-256 and bounded excerpts, not the full transcript.
+The source ChatGPT conversation remains the full transcript. For a pre-upgrade
+uncertain new-tab reservation, the **read-only manual** rollover recovery path
+compares the reconstructed compact prompt's SHA against the original request,
+then also permits the previous legacy format only when its exact SHA matches.
+Neither format replays a browser Send. A Windows Scheduled Task worker in
+Session 0 is rejected before loading credentials or running Telegram; operate
+the existing user-bound interactive task, not a service-launched browser.
+
 **New-chat intent vs. observed result:** The read-only `pi-health.browserNewChatReserved`, `pi-evidence.pendingNewChatReservation` and authenticated Telegram `/status` distinguish an unresolved *new-conversation reservation* from an ordinary same-chat continuation. They never certify an actual new tab, URL migration or final answer. A browser page that appears complete while its original observer has not committed the receipt remains in-flight: do not replay, replace its request key, restart the active controller or bypass the maintenance drain.
 
 **Misattributed, already-credited PI answer recovery:** If an old ChatGPT browser observation was credited to the wrong assistant turn, do **not** manually edit SQLite events, reset the current request key, rerun that prompt, or trust `pi-evidence.ledgerConsistent` alone: old paired browser/PI SHA values can agree with each other while both point to the *wrong* answer. First review the original Mission's `pi-evidence`, the exact linked Chrome conversation and the active production Send inventory. Only after a stable complete latest answer with the original reserved **latest** user prompt can be independently reproduced, run `browser-correct-attribution <id> --revision <current> --acknowledge-side-effects` on a qualified runtime. The command sends nothing and appends a one-shot `chatgpt.browser_attribution_corrected` event referencing the original observation and PI decision; it updates only the active checkpoint hash/summary and marks PI re-review pending. The original browser and PI events stay in SQLite. `pi-evidence` shows the old and corrected hashes and rejects the correction as complete until PI records `pi.decision_attribution_corrected`. After a controller restart, the PI recovery path independently re-reads the corrected full answer before any future Send. If the exact original tab, user prompt, answer or revision is unavailable, leave the Mission PAUSED and start a separately authorized fresh Mission to continue outstanding business, never forge a seventh-turn receipt. A test-passed source implementation is not a live correction or safe production deployment.

@@ -21,7 +21,8 @@ import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUr
 import {executeBrowserTurn,driveChatConversation,browserDecision,browserFreshTaskPrompt,
   retireSupersededRelayTab,
   MAX_FRESH_CHAT_TASK_CHARS,executorTaskGoal,
-  browserNewChatPrompt,browserRolloverRecoveryPrompt,browserContinuationPrompt} from '../src/core/browser-controller.js';
+  browserNewChatPrompt,browserRolloverRecoveryPrompt,exactReservedRolloverPrompt,
+  browserContinuationPrompt} from '../src/core/browser-controller.js';
 import type {AgentAdapter} from '../src/core/types.js';
 import type {Page} from 'playwriter';
 
@@ -92,8 +93,30 @@ test('five-turn handoff retains long owner goal, PI direction and exact recovery
   assert.ok(prompt.includes(instruction));
   assert.ok(prompt.includes(workspace));
   assert.ok(prompt.includes('[MIDDLE OMITTED]'));
+  assert.ok(!prompt.includes('a'.repeat(1000)),
+    'New conversation must not inherit a multi-thousand-character previous assistant answer');
+  const oldFormat=browserNewChatPrompt(goal,acceptance,summary,instruction,answer,
+    workspace,undefined,true);
+  assert.ok(oldFormat.length-prompt.length>3000,
+    'Compact handoff should remove several thousand characters of redundant history');
   assert.equal(prompt,browserNewChatPrompt(goal,acceptance,summary,instruction,answer,workspace),
     'Rollover retry must recreate the exact same user prompt');
+});
+
+test('PI handoff carries an exact audited SHA/round, never an invented Git commit or long transcript',()=>{
+  const source='Prior analysis evidence '+ 'X'.repeat(9000);
+  const responseSha256=createHash('sha256').update(source).digest('hex');
+  const prompt=browserNewChatPrompt('Finish release',['Full tests and CI'],
+    'Verified checkpoints and remaining work','Check Git HEAD in the real repository',
+    source,'/srv/ai/workspace/projects/mission-relay',{round:5,responseSha256});
+  assert.match(prompt,/PI-reviewed browser receipt: round 5; full answer SHA-256/);
+  assert.ok(prompt.includes(responseSha256));
+  assert.ok(prompt.includes('Verify Git SHA, CI and deployment with tools'));
+  assert.ok(!prompt.includes('X'.repeat(900)));
+  assert.ok(prompt.includes('[MIDDLE OMITTED]'));
+  assert.throws(()=>browserNewChatPrompt('Finish release',['Full tests and CI'],
+    'Summary','Check Git HEAD',source+' changed',null,{round:5,responseSha256}),
+  /PI-reviewed full answer SHA/);
 });
 
 test('ChatGPT accessible user transcript decorations are excluded from prompt identity hashing',()=>{
@@ -173,7 +196,22 @@ test('Recovery of a PI-controlled later new chat reconstructs the exact planned 
     adopted:false,chainParent:false,piManaged:true,piPlan:plan};
   assert.equal(browserRolloverRecoveryPrompt(input),
     browserNewChatPrompt(input.goal,input.acceptance,plan.summary,
-      plan.nextPrompt,answer,input.workspace));
+      plan.nextPrompt,answer,input.workspace,
+      {round:plan.round,responseSha256:plan.responseSha256}));
+  assert.equal(browserRolloverRecoveryPrompt(input,true),
+    browserNewChatPrompt(input.goal,input.acceptance,plan.summary,
+      plan.nextPrompt,answer,input.workspace,undefined,true),
+    'Old reserved new-tab prompts must remain reconstructable without a new Send');
+  assert.notEqual(browserRolloverRecoveryPrompt(input),browserRolloverRecoveryPrompt(input,true));
+  const reservedSha=(s:string)=>createHash('sha256').update(s.trim()).digest('hex');
+  const compact=browserRolloverRecoveryPrompt(input);
+  const legacy=browserRolloverRecoveryPrompt(input,true);
+  assert.deepEqual(exactReservedRolloverPrompt(input,reservedSha(compact)),
+    {prompt:compact,format:'compact'});
+  assert.deepEqual(exactReservedRolloverPrompt(input,reservedSha(legacy)),
+    {prompt:legacy,format:'legacy'});
+  assert.throws(()=>exactReservedRolloverPrompt(input,reservedSha('Unrelated reserved Send')),
+    /Neither compact nor legacy handoff matches/);
   assert.throws(()=>browserRolloverRecoveryPrompt({...input,
     sourceAnswer:answer+'\nHuman changed the conversation'}),/exact verified previous plan/);
 });

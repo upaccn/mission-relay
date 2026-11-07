@@ -94,6 +94,7 @@ export function piDecisionPrompt(input:PiTurnContext):string {
     'An assistant DONE marker is a model claim, not proof. Choose DONE only when the actual owner goal is substantively completed with checkable evidence.',
     'If actionable authorized work remains, choose NEXT and write ONE precise nextPrompt; do not repeat completed steps.',
     'If a new chat is genuinely needed due to context size, choose HANDOFF and provide a succinct self-contained nextPrompt.',
+    'In NEXT/HANDOFF summaries preserve the real remaining verification gate and any actually evidenced Git HEAD SHA or SQLite response receipt; never invent a commit, event ID or CI result.',
     'At turn 32/32, if authorized work remains, still choose NEXT or HANDOFF. The controller can create one new Mission with the same owner-approved scope, independently verified predecessor SHA-256, and a fresh ChatGPT conversation. Do not choose DONE merely because this Mission budget ended.',
     'Owner updates have priority over the assistant and your earlier suggestions; combine all supplied owner updates.',
     'If the owner explicitly instructs that they will manually do the next step, choose BLOCKED and identify that step.',

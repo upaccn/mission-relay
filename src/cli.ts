@@ -14,7 +14,7 @@ import { TelegramBridge, TelegramHttpTransport } from './plugins/telegram.js';
 import { stateHome } from './core/paths.js';
 import { renderChatGPTHandoff, normalizeChatGPTUrl } from './core/chatgpt-handoff.js';
 import { connectChatPage, inspectChatPage, matchesSubmittedUserPrompt, matchesReservedPromptHash, lastVisibleUserPrompt, lastVisibleUserPromptSha256, listConnectedChatCandidates, withBrowserSession } from './plugins/chatgpt-browser.js';
-import { executeBrowserTurn, driveChatConversation, browserDecision, browserRolloverRecoveryPrompt, browserRolloverPiPlan, browserNewChatPrompt, browserContinuationPrompt } from './core/browser-controller.js';
+import { executeBrowserTurn, driveChatConversation, browserDecision, exactReservedRolloverPrompt, browserRolloverPiPlan, browserNewChatPrompt, browserContinuationPrompt } from './core/browser-controller.js';
 import {AiosPiPlanner,validatePictlRemoteConfig,validateRemoteProjectPath} from './core/pi-planner.js';
 import {adoptConnectedConversation} from './core/chat-adoption.js';
 import {watchedBrowser,enableBrowserWatch,disableBrowserWatch} from './core/browser-watch.js';
@@ -552,7 +552,7 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
         if(source.generating||!source.composerReady)
           throw new Error('Original ChatGPT source tab is not idle');
         const parent=store.piChainParent(id);
-        return browserRolloverRecoveryPrompt({
+        const reconstruct={
           goal:m.goal,acceptance:m.acceptance,sandbox:m.sandbox,workspace:m.workspace,
           nextInstruction:m.nextInstruction,turnCount:m.turnCount,
           missionRequestKey:m.requestKey,reservedRequestKey:record.requestKey,
@@ -560,7 +560,11 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
           chainParent:parent!==null,
           piManaged:store.getMeta(`pi.autopilot.enabled.${id}`)==='1',
           piPlan:browserRolloverPiPlan(store,id),
-        });
+        };
+        // An upgrade cannot strand an older uncertain new-tab Send. Only the
+        // reconstructed prompt with the exact saved SHA may be inspected.
+        // Neither format permits another browser Send.
+        return exactReservedRolloverPrompt(reconstruct,record.promptSha256).prompt;
       });
       const promptSha256=createHash('sha256').update(prompt.trim()).digest('hex');
       if(promptSha256!==record.promptSha256)

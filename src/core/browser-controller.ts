@@ -168,14 +168,28 @@ export function browserFreshTaskPrompt(goal:string,writeWorkspace:string|null=nu
   ].join('\n');
 }
 
+export interface BrowserHandoffCheckpoint {round:number;responseSha256:string}
+
+/** Compact, deterministic handoff. Only the PI-reviewed SHA and short context
+ * cross a chat boundary. The original full answer remains in the source chat;
+ * PI receives the full visible answer while SQLite retains its hash/excerpt.
+ * Legacy formatting is used ONLY to identify an
+ * already-reserved pre-upgrade request during manual no-replay recovery. */
 export function browserNewChatPrompt(goal:string,acceptance:string[],handoff:string,operatorInstruction:string|null,
-  previousAnswer:string|null=null,writeWorkspace:string|null=null):string {
+  previousAnswer:string|null=null,writeWorkspace:string|null=null,
+  checkpoint?:BrowserHandoffCheckpoint,legacy=false):string {
+  if(checkpoint&&(!Number.isInteger(checkpoint.round)||checkpoint.round<0||
+    !/^[a-f0-9]{64}$/.test(checkpoint.responseSha256)||!previousAnswer||
+    createHash('sha256').update(previousAnswer).digest('hex')!==checkpoint.responseSha256))
+    throw new Error('New-chat handoff refused: PI-reviewed full answer SHA does not match the source');
   const before=[
     'Continue this task in a new conversation.',
     `Goal: ${executorTaskGoal(goal)}`,'Acceptance criteria:',...acceptance.map((x,i)=>`${i+1}. ${x}`),
     ...browserTaskPolicy(writeWorkspace),
     'Previous conversation checkpoint (verify unsubstantiated claims):',
-    handoff.slice(-2400),
+    handoff.slice(legacy?-2400:-1000),
+    ...(checkpoint&&!legacy?[`PI-reviewed browser receipt: round ${checkpoint.round}; full answer SHA-256 ${checkpoint.responseSha256}.`,
+      'This digest identifies a durable response, not proof of source changes or Git HEAD. Verify Git SHA, CI and deployment with tools.']:[]),
   ];
   const after=[
     ...(operatorInstruction?[`Latest owner instruction: ${operatorInstruction}`]:[]),
@@ -190,7 +204,7 @@ export function browserNewChatPrompt(goal:string,acceptance:string[],handoff:str
   // Compute the excerpt budget deterministically so interrupted rollovers can
   // reconstruct the exact same prompt SHA-256 without reserving an invalid Send.
   const scaffold=[...before,...(previousAnswer?[answerHeader,'']:[]),...after].join('\n');
-  const answerBudget=Math.min(6000,Math.max(0,MAX_BROWSER_PROMPT_CHARS-scaffold.length));
+  const answerBudget=Math.min(legacy?6000:800,Math.max(0,MAX_BROWSER_PROMPT_CHARS-scaffold.length));
   const omitted='\n[MIDDLE OMITTED]\n';
   const excerpt=previousAnswer&&previousAnswer.length>answerBudget
     ?answerBudget===0?'':answerBudget>omitted.length
@@ -222,7 +236,7 @@ export function browserRolloverRecoveryPrompt(input:{
   nextInstruction:string|null;turnCount:number;missionRequestKey:string;
   reservedRequestKey:string;sourceAnswer:string;adopted:boolean;
   chainParent:boolean;piManaged:boolean;piPlan:PiPlan|null;
-}):string {
+},legacy=false):string {
   const workspace=input.sandbox==='workspace-write'?input.workspace:null;
   if(input.turnCount===0&&!input.adopted&&!input.chainParent &&
     input.reservedRequestKey===`${input.missionRequestKey}-1`)
@@ -233,12 +247,29 @@ export function browserRolloverRecoveryPrompt(input:{
        createHash('sha256').update(input.sourceAnswer).digest('hex')!==plan.responseSha256)
       throw new Error('PI rollover recovery requires the exact verified previous plan and browser answer');
     return browserNewChatPrompt(input.goal,input.acceptance,plan.summary,
-      plan.nextPrompt,input.sourceAnswer,workspace);
+      plan.nextPrompt,input.sourceAnswer,workspace,
+      legacy?undefined:{round:plan.round,responseSha256:plan.responseSha256},legacy);
   }
   if(browserDecision(input.sourceAnswer)!=='HANDOFF')
     throw new Error('Original conversation does not contain a complete HANDOFF response');
   return browserNewChatPrompt(input.goal,input.acceptance,
-    input.sourceAnswer,input.nextInstruction);
+    input.sourceAnswer,input.nextInstruction,null,null,undefined,legacy);
+}
+
+/** Identifies the original prompt for an ALREADY reserved uncertain new-tab
+ * request. A matching digest is required even for a pre-upgrade format; this
+ * never reserves, sends, retries or mutates the stored reservation. */
+export function exactReservedRolloverPrompt(
+  input:Parameters<typeof browserRolloverRecoveryPrompt>[0],
+  expectedSha256:string):{prompt:string;format:'compact'|'legacy'}{
+  if(!/^[a-f0-9]{64}$/.test(expectedSha256))
+    throw new Error('Invalid stored browser reservation SHA-256');
+  for(const [legacy,format] of [[false,'compact'],[true,'legacy']] as const){
+    const prompt=browserRolloverRecoveryPrompt(input,legacy);
+    if(createHash('sha256').update(prompt.trim()).digest('hex')===expectedSha256)
+      return {prompt,format};
+  }
+  throw new Error('Neither compact nor legacy handoff matches the original reserved prompt SHA');
 }
 
 /** New-tab rollover reserves the request BEFORE any tab creation or message Send.

@@ -1,5 +1,32 @@
 # Mission Relay project state
 
+## 2026-11-07 compact PI Chat handoff and interactive-session guard (development)
+
+- **Current inspected boundary:** AIOS and GMK checked out clean GitHub `main`
+  `66925b1b2fe37bbaaefa9d45060fbcf5884cb5cc` before source editing; the
+  matching GitHub CI run `42337444118` completed successfully. Windows Chrome
+  was observed only in interactive Session 1; its single Telegram worker had
+  a healthy getUpdates heartbeat.
+- **Live, reserved Send must not be interrupted:** GMK Mission
+  `fee3e087-26f1-4386-beee-197ad94d171e` was RUNNING with a fresh ChatGPT
+  conversation reservation and no observed reply at the read-only checkpoint.
+  The Windows restart preflight rejected activation. This session did not send,
+  retry, cancel or change this Mission's private SQLite record.
+- **Source change under qualification:** PI new-Chat handoff now carries full
+  owner goal, shortened PI summary/next directive, a maximum 800-character old
+  answer excerpt, and validated PI round/full answer SHA. Old unsubmitted
+  conversational history is not copied; the old pre-upgrade prompt encoding
+  remains reconstructable for SHA-checked, manual read-only recovery. The
+  Windows Telegram Worker refuses Session 0. Synthetic tests and cross-platform
+  CI, safe activation and actual live 5-to-6 retirement/32-to-child remain
+  separate gates. Neither local implementation nor a successful old-head CI
+  makes v1.0 released.
+- **Linux full source regression:** Node 24 `npm test` completed with **265
+  tests: 264 passed, zero failed, one Windows-only Session 0 test skipped**
+  by platform (its real execution is deferred to Windows CI). `check`,
+  `privacy-check`, `build`, and `git diff --check` passed in source checkout.
+  These are local source results, not Windows production or v1.0 acceptance.
+
 Updated: 2026-11-07
 
 ## 2026-11-07 ninth-round uncertain Send-click and exact-tab diagnostic (AIOS source)
