@@ -127,6 +127,155 @@ test('opt-in Goal PI uses the real existing browser controller and does not trus
     assert.equal(ledger.graph(goal.id).items[0]?.status,'PASSED');
     assert.equal(ledger.getGoal(goal.id).status,'ACTIVE');
     assert.equal(f.store.events(f.mission.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2);
+    const sent=f.results().latestPrompt;
+    assert.match(sent,/Work package: netbox — Verify NetBox lookup/);
+    assert.match(sent,/Evidence supports VRF lookup/);
+    for(const legacyOnly of ['Task goal: Audit NetBox IP lookup','Progress checkpoint',
+      'PI reviewed the browser answer','Observed browser turn:','32 turns',
+      'Previous ChatGPT answer evidence excerpt'])
+      assert.ok(!sent.includes(legacyOnly),`Goal browser prompt leaked: ${legacyOnly}`);
+    assert.equal(f.store.reservedBrowserPrompt(f.mission.id,'goal-controller-2')?.prompt,sent,
+      'Actual browser Send must use the exact snapshot committed with its reservation');
+  }finally{f.cleanup();}
+});
+
+test('Goal-bound five-to-six browser rollover sends only the current work package in a fresh Chat',async()=>{
+  const f=fixture();
+  try{
+    const created=f.store.create({goal:'Owner long-term five-chat goal, never repeat this to executor',
+      acceptance:['Final independent business delivery'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:6,checks:[],requestKey:'goal-six'});
+    const linked=f.store.linkChat(created.id,SOURCE,created.version).mission;
+    const bound=f.store.bindChatBrowser(created.id,'install:Chrome:fake',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${created.id}`,'1');
+    const ledger=new GoalLedger(f.store);
+    const goal=ledger.createGoal({requestKey:'goal-five-to-six',objective:created.goal,priority:100});
+    ledger.bindPiMission(goal.id,created.id,bound.version,'bind-goal-five');
+    const plan=ledger.createPlan(goal.id,1,{requestKey:'goal-five-plan',summary:'PI planning only',
+      items:[{key:'specific-task',title:'Validate device search',description:'Handle VRF ambiguity',
+        priority:100,dependsOn:[],acceptance:['Check concrete VRF evidence']}]});
+    ledger.setPlanStatus(goal.id,plan.id,1,'APPROVED','approved-goal-five');
+    ledger.setGoalStatus(goal.id,ledger.getGoal(goal.id).version,'ACTIVE','activate-goal-five');
+    const first=ledger.graph(goal.id).items[0]!;
+    const ready=ledger.setWorkStatus(goal.id,first.id,first.version,'READY',[],'ready-goal-five');
+    ledger.setWorkStatus(goal.id,first.id,ready.version,'IN_PROGRESS',[],'start-goal-five');
+    const sha=(s:string)=>createHash('sha256').update(s).digest('hex');
+    for(let n=1;n<=5;n++){
+      f.store.reserveChatBrowserTurn(created.id,f.store.get(created.id).version,
+        `simulated-verified-${n}`,sha('Prior anchor user turn'));
+      f.store.finishChatBrowserTurn(created.id,`simulated-verified-${n}`,{
+        kind:'observed',assistantSha256:sha('Prior anchor response'),
+        summary:'Prior anchor response',
+        telegramBatch:{terminal:true,flowSignal:'NEXT',piManaged:true}});
+      f.store.commitPiPlan(created.id,sha('Prior anchor response'),[],{
+        action:'NEXT',summary:'PI still validating the active work',
+        nextPrompt:'Validate the specific device-search work package'});
+    }
+    assert.equal(f.store.piChatObservedTurns(created.id),5);
+    let reviews=0;
+    const planner:PiPlanner={
+      decide:async()=>{throw new Error('Goal PI must not use legacy planning');},
+      reviewGoalWork:async()=>{reviews++;return {verdict:'PASS',
+        summary:'Claimed device-search evidence',nextPrompt:'',handoff:false,
+        evidenceRefs:['test:device-search']};},
+    };
+    await drivePiAutopilot({store:f.store,planner,missionId:created.id,
+      revision:f.store.get(created.id).version,requestPrefix:'goal-five',page:f.anchor,url:SOURCE});
+    assert.equal(f.results().sends,1,'Only the sixth Send is real in this fixture');
+    assert.equal(f.results().newPages,1);
+    assert.equal(reviews,1);
+    const snapshot=f.store.reservedBrowserPrompt(created.id,'goal-five-6');
+    assert.equal(snapshot?.format,'goal-work-v1');
+    assert.equal(snapshot?.prompt,f.results().latestPrompt);
+    assert.match(snapshot!.prompt,/Start this work package in a new conversation/);
+    assert.match(snapshot!.prompt,/Check concrete VRF evidence/);
+    assert.ok(!snapshot!.prompt.includes(created.goal));
+    assert.ok(!snapshot!.prompt.includes('PI still validating'));
+    assert.equal(f.store.get(created.id).turnCount,6);
+    assert.equal(f.store.events(created.id)
+      .filter(e=>e.type==='chatgpt.browser_reserved').length,6);
+    assert.equal(f.store.piPlan(created.id)?.action,'BLOCKED',
+      'PI claimed PASS is not final owner Goal DONE');
+  }finally{f.cleanup();}
+});
+
+test('Goal-bound 32-to-successor first Send inherits active work, not the full owner Goal',async()=>{
+  const f=fixture();
+  try{
+    const created=f.store.create({goal:'Owner long-term multi-Mission goal, coordinator-only details',
+      acceptance:['Independently verify release readiness'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:32,checks:[],requestKey:'goal-chain-root'});
+    const linked=f.store.linkChat(created.id,SOURCE,created.version).mission;
+    const bound=f.store.bindChatBrowser(created.id,'install:Chrome:fake',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${created.id}`,'1');
+    const ledger=new GoalLedger(f.store);
+    const goal=ledger.createGoal({requestKey:'goal-chain-key',objective:created.goal,priority:100});
+    ledger.bindPiMission(goal.id,created.id,bound.version,'bind-goal-chain');
+    const plan=ledger.createPlan(goal.id,1,{requestKey:'goal-chain-plan',
+      summary:'Internal coordinator milestones',items:[{
+        key:'chain-package',title:'Check device reservation logic',
+        description:'Run bounded device ownership checks',priority:100,dependsOn:[],
+        acceptance:['Validate distinct browser request identity'],
+      }]});
+    ledger.setPlanStatus(goal.id,plan.id,1,'APPROVED','approve-chain-plan');
+    ledger.setGoalStatus(goal.id,ledger.getGoal(goal.id).version,'ACTIVE','activate-chain');
+    const item=ledger.graph(goal.id).items[0]!;
+    const ready=ledger.setWorkStatus(goal.id,item.id,item.version,'READY',[],'ready-chain');
+    ledger.setWorkStatus(goal.id,item.id,ready.version,'IN_PROGRESS',[],'start-chain');
+    const sha=(s:string)=>createHash('sha256').update(s).digest('hex');
+    const nearLimit=f.store.update(created.id,bound.version,{state:'PAUSED',turnCount:31},
+      'test.simulated_prior_rounds');
+    f.store.reserveChatBrowserTurn(created.id,nearLimit.version,'goal-chain-32',
+      sha('Prior anchor user turn'));
+    f.store.finishChatBrowserTurn(created.id,'goal-chain-32',{
+      kind:'observed',assistantSha256:sha('Prior anchor response'),summary:'Prior anchor response',
+      telegramBatch:{terminal:true,flowSignal:'NEXT',piManaged:true},
+    });
+    f.store.commitPiPlan(created.id,sha('Prior anchor response'),[],{
+      action:'NEXT',summary:'Coordinator says more development remains',
+      nextPrompt:'Perform the current device reservation verification',
+    });
+    const child=f.store.createPiSuccessor(created.id)!;
+    assert.equal(ledger.missionGoalId(child.id),goal.id);
+    let reviews=0,allowContinuation=false;
+    const planner:PiPlanner={
+      decide:async()=>allowContinuation
+        ?{action:'NEXT',summary:'Owner note reviewed with current work still pending',
+          nextPrompt:'Proceed with scoped device reservation verification'}
+        :{action:'DONE',summary:'Premature owner-level completion claim',nextPrompt:''},
+      reviewGoalWork:async x=>{
+        reviews++;assert.equal(x.workItem.key,'chain-package');
+        return {verdict:'PASS',summary:'Work evidence has been recorded',
+          nextPrompt:'',evidenceRefs:['claimed:device-check'],handoff:false};
+      },
+    };
+    f.store.queuePiOwnerDirective(child.id,'2998',
+      'Owner note asks whether the goal is complete; do not skip independent acceptance');
+    await assert.rejects(drivePiAutopilot({store:f.store,planner,missionId:child.id,
+      revision:child.version,requestPrefix:child.requestKey,page:f.anchor,url:SOURCE}),
+    /cannot declare Goal DONE/);
+    assert.equal(f.results().sends,0);
+    assert.equal(f.store.chatBrowserTurn(child.id),null);
+    assert.equal(f.store.pendingPiOwnerDirectives(child.id).length,1);
+    allowContinuation=true;
+    await drivePiAutopilot({store:f.store,planner,missionId:child.id,
+      revision:child.version,requestPrefix:child.requestKey,page:f.anchor,url:SOURCE});
+    assert.equal(f.results().sends,1);
+    assert.equal(f.results().newPages,1);
+    assert.equal(reviews,1);
+    assert.equal(f.store.piChainParent(child.id),created.id);
+    const recovered=f.store.reservedBrowserPrompt(child.id,`${child.requestKey}-1`);
+    assert.equal(recovered?.format,'goal-work-v1');
+    assert.equal(recovered?.prompt,f.results().latestPrompt);
+    assert.match(recovered!.prompt,/Start this work package in a new conversation/);
+    assert.match(recovered!.prompt,/Validate distinct browser request identity/);
+    assert.ok(!recovered!.prompt.includes(created.goal));
+    assert.ok(!recovered!.prompt.includes('Coordinator says more development remains'));
+    assert.equal(f.store.piPlan(child.id)?.action,'BLOCKED');
+    assert.equal(ledger.getGoal(goal.id).status,'ACTIVE');
+    assert.equal(f.store.events(child.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(f.store.events(created.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1,
+      'The prior Mission Send must not be repeated');
   }finally{f.cleanup();}
 });
 

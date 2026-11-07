@@ -604,10 +604,14 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
           piManaged:store.getMeta(`pi.autopilot.enabled.${id}`)==='1',
           piPlan:browserRolloverPiPlan(store,id),
         };
-        // An upgrade cannot strand an older uncertain new-tab Send. Only the
-        // reconstructed prompt with the exact saved SHA may be inspected.
-        // Neither format permits another browser Send.
-        return exactReservedRolloverPrompt(reconstruct,record.promptSha256).prompt;
+        // New Goal work prompts were snapshot atomically before their Send;
+        // render them from the immutable versioned copy, never mutable Goal
+        // state. Older compact/legacy reservations have no snapshot and MUST
+        // still reconstruct using their original byte-exact, SHA-checked form.
+        // This is inspection only: neither path authorizes a new Send/Retry.
+        const versioned=store.reservedBrowserPrompt(id,record.requestKey);
+        return versioned?.prompt??
+          exactReservedRolloverPrompt(reconstruct,record.promptSha256).prompt;
       });
       const promptSha256=createHash('sha256').update(prompt.trim()).digest('hex');
       if(promptSha256!==record.promptSha256)

@@ -1,5 +1,23 @@
 # Mission Relay contributor instructions
 
+WP3 Goal-executor prompt boundary: the initial first-round owner task retains
+the legacy full-goal prompt for PI planning, but every *subsequent*
+Goal-bound current-work Send (same Chat, 5-to-6 new Chat, or 32-to-successor
+first new Chat) sends ONLY the selected work item's title/description,
+acceptance, minimal workspace scope and the current authorized instruction.
+Do not send the full owner Goal, PI planning strategies, browser control
+budgets, prior ChatGPT answer, or handoff prose to the executor. Keep the
+original unbound PI/browser prompt functions byte-for-byte unchanged.
+Record each new `goal-work-v1` prompt snapshot and versioned Goal/PI
+binding in the *same SQLite transaction* as the browser Send reservation;
+check selected work version, plan approval, PI decision SHA and queued owner
+notes at that boundary. The original reserved SHA is authoritative.
+Read-only recovery reconstructs a versioned prompt from its unchanged private
+snapshot, never from mutable Goal state. Historical pre-WP3 compact/legacy
+and fresh prompts use the original SHA-matched builders, and a malformed
+present versioned snapshot must fail closed rather than fall back. Recovery
+must never reserve, retry, re-send or close a tab.
+
 Goal-driven WP2 source rule: Goal enrollment is explicit, via
 `GoalLedger.bindPiMission` on an unstarted, exactly scoped PI Mission. The
 opt-in PI project-manager review uses the existing

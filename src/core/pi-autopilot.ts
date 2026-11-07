@@ -9,6 +9,7 @@ import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 import {withReadOnlyDeadline} from './read-only-deadline.js';
 import {GoalLedger} from './goal-store.js';
 import {reviewGoalPiRound} from './goal-pi.js';
+import {goalWorkPrompt} from './goal-prompts.js';
 
 const MAX_REPLANS=3;
 /** Independent of the Mission's total budget, avoid overlong ChatGPT chats. */
@@ -97,6 +98,8 @@ async function reviewPiChainPreflight(store:Store,planner:PiPlanner,id:string,
       ownerDirectives:queued,sandbox:m.sandbox,workspace:m.workspace,
       priorPiSummary:current.summary,
     });
+    if(decision.action==='DONE'&&new GoalLedger(store).missionGoalId(id))
+      throw new Error('Goal-bound PI successor cannot declare Goal DONE from owner-note preflight without independent acceptance');
     const ids=queued.map(x=>x.id);
     if(JSON.stringify(ids)!==JSON.stringify(
       store.pendingPiOwnerDirectives(id).map(x=>x.id)))continue;
@@ -126,13 +129,17 @@ async function dispatchPiChainFirstTurn(input:{
     const plan=await reviewPiChainPreflight(store,planner,missionId,
       parentPlan.responseSha256,input.parentAnswer,parentPlan);
     if(['DONE','BLOCKED'].includes(plan.action))return null;
-    const prompt=browserNewChatPrompt(input.goal,input.acceptance,
+    const goalWork=new GoalLedger(store).missionGoalId(missionId)
+      ?goalWorkPrompt(store,missionId,plan,input.writeWorkspace,true):null;
+    const prompt=goalWork?.prompt??browserNewChatPrompt(input.goal,input.acceptance,
       plan.summary,plan.nextPrompt,input.parentAnswer,input.writeWorkspace,
       {round:plan.round,responseSha256:plan.responseSha256});
     try {
       return await executeBrowserRollover({store,missionId,revision:input.revision,
         requestKey:input.requestKey,sourcePage:input.sourcePage,sourceUrl:input.sourceUrl,
         prompt,telegramBatch:{lastAuthorizedTurn:false,piManaged:true},
+        ...(goalWork?{promptSnapshot:{format:goalWork.format,prompt:goalWork.prompt},
+          goalBinding:goalWork.binding}:{}),
         expectedSource:{promptSha256:parentReceipt.promptSha256,
           assistantSha256:parentReceipt.assistantSha256}});
     }catch(error){
@@ -339,6 +346,13 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
       telegramBatch:{lastAuthorizedTurn:false,piManaged:true}};
     const rotateChat=nextPlan?.action==='HANDOFF'||
       ((i>0||adopted)&&store.piChatObservedTurns(missionId)>=MAX_PI_CHAT_TURNS);
+    const goalWork=(i>0||adopted)&&nextPlan&&
+      new GoalLedger(store).missionGoalId(missionId)
+      ?goalWorkPrompt(store,missionId,nextPlan,writeWorkspace,Boolean(rotateChat)):null;
+    const goalOptions=goalWork?{
+      promptSnapshot:{format:goalWork.format,prompt:goalWork.prompt},
+      goalBinding:goalWork.binding,
+    }:{};
     const received:(BrowserTurnOutcome|(BrowserTurnOutcome&{page:Page;url:string}))|null=
       i===0&&chainParentId?await dispatchPiChainFirstTurn({
         store,planner,missionId,revision,requestKey,
@@ -350,12 +364,13 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
         prompt:browserFreshTaskPrompt(origin.goal,writeWorkspace),
       }):rotateChat?await executeBrowserRollover({
         ...payload,sourcePage:page,sourceUrl:url,
-        prompt:browserNewChatPrompt(origin.goal,origin.acceptance,
+        ...goalOptions,prompt:goalWork?.prompt??browserNewChatPrompt(origin.goal,origin.acceptance,
           nextPlan!.summary,nextPlan!.nextPrompt,latestBrowserAnswer,writeWorkspace,
           {round:nextPlan!.round,responseSha256:nextPlan!.responseSha256}),
         expectedSource:exactSource,
       }):await executeBrowserTurn({
-        ...payload,page,url,prompt:nextPiBrowserPrompt(origin.goal,nextPlan!,writeWorkspace),
+        ...payload,...goalOptions,page,url,
+        prompt:goalWork?.prompt??nextPiBrowserPrompt(origin.goal,nextPlan!,writeWorkspace),
         requireFinalMarker:true,expectedSource:exactSource,
       });
     if(!received)return; // PI stopped a successor before its first Send.

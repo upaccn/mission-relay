@@ -1,5 +1,13 @@
 # Mission Relay project state
 
+## 2026-11-07 Goal-driven WP3 work-Prompt isolation (AIOS source only)
+
+- Independent readback at WP3 start: AIOS and GitHub `main` both clean `319bdef585ee383013bcee233192dd4130a45177`; GitHub Actions `42360896384` succeeded on Node 24 Ubuntu, macOS and Windows. Checked actual WP2 Goal-PI integration and original browser prompt/recovery implementation. This does not prove WP3 CI or GMK readiness.
+- Goal-bound follow-ups use deterministic `goal-work-v1` prompts containing current selected Work Item, acceptance, authorized instruction and minimal scope; the legacy first full-goal owner task and all non-Goal formats remain unchanged. Goal snapshots and their SHA are written atomically with the original Send reservation; explicit Goal/Plan/Work/PI revision checks refuse stale or concurrent Owner updates. The existing manual rollover recovery uses exact saved snapshots for new formats, with frozen compact/legacy SHA-matched reconstruction for older reservations. No old requests, events or private runtime records were rewritten.
+- Added historical fixed digest vectors, isolated SQLite restart/read-only snapshots, corruption, tamper, rollback and changed-Goal/PI fault cases, and synthetic real-controller same-Chat, 5→6 and 32→successor Goal work-prompt integration. No GMK migration, restart, recovery, Send, Retry, tab closure or production deployment is authorized during WP3. Work-item claims are not independently verified Goal DONE.
+- Final full source test/build, commit/push, exact-head cross-platform CI and Git/GMK boundary readback must be recorded from actual outputs; earlier WP2 results are only the starting baseline.
+- **WP3 AIOS source verification:** Node 24 `npm run check`, `npm run privacy-check`, the complete `npm test`, `npm run build` and `git diff --check` passed. Full Linux suite: **320 tests / 317 passed / 0 failed / 3 Windows-only skips**. Dedicated historical fixed-SHA and Goal-Prompt tests passed; simulated Goal 5→6 and 32→successor each used exactly one new-Chat Send, and invalid premature Goal DONE was rejected before any Send. This is **source/synthetic** evidence only; post-commit exact-head three-platform CI remains separate, and no GMK deployment or production acceptance is claimed.
+
 ## 2026-11-07 Goal-driven WP2 PI project manager (AIOS development only)
 
 - **Independently rechecked WP1 prerequisite:** AIOS HEAD and GitHub main at clean `b6889e9558eb631ff938fdeddb3c22b6b620e3b8`, inspected actual Goal v4 source and original diff; exact commit GitHub Actions run `42359091925` had `success` for Ubuntu, macOS, Windows Node 24. This baseline is not proof of WP2 or a GMK rollout.

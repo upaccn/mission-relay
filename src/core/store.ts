@@ -25,6 +25,10 @@ export interface ChatBrowserTurn {
   newConversation?:boolean;
   assistantSha256?:string; observedAt?:string; error?:string;
 }
+export interface GoalPromptBinding {
+  goalId:string;planId:string;itemId:string;itemVersion:number;
+  piResponseSha256:string;piPlanSha256:string;
+}
 export interface PiOwnerDirective {
   id:number;externalId:string;text:string;
 }
@@ -707,9 +711,18 @@ export class Store {
     });
   }
   reserveChatBrowserTurn(id:string,revision:number,requestKey:string,promptSha256:string,
-    options:{newConversation?:boolean}={}):Mission {
+    options:{newConversation?:boolean;promptSnapshot?:{
+      format:'goal-work-v1';prompt:string;
+    };goalBinding?:GoalPromptBinding}={}):Mission {
     if(!/^[\w.-]{1,128}$/.test(requestKey)) throw new Error('Browser request key must be 1–128 safe characters');
     if(!/^[0-9a-f]{64}$/.test(promptSha256)) throw new Error('Expected SHA-256 of browser prompt');
+    const snapshot=options.promptSnapshot;
+    if(snapshot && (snapshot.format!=='goal-work-v1'||
+      !snapshot.prompt.trim()||snapshot.prompt.length>12000||
+      createHash('sha256').update(snapshot.prompt.trim()).digest('hex')!==promptSha256))
+      throw new Error('Versioned browser prompt snapshot must match its exact reserved SHA-256');
+    if(Boolean(snapshot)!==Boolean(options.goalBinding))
+      throw new Error('Goal work prompt snapshot and versioned Goal binding must be recorded together');
     return this.transaction(()=>{
       if(this.channelDrainRequested('telegram'))
         throw new Error('Telegram maintenance drain active; new browser Sends are refused');
@@ -737,6 +750,34 @@ export class Store {
         (this.getMeta('telegram.build.project')!==m.workspace||
          this.getMeta('telegram.pi.project')!==m.workspace))
         throw new Error('Approved PI build workspace changed or was revoked before Send');
+      if(options.goalBinding){
+        const binding=options.goalBinding;
+        let cursor:string|null=id,linked:string|null=null;
+        const seen=new Set<string>();
+        while(cursor&&!linked){
+          if(seen.has(cursor))throw new Error('PI Goal binding lineage cycle');
+          seen.add(cursor);
+          linked=this.getMeta(`goal.pi.binding.${cursor}`);
+          cursor=this.piChainParent(cursor);
+        }
+        const pi=this.piPlan(id)??(this.piChainParent(id)?
+          this.piPlan(this.piChainParent(id)!):null);
+        const row=this.db.prepare(`SELECT w.version,w.status,
+          p.status AS plan_status,g.status AS goal_status,g.objective
+          FROM goal_work_items w JOIN goal_plans p ON p.id=w.plan_id
+          JOIN goals g ON g.id=w.goal_id
+          WHERE w.id=? AND w.goal_id=? AND w.plan_id=?`)
+          .get(binding.itemId,binding.goalId,binding.planId) as
+          {version:number;status:string;plan_status:string;goal_status:string;objective:string}|undefined;
+        if(linked!==binding.goalId||!row||row.objective!==m.goal.trim()||
+          row.version!==binding.itemVersion||
+          !['IN_PROGRESS','REVIEW'].includes(row.status)||
+          row.plan_status!=='APPROVED'||row.goal_status!=='ACTIVE'||
+          !pi||pi.responseSha256!==binding.piResponseSha256||
+          createHash('sha256').update(JSON.stringify(pi)).digest('hex')!==binding.piPlanSha256||
+          this.pendingPiOwnerDirectives(id).length)
+          throw new Error('Goal work package or PI checkpoint changed before Send reservation');
+      }
       // The first child Send MUST open a distinct ChatGPT conversation. A raw
       // browser-send must not bypass the PI controller and append to the
       // predecessor's old chat. Recheck the chain source inside this same
@@ -770,11 +811,49 @@ export class Store {
       this.setMeta(this.browserTurnKey(id),JSON.stringify(record));
       this.setMeta(this.browserUrlLockKey(urlHash),JSON.stringify({missionId:id,requestKey}));
       this.setMeta(`chatgpt.browser.request.${id}.${requestKey}`,record.createdAt);
+      if(snapshot){
+        // Private SQLite, same atomic reservation. History is immutable:
+        // snapshots never re-render from mutable Goal/Plan state.
+        const key=`chatgpt.browser.prompt.${id}.${requestKey}`;
+        if(this.getMeta(key)!==null)throw new Error('Versioned prompt already recorded');
+        this.setMeta(key,JSON.stringify(snapshot));
+      }
       this.db.prepare('UPDATE missions SET state=?,owner_pid=?,owner_host=?,version=version+1,updated_at=? WHERE id=? AND version=?')
         .run('RUNNING',process.pid,hostname(),record.createdAt,id,m.version);
-      this.event(id,'chatgpt.browser_reserved',{requestKey,promptSha256});
+      this.event(id,'chatgpt.browser_reserved',{requestKey,promptSha256,
+        ...(snapshot?{promptFormat:snapshot.format,
+          goalId:options.goalBinding!.goalId,
+          planId:options.goalBinding!.planId,
+          workItemId:options.goalBinding!.itemId,
+          workItemVersion:options.goalBinding!.itemVersion,
+          piResponseSha256:options.goalBinding!.piResponseSha256,
+          piPlanSha256:options.goalBinding!.piPlanSha256}:{})});
       return this.get(id);
     });
+  }
+  /** Read-only exact reconstruction for versioned Sends. Historical pre-WP3
+   * reservations have no snapshot and use the original hash-checked builder.
+   * A corrupt present snapshot is a hard failure, NEVER a fallback. */
+  reservedBrowserPrompt(id:string,requestKey:string):{
+    format:'goal-work-v1';prompt:string;
+  }|null {
+    const record=this.chatBrowserTurn(id);
+    if(!record||record.requestKey!==requestKey)
+      throw new Error('No matching active browser receipt for prompt reconstruction');
+    const saved=this.getMeta(`chatgpt.browser.prompt.${id}.${requestKey}`);
+    if(saved===null)return null;
+    let parsed:unknown;
+    try{parsed=JSON.parse(saved);}catch{
+      throw new Error('Corrupted versioned prompt snapshot: invalid JSON');
+    }
+    if(!parsed||typeof parsed!=='object'||Array.isArray(parsed))
+      throw new Error('Corrupted versioned prompt snapshot');
+    const value=parsed as {format?:unknown;prompt?:unknown};
+    if(value.format!=='goal-work-v1'||typeof value.prompt!=='string'||
+      !value.prompt.trim()||value.prompt.length>12000||
+      createHash('sha256').update(value.prompt.trim()).digest('hex')!==record.promptSha256)
+      throw new Error('Versioned prompt snapshot does not match original reservation SHA');
+    return {format:value.format,prompt:value.prompt};
   }
   finishChatBrowserTurn(id:string,requestKey:string,outcome:{
     kind:'observed'|'uncertain'; assistantSha256?:string; summary?:string; error?:string;

@@ -2,7 +2,7 @@ import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 import {createHash} from 'node:crypto';
 import {withReadOnlyDeadline} from './read-only-deadline.js';
 import type {Page} from 'playwriter';
-import type {Store,PiPlan} from './store.js';
+import type {Store,PiPlan,GoalPromptBinding} from './store.js';
 import {inspectChatPage,lastVisibleUserPromptSha256,chatTabTargetSha256,submitChatTurn,submitNewChatTurn,MAX_BROWSER_TURN_TIMEOUT_MS} from '../plugins/chatgpt-browser.js';
 import {validateRemoteProjectPath} from './pi-planner.js';
 
@@ -15,6 +15,10 @@ export interface BrowserTurnOutcome {
   missionId:string; requestKey:string; state:string; revision:number; turnCount:number;
   assistantSha256:string; assistantExcerpt:string; lastAssistant:string; observedAt:string;
 }
+export interface VersionedBrowserPrompt {
+  promptSnapshot?:{format:'goal-work-v1';prompt:string};
+  goalBinding?:GoalPromptBinding;
+}
 
 export async function executeBrowserTurn(input:{
   store:Store;missionId:string;revision:number;requestKey:string;
@@ -23,7 +27,7 @@ export async function executeBrowserTurn(input:{
   expectedSource?:{promptSha256:string;assistantSha256:string};
   consumedInstruction?:string|null;
   telegramBatch?:{lastAuthorizedTurn:boolean;piManaged?:boolean};
-}):Promise<BrowserTurnOutcome> {
+}&VersionedBrowserPrompt):Promise<BrowserTurnOutcome> {
   const {store,missionId,revision,requestKey,page,url,prompt}=input;
   // Reject deterministic input errors before reserving a possibly committed
   // browser side effect; after reservation, uncertain failures never retry.
@@ -39,7 +43,8 @@ export async function executeBrowserTurn(input:{
     await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))!==input.expectedSource.promptSha256))
     throw new Error('Source ChatGPT history changed before existing-chat Send reservation');
   const promptSha256=createHash('sha256').update(prompt.trim()).digest('hex');
-  store.reserveChatBrowserTurn(missionId,revision,requestKey,promptSha256);
+  store.reserveChatBrowserTurn(missionId,revision,requestKey,promptSha256,{
+    promptSnapshot:input.promptSnapshot,goalBinding:input.goalBinding});
   try {
     const receipt=await submitChatTurn(page,url,prompt,input.timeoutMs,input.requireFinalMarker,
       input.expectedSource?{assistantSha256:input.expectedSource.assistantSha256,
@@ -290,7 +295,7 @@ export async function executeBrowserRollover(input:{
   /** Recheck source exactly at the last pre-reservation browser read. */
   expectedSource?:{promptSha256:string;assistantSha256:string};
   telegramBatch?:{lastAuthorizedTurn:boolean;piManaged?:boolean};
-}):Promise<BrowserTurnOutcome&{page:Page;url:string}> {
+}&VersionedBrowserPrompt):Promise<BrowserTurnOutcome&{page:Page;url:string}> {
   const {store,missionId,revision,requestKey,prompt}=input;
   if(!prompt.trim()||prompt.length>MAX_BROWSER_PROMPT_CHARS)throw new Error('Rollover prompt must contain 1–12000 characters');
   if(input.timeoutMs!==undefined&&(!Number.isInteger(input.timeoutMs)||
@@ -304,7 +309,9 @@ export async function executeBrowserRollover(input:{
     await withReadOnlyDeadline(lastVisibleUserPromptSha256(input.sourcePage))!==input.expectedSource.promptSha256))
     throw new Error('Source ChatGPT history changed before new-tab Send reservation');
   store.reserveChatBrowserTurn(missionId,revision,requestKey,
-    createHash('sha256').update(prompt.trim()).digest('hex'),{newConversation:true});
+    createHash('sha256').update(prompt.trim()).digest('hex'),{
+      newConversation:true,promptSnapshot:input.promptSnapshot,
+      goalBinding:input.goalBinding});
   try {
     const page=await input.sourcePage.context().newPage();
     const {url,receipt}=await submitNewChatTurn(page,prompt,input.timeoutMs);
