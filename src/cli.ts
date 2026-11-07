@@ -8,6 +8,7 @@ import { Engine } from './core/engine.js';
 import { Store } from './core/store.js';
 import {inspectPiEvidence,inspectPiChainEvidence} from './core/pi-evidence.js';
 import {inspectBrowserBinding} from './core/browser-binding-diagnostic.js';
+import {assessPendingBrowserAnswer} from './core/browser-pending-evidence.js';
 import {LazyExecutor,registerExecutorPlugin,registeredExecutorPlugins,defaultExecutorId,
   setDefaultExecutor,removeExecutorPlugin,executorPreflight} from './core/executor-plugins.js';
 import { TelegramBridge, TelegramHttpTransport } from './plugins/telegram.js';
@@ -88,6 +89,7 @@ Commands:
   browser-list          List connected Playwriter browser IDs (no profile emails)
   browser-candidates --browser-id <approved Chrome ID>   Read-only connected ChatGPT URL inventory
   browser-binding-health <mission-id>  Read-only exact-tab/last-prompt diagnostic (no Send, no raw URL)
+  browser-pending-evidence <mission-id>  Read-only double-snapshot pending-answer candidate, never reconciles or resends
   browser-watch --browser-id <approved Chrome ID>  Opt in to new Playwriter-connected ChatGPT chats
   browser-watch --clear  Stop discovery and prevent watched Missions from further turns
   browser-watch-status   Show the pinned profile and whether discovery is enabled
@@ -123,7 +125,8 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
   const [command, id, ...rest] = argv;
   if (!command || ['help','--help','-h'].includes(command)) return help();
   const home = stateHome();
-  const diagnostic=['pi-health','pi-evidence','pi-chain-evidence','browser-binding-health'].includes(command);
+  const diagnostic=['pi-health','pi-evidence','pi-chain-evidence','browser-binding-health',
+    'browser-pending-evidence'].includes(command);
   const store = new Store(join(home,'missions.sqlite'),{readOnly:diagnostic});
   const engine = new Engine(store,new LazyExecutor(store));
   try {
@@ -369,6 +372,46 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
         missionId:id,missionState:mission.state,turnCount:mission.turnCount,
         linkedUrl,receipt:store.chatBrowserTurn(id),
         enabledChatCandidates:candidates,
+      });
+    } else if(command==='browser-pending-evidence'&&id) {
+      if(!/^[0-9a-f-]{36}$/i.test(id)||rest.length)
+        throw new Error('Provide exactly one bound Mission UUID');
+      const mission=store.get(id),receipt=store.chatBrowserTurn(id);
+      const linkedUrl=store.chatLink(id),browserId=store.chatBrowserBinding(id);
+      const lastReservation=store.events(id).filter(e=>e.type==='chatgpt.browser_reserved').at(-1);
+      const rp=lastReservation?.payload as {requestKey?:string;promptSha256?:string}|undefined;
+      if(!linkedUrl||!browserId||!receipt||
+         !['reserved','uncertain'].includes(receipt.status)||
+         receipt.newConversation===true||!lastReservation||
+         rp?.requestKey!==receipt.requestKey||rp.promptSha256!==receipt.promptSha256)
+        throw new Error('No single linked, original-conversation pending Send with an intact reservation; no browser read attempted');
+      const candidates=await withReadOnlyDeadline(
+        listConnectedChatCandidates(browserId,linkedUrl));
+      const binding=inspectBrowserBinding({missionId:id,missionState:mission.state,
+        turnCount:mission.turnCount,linkedUrl,receipt,
+        enabledChatCandidates:candidates});
+      if(binding.binding!=='exact_connected')
+        throw new Error('Original linked browser tab is not uniquely exposed; no browser read attempted');
+      const prior=store.events(id).filter(e=>
+        ['chatgpt.browser_observed','chatgpt.browser_turn_recovered',
+         'chatgpt.browser_rollover_recovered'].includes(e.type)).at(-1);
+      const priorPlan=store.piPlan(id);
+      const priorAnswerSha=priorPlan?.round===mission.turnCount
+        ?priorPlan.responseSha256
+        :(prior?.payload as {assistantSha256?:string}|undefined)?.assistantSha256??null;
+      const session=await withReadOnlyDeadline(connectChatPage(linkedUrl,{browserId}),
+        30_000,late=>late.close());
+      result=await withBrowserSession(session,async page=>{
+        const first=await withReadOnlyDeadline(inspectChatPage(page,linkedUrl));
+        const userSha=await withReadOnlyDeadline(lastVisibleUserPromptSha256(page));
+        await new Promise(resolve=>setTimeout(resolve,3000));
+        const second=await withReadOnlyDeadline(inspectChatPage(page,linkedUrl));
+        const secondUserSha=await withReadOnlyDeadline(lastVisibleUserPromptSha256(page));
+        return assessPendingBrowserAnswer({missionId:id,round:mission.turnCount+1,
+          reservationEventId:lastReservation.id,
+          reservationPromptSha256:receipt.promptSha256,
+          latestUserSha256:userSha===secondUserSha?userSha:null,
+          lastObservedAnswerSha256:priorAnswerSha,first,second});
       });
     }
     else if (command === 'show' && id) result = engine.get(id);

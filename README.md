@@ -1,5 +1,18 @@
 # Mission Relay
 
+**Non-mutating pending-answer inspection:** The optional
+`browser-pending-evidence <mission-id>` opens SQLite in read-only mode and
+inspects only the currently bound, uniquely Playwriter-connected ChatGPT
+conversation for a reserved/uncertain existing-chat Send. It compares the
+latest visible user message to the exact original reservation SHA, samples
+the complete assistant response twice three seconds apart, and rejects
+generating, unstable, unmarked, or previous-settled-answer re-renders. Output
+contains only event IDs and hashes, never URLs, prompt/answer text or private
+request keys. A stable candidate is diagnostic only: it never writes
+SQLite, retries Send, clicks the UI, changes Mission/PI state, or authorizes
+automatic reconciliation. New-conversation pending requests remain excluded
+because the existing linked old chat cannot establish their destination.
+
 **Scheduled Task identity check:** A GMK worker restart or upgrade requires
 exactly one registered PowerShell 7 action pointing to the canonical checkout
 and worker script with no extra arguments, a matching Windows account SID,

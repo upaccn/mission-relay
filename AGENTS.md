@@ -1,5 +1,17 @@
 # Mission Relay contributor instructions
 
+For an original-conversation pending browser Send, the read-only
+browser-pending-evidence diagnostic may inspect one uniquely connected,
+already-authorized ChatGPT tab twice and return only the original reservation
+event ID and a stable marked answer candidate digest. Its SQLite handle
+must be read-only; no Send, Retry, reconciliation, mission/round credit, new
+tab, or Chrome close is allowed. Never treat the previous settled assistant
+answer still visible after a newly submitted prompt as a completed reply.
+New-chat pending reservations cannot be diagnosed against the old linked tab.
+Candidate digests are not independent transaction settlement or recovery
+authorization; only the existing controller or deliberate guarded
+reconciliation can write an observed receipt.
+
 Windows Scheduled Task lifecycle gate: match exactly one canonical PowerShell
 7 worker action (no extra arguments), the registered checkout directory,
 the invoking Windows account SID, an Interactive/Limited principal and the

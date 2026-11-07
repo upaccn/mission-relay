@@ -1,5 +1,35 @@
 # Mission Relay project state
 
+## 2026-11-07 readonly in-flight browser answer candidate
+
+- Independently verified clean AIOS and remote GitHub main at
+  `735c04fc999770b87ab4423232a5b7d2a853af55`.
+  Historical `61af0fc` is its ancestor, not a competing latest revision.
+  GitHub Actions `42350417631` reported completed success and independent
+  Windows/macOS/Ubuntu job success for that exact SHA.
+- Independently inspected GMK `fee3e087-26f1-4386-beee-197ad94d171e`:
+  original eighth Send **#354**, observed answer **#355** with SHA-256
+  `6d9868110971be4e7e92646e825d8832f895980210630b342f007f31fe15708e`,
+  matching PI NEXT **#356**. New ninth Send **#357** was only
+  reserved on healthy Worker PID 31756. The production ledger reported
+  8/32 turns, 2 Chat segments, 8 matching PI decisions and no violations.
+  GMK still ran clean `66925b1`; maintenance preflight Exit 3, so no
+  reload, restart, browser Send, or SQLite mutation was performed.
+- Added `browser-pending-evidence` as a strictly read-only,
+  content-free, double-snapshot candidate diagnostic for existing-chat
+  reservations. It requires the latest reserved request identity and exact
+  single linked tab, stable marked reply, consistent current user SHA and
+  a response digest distinct from the last settled answer. It never treats
+  a candidate as a committed answer or authorizes a new Send/reconciliation.
+  A new-chat reservation cannot be diagnosed using the former linked tab.
+  Targeted pure/mismatch/read-only-CLI regression tests passed; a live
+  diagnostic on GMK awaits a safe deployment of this new source.
+- Linux Node 24 verification: `npm run check`, `npm run privacy-check`,
+  `npm run build`, `git diff --check` passed; full `npm test` completed
+  **277 total / 274 passed / 0 failed / 3 Windows-only skips**. The latest
+  exact Git SHA and GitHub CI must be checked separately after commit; this
+  source test does not count as a GMK release or live 32-to-successor proof.
+
 ## 2026-11-07 exact Windows task identity enforcement
 
 - Independently inspected the GMK registered Worker: one PowerShell 7
