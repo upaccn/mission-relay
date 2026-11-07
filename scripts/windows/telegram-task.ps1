@@ -1,9 +1,11 @@
 # Optional Windows interactive-user lifecycle for the Mission Relay Telegram poller.
 # No task or credentials are created until the owner runs -Action Enroll locally.
 param(
-    [ValidateSet('Enroll','Worker','Status','Start','Restart','UpgradeSchedule','SetProxy','ClearProxy','Remove')]
+    [ValidateSet('Enroll','Worker','Status','Start','Restart','Upgrade','UpgradeSchedule','SetProxy','ClearProxy','Remove')]
     [string]$Action = 'Status',
-    [string]$ProxyUrl = ''
+    [string]$ProxyUrl = '',
+    [string]$ExpectedSha = '',
+    [string]$ResumeMissionId = ''
 )
 
 Set-StrictMode -Version Latest
@@ -106,6 +108,57 @@ function Request-ChannelDrain {
 function Release-ChannelDrain([string]$drainId) {
     $null = & $node $cli channel-drain-release --id $drainId
     if ($LASTEXITCODE -ne 0) { throw 'Maintenance drain could not be released: do not start another worker' }
+}
+
+function Assert-UpgradeTarget([string]$sha) {
+    if ($sha -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'Upgrade requires an exact lowercase 40-character GitHub main SHA (-ExpectedSha)'
+    }
+    if ($ResumeMissionId -and $ResumeMissionId -notmatch '^[0-9a-fA-F-]{36}$') {
+        throw 'ResumeMissionId must be one existing Mission UUID'
+    }
+    $branch = (& git -C $root symbolic-ref --quiet --short HEAD | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $branch -ne 'main') {
+        throw 'Pull-only upgrade requires the clean main branch, not a detached checkout'
+    }
+    $changes = (& git -C $root status --porcelain=v1 --untracked-files=all | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $changes) {
+        throw 'GMK checkout has local changes; source must be reconciled in AIOS before upgrade'
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $root 'node_modules\typescript\bin\tsc') -PathType Leaf)) {
+        throw 'Existing GMK TypeScript dependencies missing; do not run npm ci against live DLLs'
+    }
+    if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
+        throw 'npm.cmd is unavailable; build prerequisites must be installed before a maintenance drain'
+    }
+}
+
+# Only called under the durable SQLite drain. Do not touch unowned or in-flight
+# Telegram pollers; the existing enrolled task is the sole process boundary.
+function Stop-FencedTelegramTask {
+    if ((Get-Task).State -eq 'Running') {
+        for ($i=0; $i -lt 25; $i++) {
+            if (-not (Get-ChannelStatus).pollerPresent) { break }
+            Start-Sleep -Seconds 1
+        }
+        if ((Get-ChannelStatus).pollerPresent) {
+            Assert-SafeRestart
+            Stop-ScheduledTask -TaskName $taskName
+            Wait-ForChannel $false
+        }
+        for ($i=0; $i -lt 12; $i++) {
+            if ((Get-Task).State -ne 'Running') { break }
+            Start-Sleep -Seconds 1
+        }
+        if ((Get-Task).State -eq 'Running') {
+            throw 'Old Telegram task did not exit; checkout and drain must remain unchanged'
+        }
+    } elseif ((Get-ChannelStatus).pollerPresent) {
+        throw 'Non-task Telegram poller running; cannot upgrade while another writer owns SQLite'
+    }
+    if ((Get-ChannelStatus).pollerPresent) {
+        throw 'A poller remains present after task exit; refusing to modify the checkout'
+    }
 }
 
 switch ($Action) {
@@ -299,6 +352,122 @@ switch ($Action) {
         Wait-ForChannel $true
         Write-Output ('Telegram task restarted; new PID and healthy Bot API poll verified. Exit mode: ' +
             $exitMode)
+    }
+    'Upgrade' {
+        # A single, explicit pull-only upgrade after the original Send has
+        # settled. Never initiate this while Exit 3 blocks maintenance.
+        Assert-Prerequisites
+        Assert-InteractiveSession
+        $null=Assert-OurTask
+        Assert-UpgradeTarget $ExpectedSha
+        Assert-SafeRestart
+        if ((Get-ChannelStatus).drainRequested) {
+            throw 'Another maintenance drain is active; refusing duplicate upgrade'
+        }
+        $oldSha=(& git -C $root rev-parse HEAD | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $oldSha -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'Cannot identify an exact rollback commit'
+        }
+        $drainId=Request-ChannelDrain
+        $backup=Join-Path $env:TEMP ('mission-relay-upgrade-' + [guid]::NewGuid().ToString('N'))
+        $changedHead=$false
+        $completed=$false
+        $rollbackSafe=$true
+        $workerStopped=$false
+        $backupComplete=$false
+        $buildStarted=$false
+        $oldPid=(Get-ChannelStatus).pollerPid
+        try {
+            Stop-FencedTelegramTask
+            $workerStopped=$true
+            New-Item -ItemType Directory -Path $backup -ErrorAction Stop | Out-Null
+            Copy-Item -LiteralPath (Join-Path $root 'dist') -Destination (Join-Path $backup 'dist') -Recurse -ErrorAction Stop
+            $backupComplete=$true
+            & git -C $root fetch origin main
+            if ($LASTEXITCODE -ne 0) { throw 'GitHub fetch failed; no pull allowed' }
+            $remoteSha=(& git -C $root rev-parse refs/remotes/origin/main | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0 -or $remoteSha -cne $ExpectedSha) {
+                throw 'Fetched GitHub main does not match the previously verified exact CI SHA'
+            }
+            & git -C $root merge-base --is-ancestor $oldSha $remoteSha
+            if ($LASTEXITCODE -ne 0) { throw 'GMK HEAD cannot fast-forward to reviewed GitHub main' }
+            & git -C $root pull --ff-only origin main
+            $pullExit=$LASTEXITCODE
+            $afterPull=(& git -C $root rev-parse HEAD | Out-String).Trim()
+            $changedHead=$afterPull -cne $oldSha
+            if ($pullExit -ne 0) { throw 'Fast-forward only GitHub pull failed' }
+            if ((& git -C $root rev-parse HEAD | Out-String).Trim() -cne $ExpectedSha) {
+                throw 'Post-pull commit does not equal the authorized SHA'
+            }
+            Push-Location $root
+            try {
+                $buildStarted=$true
+                & npm.cmd run build
+                if ($LASTEXITCODE -ne 0) { throw 'GMK TypeScript build failed' }
+            }
+            finally { Pop-Location }
+            Assert-UpgradeTarget $ExpectedSha
+            $completed=$true
+        } catch {
+            # Checkout was clean before drain, so restoring exactly the old
+            # reviewed commit + compiled dist is a bounded rollback; no SQLite,
+            # credentials or Chrome profile files live in this Git checkout.
+            if ($changedHead) {
+                $head=(& git -C $root rev-parse HEAD | Out-String).Trim()
+                if ($head -cne $ExpectedSha) { $rollbackSafe=$false }
+                else {
+                    $unexpectedChanges=(& git -C $root status --porcelain=v1 --untracked-files=all | Out-String).Trim()
+                    if ($LASTEXITCODE -ne 0 -or $unexpectedChanges) { $rollbackSafe=$false }
+                    else {
+                        & git -C $root reset --hard $oldSha
+                        if ($LASTEXITCODE -ne 0) { $rollbackSafe=$false }
+                    }
+                }
+            }
+            if ($buildStarted) {
+                if ($rollbackSafe) {
+                    if (-not $backupComplete) { $rollbackSafe=$false }
+                    else {
+                    try {
+                        Remove-Item -LiteralPath (Join-Path $root 'dist') -Recurse -Force -ErrorAction Stop
+                        Copy-Item -LiteralPath (Join-Path $backup 'dist') -Destination (Join-Path $root 'dist') -Recurse -ErrorAction Stop
+                    } catch { $rollbackSafe=$false }
+                    }
+                }
+            }
+            if (-not $rollbackSafe) { throw 'Upgrade failed; rollback did not verify. Drain remains held; do not restart' }
+            throw
+        } finally {
+            if ($rollbackSafe) {
+                Release-ChannelDrain $drainId
+                if ($workerStopped -and (Get-Task).State -ne 'Running') {
+                    Start-ScheduledTask -TaskName $taskName
+                }
+                if ($workerStopped -or (Get-ChannelStatus).pollerPresent) {
+                    Wait-ForChannel $true
+                }
+                if (Test-Path -LiteralPath $backup) {
+                    Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+        if (-not $completed) { throw 'Upgrade was not completed; original runtime restored' }
+        $nowSha=(& git -C $root rev-parse HEAD | Out-String).Trim()
+        if ($nowSha -cne $ExpectedSha) { throw 'Healthy worker but wrong checkout SHA; inspect before resuming PI' }
+        $current=(Get-ChannelStatus)
+        if ($oldPid -and $current.pollerPid -eq $oldPid) {
+            throw 'Upgrade did not replace the original worker PID; do not resume Mission'
+        }
+        if ($ResumeMissionId) {
+            # This is a *previously owner-paused* exact observed PI checkpoint.
+            # pi-resume has its own transactional SHA/owner/revision gates;
+            # no browser Send occurs here. The running worker rechecks Chrome.
+            $state=(& $node $cli show $ResumeMissionId | Out-String | ConvertFrom-Json)
+            if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect owner-paused Mission for post-upgrade resume' }
+            & $node $cli pi-resume $ResumeMissionId --revision ([string]$state.version) --acknowledge-side-effects | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Upgrade is active but PI checkpoint did not pass its resume gate' }
+        }
+        Write-Output ('GMK pull-only upgrade verified at ' + $nowSha + '; healthy single Telegram poller')
     }
     'Remove' {
         $null = Assert-OurTask

@@ -1,5 +1,20 @@
 # Mission Relay
 
+**GMK pull-only upgrade:** After the original browser Send has settled and an
+explicit cooperative maintenance pause has made the SQLite idle gate pass,
+`scripts/windows/telegram-task.ps1 -Action Upgrade -ExpectedSha <verified-main-sha>`
+uses the **existing** interactive-user Scheduled Task. It refuses dirty or
+divergent GMK checkouts, Session 0, active work, missing local build tools and
+an unexpected fetched GitHub SHA. Under the atomic drain it stops the old
+worker, fast-forwards only `main`, builds using existing dependencies (never
+`npm ci` on a locked DLL), and verifies the restarted single poller. Failed
+updates restore the prechecked HEAD and compiled `dist` only when rollback is
+verifiable; uncertain recovery retains the drain and stops rather than risk
+another browser Send. An optional `-ResumeMissionId <uuid>` invokes the
+existing exact-checkpoint `pi-resume` gate after restart. This is a locally
+invoked, tested operational action, **not** evidence of an executed GMK
+deployment or an automatic release service.
+
 **Windows maintenance diagnostics:** The local read-only
 `scripts/windows/telegram-restart-check.mjs <absolute-sqlite-path>` reports
 sanitized counts for active Missions, unsent PI tasks, undelivered Telegram

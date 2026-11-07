@@ -1,5 +1,41 @@
 # Mission Relay project state
 
+## 2026-11-07 explicit fenced GMK pull-only upgrade action (AIOS source)
+
+- Independently inspected clean AIOS and GitHub `main` at
+  `60bacdc64ecefb8ff4c3b1653b278f31c8911172`; exact GitHub Actions
+  `42344565236` completed successfully for Windows, macOS and Ubuntu.
+- GMK remained at clean `66925b1b2fe37bbaaefa9d45060fbcf5884cb5cc`.
+  Active PI Mission `fee3e087-26f1-4386-beee-197ad94d171e` observed its
+  fourth ChatGPT reply via original reservation **#341**, observation **#342**,
+  full answer SHA **f3cf94857a6038bb84a31ac7602c9c7c70898a5a0319a3fa897e0b0270359661**,
+  matching independent PI NEXT decision **#343**. Its separate fifth
+  same-Chat request was already reserved, not observed, at the first read.
+  SQLite had four verified turns in one Chat, zero audit violations, healthy
+  leased Telegram worker PID 31756, all 21 Chrome processes in Session 1,
+  and maintenance preflight exit **3**. No production force-pause, duplicate
+  browser Send, restart, GMK pull, or SQLite mutation was attempted.
+- Existing pause, SQLite drain, Session 0 guard, task restart and `pi-resume`
+  were already implemented. The remaining operational gap: no single
+  source-controlled, exact-reviewed-SHA GMK promotion action linked these
+  protections with pull-only update, build, rollback and eligible PI resume.
+- Added **opt-in, locally invoked** `telegram-task.ps1 -Action Upgrade
+  -ExpectedSha <sha> [-ResumeMissionId <uuid>]`: explicit interactive-user
+  preflight and exact target, clean main, installed build tools, idle gate,
+  one SQLite drain and enrolled task stop before fast-forward pull/build;
+  exact HEAD and healthy new worker readback; rollback only when original
+  clean checkout and compiled `dist` can be reconstructed. A failed rollback
+  keeps the drain held; the PI resume uses existing independent checkpoint
+  and workspace-approval gates. No new daemon, service, plugin or credential
+  scope. Static ordering and Windows PowerShell syntax/foreign-owner safety
+  tests added. The backup must finish before any build; a partial backup is
+  never substituted for healthy old `dist` on failure.
+- **Linux source verification:** Node 24 `npm run check`, `privacy-check`,
+  `npm run build`, `git diff --check` passed. Full `npm test` **271 tests,
+  269 passed, zero failed, two Windows-only skips**. Cross-platform exact
+  SHA CI and **actual** eligible GMK upgrade/PI continuity remain separate
+  release gates.
+
 ## 2026-11-07 maintenance notification-cursor gate (AIOS development)
 
 - Independent baseline: AIOS / GitHub `main` both clean at

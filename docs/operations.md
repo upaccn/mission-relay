@@ -1,5 +1,23 @@
 # Operations
 
+**Atomic, explicit Windows pull-only promotion (new):** After a cooperative
+owner pause has settled its original browser Send, and after exact GitHub
+`main` SHA plus matching three-platform CI have been verified, the existing
+enrolled interactive-user task supports `-Action Upgrade -ExpectedSha <sha>`.
+If the owner-paused Mission should continue after promotion, add
+`-ResumeMissionId <uuid>`. This action is intentionally **not** scheduled: it
+rejects a still-running Mission or reserved Send, acquires the existing
+SQLite maintenance drain, waits for the single task to exit, then fetches
+only `origin/main`, rejects an unexpected commit or non-fast-forward, pulls
+and rebuilds without destructive `npm ci`. It verifies the replacement
+worker's successful Bot API polling and changed PID before any optional
+`pi-resume` (which itself validates exact observed evidence, revision and
+workspace approval). Only a verified clean rollback may restore the prior
+Git HEAD and backed-up `dist` on failure. Failed rollback leaves the drain
+held, with no new worker launched, for explicit repair. It neither migrates
+private SQLite nor sends a ChatGPT message; CI and tests cannot replace a
+real GMK task/Chrome/readback acceptance.
+
 **Compact cross-Chat handoff (source enhancement, not a live acceptance claim):**
 The controller retains the full owner goal, validated execution scope, PI's
 at-most-1000-character evidence summary and next directive, but passes no more
