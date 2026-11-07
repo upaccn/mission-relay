@@ -76,6 +76,12 @@ script's SHA-256 must equal the exact reviewed Git blob or it fails before
 draining the worker. It checks the **existing registered Worker path** and
 never starts Chrome from Session 0. Delete the temporary script afterward;
 future upgrades use the installed `Upgrade` action directly.
+If GitHub is reachable only through an operator-approved proxy, supply Git's
+proxy through environment variables scoped to the maintenance process (for
+example, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_0=http.proxy` and
+`GIT_CONFIG_VALUE_0`), and first verify the exact remote main SHA with
+`git ls-remote`. Do not modify global Git settings, checkout files or the
+enrolled Telegram worker's network configuration just to perform the upgrade.
 
 **Windows maintenance diagnostics:** The local read-only
 `scripts/windows/telegram-restart-check.mjs <absolute-sqlite-path>` reports

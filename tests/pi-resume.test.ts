@@ -11,12 +11,13 @@ import type {AgentAdapter} from '../src/core/types.js';
 
 const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
 const URL='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
+const NEXT_URL='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174001';
 const answer='Complete paused in-flight response\n[MISSION_RELAY:NEXT]';
 const never:AgentAdapter={
   async execute(){throw new Error('Native agent must not dispatch a browser Mission');},
   async verify(){throw new Error('Native verifier must not dispatch a browser Mission');},
 };
-function fixture(write=false){
+function fixture(write=false,newConversation=false){
   const dir=mkdtempSync(join(tmpdir(),'relay-pi-resume-'));
   const workspace=write?'/srv/ai/workspace/projects/mission-relay':'';
   const store=new Store(join(dir,'missions.sqlite'));
@@ -31,11 +32,13 @@ function fixture(write=false){
     store.setMeta('telegram.pi.project',workspace);
   }
   const engine=new Engine(store,never);
-  store.reserveChatBrowserTurn(bound.id,bound.version,'original-1',sha('Original submitted prompt'));
+  store.reserveChatBrowserTurn(bound.id,bound.version,'original-1',
+    sha('Original submitted prompt'),{newConversation});
   return {dir,store,engine,id:bound.id,workspace,
     pause:()=>engine.pause(bound.id),
     finish:()=>store.finishChatBrowserTurn(bound.id,'original-1',{
       kind:'observed',assistantSha256:sha(answer),summary:answer,
+      ...(newConversation?{newChatUrl:NEXT_URL}:{}),
       telegramBatch:{terminal:false,flowSignal:'NEXT',piManaged:true},
     }),
     cleanup:()=>{store.close();rmSync(dir,{force:true,recursive:true});}};
@@ -75,6 +78,35 @@ test('cooperative maintenance pause settles existing original Send then resumes 
     assert.throws(()=>f.store.resumePausedPiCheckpoint(f.id,settled.version),
       /State conflict/,'stale revision must not mutate state');
     assert.equal(f.store.events(f.id).length,original.length+1);
+  }finally{f.cleanup();}
+});
+
+test('pause during a new-chat Send preserves its unique migration and can only resume after the answer is observed',()=>{
+  const f=fixture(false,true);try{
+    const pending=f.store.chatBrowserTurn(f.id);
+    assert.equal(pending?.status,'reserved');
+    assert.equal(pending?.newConversation,true);
+    const paused=f.pause();
+    assert.equal(paused.stopRequested,true);
+    assert.equal(f.store.chatLink(f.id),URL,'the reservation alone must not replace the pinned URL');
+    assert.throws(()=>f.store.resumePausedPiCheckpoint(f.id,paused.version),
+      /owner-paused, settled, nonterminal/);
+    const settled=f.finish();
+    assert.equal(settled.state,'PAUSED');
+    assert.equal(settled.stopRequested,true);
+    assert.equal(f.store.chatLink(f.id),NEXT_URL);
+    assert.equal(f.store.chatBrowserTurn(f.id)?.assistantSha256,sha(answer));
+    const before=f.store.events(f.id);
+    assert.equal(before.filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(before.filter(e=>e.type==='chatgpt.browser_migrated').length,1);
+    assert.equal(before.filter(e=>e.type==='chatgpt.browser_observed').length,1);
+    const resumed=f.store.resumePausedPiCheckpoint(f.id,settled.version);
+    assert.equal(resumed.state,'PAUSED');
+    assert.equal(resumed.stopRequested,false);
+    assert.equal(f.store.chatLink(f.id),NEXT_URL);
+    assert.deepEqual(f.store.events(f.id).slice(0,before.length),before);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1,
+      'a maintenance resume must not reserve or resend the original new-chat prompt');
   }finally{f.cleanup();}
 });
 

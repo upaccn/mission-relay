@@ -1,5 +1,44 @@
 # Mission Relay project state
 
+## 2026-11-07 new-Chat maintenance pause and GMK Git transport (AIOS development)
+
+- Independently verified AIOS HEAD / GitHub main at
+  `1a9ae812c9549972ed039678e9eb1b8c67521ae3`; exact-head Actions
+  `42353657072` completed successfully on Windows, macOS and Ubuntu.
+- GMK remained clean at `66925b1b2fe37bbaaefa9d45060fbcf5884cb5cc`.
+  SQLite round ten settled with reservation **#360**, full response **#361**
+  and matching PI NEXT **#362**; ten observed turns, two five-send Chat
+  segments, no evidence violations. Round eleven was a **distinct new-Chat
+  reservation #363**, still in-flight when inspected. The live controller
+  was healthy under interactive Worker PID 31756. Operator-authorized
+  cooperative pause was actually requested via the installed local CLI;
+  `mission.pause_requested` was appended, preserving the original reserved
+  browser Send and forbidding the next one. Maintenance preflight still
+  returned **exit 3**. Do not restart, replay or promote until independently
+  settled and the SQLite idle/drain gates pass.
+- The registered GMK task had the expected single PowerShell 7 Worker
+  action, interactive limited account and IgnoreNew policy, with the
+  two-minute repeating trigger. Read-only Chrome inventory showed a
+  Playwriter-connected profile; physical old-tab retirement is NOT proven.
+- GMK direct GitHub `ls-remote` timed out, but a per-process, loopback SOCKS
+  Git proxy successfully read the exact expected main SHA. Upgrade must
+  use only an approved **process-scoped** proxy if required; no persistent
+  Git, Worker or host network setting was modified. The old GMK script lacks
+  `Upgrade`, so the first promotion still requires the exact-reviewed
+  bootstrap and a passed SQLite maintenance gate.
+- Added a regression for a pause **during a new-Chat reserved Send**:
+  before observation the old URL remains bound, the successful new URL and
+  full-answer SHA commit once, and releasing maintenance pause appends only
+  the original checkpoint receipt without reserving or repeating Send.
+  Targeted tests passed; full Linux Node 24 validation after this change:
+  `npm run check`, `npm run privacy-check`, `npm run build`,
+  `git diff --check` and all **283 tests** (**280 passed, 0 failed, 3
+  Windows-only skips**). Added generic process-scoped Git transport notes
+  to README; these source tests are NOT GMK deployment or live recovery.
+- Remains unverified: safe GMK upgrade + restarted worker and resumed PI,
+  production physical tab-close receipt, 32-to-successor rollover and
+  failure/re-authorization acceptance. Never classify v1.0 as DONE yet.
+
 ## 2026-11-07 32-to-successor old-tab custody hardening (AIOS source only)
 
 - Independently re-read clean AIOS/GitHub main
