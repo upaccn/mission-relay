@@ -76,6 +76,7 @@ previously credited assistant without independent turn identity fail closed.
 Read-only PI health/evidence and Telegram status may expose a **new-conversation reservation intent** flag from private SQLite. It must be false for same-chat and settled requests and must never be treated as proof of a new tab, submitted Send, observed URL or completed response. Never recover, replay or deploy based on this flag alone.
 
 Side-effect-free browser reads used before a PI recovery or Send reservation have a 30-second deadline. An expired read can interrupt PI safely without reserving or retrying a browser Send; a late-created Playwriter connector is closed. Never wrap an actual Send, Retry, reservation or PI decision in that timeout: an external side effect may already have committed.
+The ordinary (non-PI) multi-turn `browser-drive` fifth-to-sixth Chat preflight follows the same 30-second per-read boundary for both full-page snapshots and both latest-user SHA reads. Expiration must stop before any new-tab reservation or Send; it never authorizes a blind replay.
 
 This is an independent, public, local-first open-source project. It does not depend on any private AIOS deployment.
 

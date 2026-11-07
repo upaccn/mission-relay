@@ -1,5 +1,35 @@
 # Mission Relay project state
 
+## 2026-11-07 browser-drive preflight hardening and live rollover checkpoint (AIOS source)
+
+- Independently read clean AIOS/GitHub `main` at
+  `c25cdd34678d0ba50b2c2b64e10b112858b3587d` before changes. GitHub
+  Actions `42346270873` had successful Windows/macOS/Ubuntu jobs.
+- GMK was still clean at `66925b1b2fe37bbaaefa9d45060fbcf5884cb5cc`;
+  enrolled interactive/limited Telegram Scheduled Task held healthy PID 31756.
+  The production `fee3e087-26f1-4386-beee-197ad94d171e` fifth Send was
+  **independently settled**: original reservation #344, answer #345, matching
+  PI HANDOFF decision #346, full answer SHA-256
+  `dd0bceac47fb6fed1797f89bc18d175039320868426bbb0c613f6dc6286146fe`.
+  `pi-evidence` reported 5/32 observed, one chat, five matching PI decisions,
+  no violations. The separate **sixth** Send was only a **new-conversation
+  reservation #347**, RUNNING under the same healthy worker, with no completed
+  reply/URL migration evidence at the latest read; never replay #347.
+- Actual Windows maintenance preflight returned **exit 3** with active work.
+  No GMK upgrade, task restart, Chrome tab closure or SQLite mutation was
+  performed during this checkpoint; 5→6 new-chat success, tab retirement,
+  32→successor Mission, restart/re-authorization and v1.0 acceptance remain
+  independently unverified.
+- Hardened non-PI `browser-drive` fifth-to-sixth read-only source preflight:
+  both page snapshots and both latest-user SHA reads now use the existing
+  30-second-per-operation deadline. An unresponsive Chrome/Playwriter read
+  aborts before new-tab reservation; no new Send/Retry timeout was introduced.
+  Added a targeted regression guard and updated README/AGENTS.
+- Linux Node 24 verification for these source changes: `npm run check`,
+  `npm run privacy-check`, `npm run build`, `git diff --check` passed;
+  full `npm test`: **272 tests, 270 passed, 0 failed, 2 Windows-only skips**.
+  New SHA/three-platform CI and GMK promotion are distinct release gates.
+
 ## 2026-11-07 explicit fenced GMK pull-only upgrade action (AIOS source)
 
 - Independently inspected clean AIOS and GitHub `main` at

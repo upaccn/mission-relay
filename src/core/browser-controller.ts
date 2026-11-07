@@ -345,15 +345,18 @@ export async function driveChatConversation(input:{
       const last=input.store.chatBrowserTurn(m.id);
       if(!last?.assistantSha256||!['observed','reconciled'].includes(last.status))
         throw new Error('Five-turn rollover requires a complete previous browser receipt');
-      const first=await inspectChatPage(page,url);
+      // This is a read-only source preflight, not a Send. A disconnected
+      // Playwriter/Chrome must not leave an unattended multi-turn batch hung
+      // indefinitely before its next reservation.
+      const first=await withReadOnlyDeadline(inspectChatPage(page,url));
       if(first.generating||!first.composerReady||
         createHash('sha256').update(first.lastAssistant).digest('hex')!==last.assistantSha256||
-        await lastVisibleUserPromptSha256(page)!==last.promptSha256)
+        await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))!==last.promptSha256)
         throw new Error('Five-turn rollover refused: last visible ChatGPT exchange changed');
       await new Promise(resolve=>setTimeout(resolve,3000));
-      const second=await inspectChatPage(page,url);
+      const second=await withReadOnlyDeadline(inspectChatPage(page,url));
       if(second.generating||second.lastAssistant!==first.lastAssistant||
-        await lastVisibleUserPromptSha256(page)!==last.promptSha256)
+        await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))!==last.promptSha256)
         throw new Error('Five-turn rollover refused: previous answer did not remain stable');
       handoff=second.lastAssistant;
       expectedSource={promptSha256:last.promptSha256,assistantSha256:last.assistantSha256};

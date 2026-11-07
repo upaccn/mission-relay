@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,rmSync} from 'node:fs';
+import {mkdtempSync,rmSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -1056,6 +1056,19 @@ test('owned tab cleanup refuses to close navigated, already closed or active des
   assert.equal(closes,0,'Never close active, caller-owned or navigated pages');
   await retireSupersededRelayTab(owned,destination,NEXT_CHAT_URL);
   assert.equal(closes,1,'Only a known owned tab at its exact old URL is eligible');
+});
+
+test('browser-drive fifth-to-sixth preflight bounds both source snapshots and both prompt reads',()=>{
+  const controller=readFileSync('src/core/browser-controller.ts','utf8');
+  const start=controller.indexOf('export async function driveChatConversation(');
+  assert.ok(start>=0);
+  const drive=controller.slice(start);
+  const beforeReservation=drive.slice(0,drive.indexOf('const prompt:string='));
+  assert.match(beforeReservation,/first=await withReadOnlyDeadline\(inspectChatPage\(page,url\)\)/);
+  assert.match(beforeReservation,/second=await withReadOnlyDeadline\(inspectChatPage\(page,url\)\)/);
+  assert.equal((beforeReservation.match(/withReadOnlyDeadline\(lastVisibleUserPromptSha256\(page\)\)/g)||[]).length,2);
+  assert.ok(drive.indexOf('withReadOnlyDeadline')<drive.indexOf('const prompt:string='),
+    'A hung read must fail before an irreversible browser Send reservation');
 });
 
 test('HANDOFF marker creates one new authorized tab, sends task context and atomically migrates the Mission',async()=>{
