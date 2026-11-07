@@ -1,5 +1,35 @@
 # Mission Relay project state
 
+## 2026-11-07 maintenance notification-cursor gate (AIOS development)
+
+- Independent baseline: AIOS / GitHub `main` both clean at
+  `3b3ee037ced34d64d4f02c333998ce9a35ab7382`, exact-head GitHub
+  Actions `42343573192` completed successfully for Ubuntu, macOS and Windows.
+- GMK pull-only runtime remained on `66925b1b2fe37bbaaefa9d45060fbcf5884cb5cc`.
+  The original `fee3e087-26f1-4386-beee-197ad94d171e` Mission's third
+  request #338 completed as answer observation **#339**, full SHA
+  `1d9ba59f1d7d42a2cd85c88ee06f3fb377e0b8e0523a91bb5ab395ba69e926b8`,
+  with matching PI NEXT **#340**. The separate fourth browser request was
+  reserved, unobserved, and owned by the healthy Session-1 worker PID 31756
+  at this checkpoint. SQLite audit showed 3/32 rounds and zero ledger
+  violations; restart preflight exit **3** was correct. No GMK restart,
+  manual cancellation, browser replay, Source pull, or SQLite modification.
+- Maintenance gap found in source: the read-only Windows restart preflight
+  and atomic channel drain checked pending Telegram command replies but did
+  not check the separate append-only *event notification* delivery cursor.
+  A just-settled/pause-released Mission might therefore be restarted before
+  its Telegram event notifications were scanned. Source now checks the
+  initialized `telegram.notifications_cursor` against the maximum event ID
+  in both paths and refuses stale/malformed/future cursor states. The Windows
+  preflight reports only sanitized blocker counts; no secrets or raw events.
+  The watchdog keeps its existing fail-safe return behavior for corrupt
+  cursor data. Isolated restart and drain regressions both pass.
+- **Completed source checks:** Linux Node 24 `npm run check`, `privacy-check`,
+  `npm run build`, and `git diff --check` all passed; full `npm test` reported
+  **269 tests: 268 passed, zero failed, one Windows-only test skipped**.
+  Two additional maintenance notification-cursor regressions are included.
+  Exact-head three-platform CI and live GMK promotion remain separate gates.
+
 ## 2026-11-07 transient Chrome/Playwriter PI checkpoint recovery (development)
 
 - Pre-change GitHub `main` and clean AIOS both independently matched

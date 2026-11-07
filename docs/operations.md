@@ -33,6 +33,20 @@ The correction additionally refuses to modify SQLite if its original `chatgpt.br
 
 **Cooperative PI maintenance pause and return:** The existing local `pause <id>` on a RUNNING Mission only appends `mission.pause_requested` and sets `stopRequested=true`; the current original browser Send remains owned by the existing worker and must be allowed to settle under the same request key. Neither that pause event nor an idle Telegram Bot API heartbeat permits Windows deployment. Re-run the exact SQLite restart preflight until it returns success and inspect browser/PI event cursors before draining/restarting the *existing* Scheduled Task. After an eligible observed reply, the Mission stays PAUSED with its original full hash and original pause flag, and no new PI step is dispatched. Following a verified deployment, generic `Engine.resume` and CLI `resume` explicitly **refuse PI Missions**, because changing PAUSED to READY would break exact-checkpoint recovery. Use the new local-only `pi-resume <id> --revision <current> --acknowledge-side-effects` instead: it atomically appends one `pi.pause_released` event, changes only the pause flag/revision, and leaves the exact recorded answer and PAUSED state intact. On its normal poll the single Telegram controller independently re-reads the pinned Chrome last user-prompt and full assistant SHA before asking PI to decide any remaining work. Stale revision, active Send, missing/uncertain receipt, no remaining turn budget, terminal PI decision, unresolved error or revoked build approval are refused without effect. If the original Send is uncertain, manual reconciliation **preserves** the stop flag and does not manufacture turn credit; full evidence recovery must precede an eligible resume.
 
+**Maintenance notification gate (source fix):** In addition to Mission states,
+original reserved Sends and undelivered `channel_commands`, a restart must
+not proceed if the initialized `telegram.notifications_cursor` is behind the
+current maximum SQLite event ID. The worker must finish scanning the pending
+events; an observed answer or pause event alone is not proof that its Telegram
+notification has been processed. Both the read-only Windows preflight and the
+transactional channel drain enforce this rule. Missing notification cursor
+means a not-yet-initialized channel (first poll baselines existing history),
+while malformed or future cursors fail closed. Preflight logs only blocker
+counts, never owner goals, raw events, browser URLs or credentials. Do not
+pause an already-in-flight `/build` merely to obtain a successful preflight:
+cooperative pause is a separate deliberate operational act that must allow the
+original Send to settle, and subsequent `pi-resume` needs exact evidence.
+
 ## Canonical development checkout and local execution node
 
 For the owner-operated AIOS/GMK deployment, the **durable AIOS Linux checkout is the only development source**. GitHub `main` is the reviewed, pushed release/synchronization record. The Windows GMK checkout is a **pull-only execution copy**, not an independent branch of product development. This does not make AIOS a Mission Provider or move the authoritative local browser-Mission SQLite database to the VPS.

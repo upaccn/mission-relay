@@ -686,6 +686,26 @@ test('Maintenance drain refuses in-flight Mission, pending reply or reserved bro
   }finally{f.cleanup();}
 });
 
+test('Atomic maintenance drain refuses an undelivered Telegram event even after active Mission ends',()=>{
+  const f=fixture();try{
+    const originalMax=f.store.maxEventId();
+    f.store.setMeta('telegram.notifications_cursor',String(originalMax));
+    const current=f.store.get(f.m.id);
+    f.store.update(current.id,current.version,{state:'PAUSED'},
+      'test.final_pi_notification_pending',{});
+    assert.equal(f.store.maxEventId(),originalMax+1);
+    assert.throws(()=>f.store.requestChannelDrain('telegram'),/Maintenance deferred/);
+    assert.equal(f.store.channelDrainRequested('telegram'),false);
+    f.store.setMeta('telegram.notifications_cursor',String(f.store.maxEventId()));
+    const nonce=f.store.requestChannelDrain('telegram');
+    assert.ok(nonce);
+    f.store.releaseChannelDrain('telegram',nonce);
+    f.store.setMeta('telegram.notifications_cursor','not-an-integer');
+    assert.throws(()=>f.store.requestChannelDrain('telegram'),/notifications cursor/);
+    assert.equal(f.store.channelDrainRequested('telegram'),false);
+  }finally{f.cleanup();}
+});
+
 test('A drain acquired during getUpdates leaves fetched Telegram messages unacknowledged',async()=>{
   const f=fixture();try{
     const update=f.message(900,`/status ${f.m.id}`);

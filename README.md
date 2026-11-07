@@ -1,5 +1,14 @@
 # Mission Relay
 
+**Windows maintenance diagnostics:** The local read-only
+`scripts/windows/telegram-restart-check.mjs <absolute-sqlite-path>` reports
+sanitized counts for active Missions, unsent PI tasks, undelivered Telegram
+command replies, reserved browser Sends and unsent event notifications. The
+atomic SQLite channel drain checks the same notification cursor so a paused
+Mission with an undelivered result cannot be upgraded prematurely. Exit 3
+means restart is forbidden; malformed cursor/receipt or unreadable database
+exits 2. Neither diagnostic authorizes a second browser Send or force-stop.
+
 **Unattended recovery after Chrome/Playwriter restart:** An independently
 settled PI NEXT/HANDOFF checkpoint remains eligible when the pinned Chrome
 connector temporarily fails or its page is still loading/generating. The

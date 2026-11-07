@@ -21,7 +21,8 @@ function withFixture(run:(filename:string,db:DatabaseSync)=>void):void {
   try {
     db.exec(`CREATE TABLE missions(id TEXT,state TEXT);
       CREATE TABLE channel_commands(source TEXT,status TEXT);
-      CREATE TABLE meta(key TEXT,value TEXT);`);
+      CREATE TABLE meta(key TEXT,value TEXT);
+      CREATE TABLE events(id INTEGER PRIMARY KEY);`);
     run(filename,db);
   } finally {db.close();rmSync(dir,{recursive:true,force:true});}
 }
@@ -36,9 +37,26 @@ test('Telegram restart preflight permits an idle durable database',()=>withFixtu
 
 test('Telegram restart preflight refuses running or verifying Missions',()=>withFixture((file,db)=>{
   db.prepare('INSERT INTO missions VALUES(?,?)').run('task-one','RUNNING');
-  assert.equal(check(file),3);
+  const read=spawnSync(process.execPath,[script,file],{encoding:'utf8',timeout:5000});
+  assert.equal(read.status,3);
+  assert.match(read.stderr,/active_missions=1/);
   db.exec("UPDATE missions SET state='VERIFYING'");
   assert.equal(check(file),3);
+}));
+
+test('Telegram restart preflight blocks undelivered event notifications even after Mission settles',()=>withFixture((file,db)=>{
+  db.exec("INSERT INTO events(id) VALUES(1),(2),(3)");
+  db.prepare('INSERT INTO meta VALUES(?,?)').run('telegram.notifications_cursor','2');
+  const pending=spawnSync(process.execPath,[script,file],{encoding:'utf8',timeout:5000});
+  assert.equal(pending.status,3);
+  assert.match(pending.stderr,/undelivered_event_notifications=1/);
+  assert.doesNotMatch(pending.stderr,/Owner|chatgpt\.com|request-key/);
+  db.exec("UPDATE meta SET value='3'");
+  assert.equal(check(file),0,'The exact last event has now been scanned');
+  db.exec("UPDATE meta SET value='99'");
+  assert.equal(check(file),2,'A cursor ahead of durable events must fail closed');
+  db.exec("UPDATE meta SET value='corrupt'");
+  assert.equal(check(file),2,'A malformed cursor must fail closed');
 }));
 
 test('Telegram restart preflight refuses accepted READY PI tasks but allows unrelated READY records',()=>withFixture((file,db)=>{

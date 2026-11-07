@@ -160,6 +160,20 @@ export class Store {
     const pending=(this.db.prepare(
       "SELECT COUNT(*) AS count FROM channel_commands WHERE source=? AND status!='delivered'"
     ).get(source) as {count:number}).count;
+    // Telegram notification delivery is a separate append-only event cursor,
+    // not a channel_commands row. A settled Mission can still have final
+    // result notifications awaiting the one leased worker. Do not fence that
+    // worker out until it has scanned all existing events. An absent cursor
+    // denotes a never-initialized channel (initial poll baselines history).
+    const notificationCursor=this.getMeta(`${source}.notifications_cursor`);
+    let pendingNotifications=false;
+    if(notificationCursor!==null){
+      if(!/^(0|[1-9]\d*)$/.test(notificationCursor)||
+        !Number.isSafeInteger(Number(notificationCursor))||
+        Number(notificationCursor)>this.maxEventId())
+        throw new Error('Invalid Telegram notifications cursor; maintenance must fail closed');
+      pendingNotifications=Number(notificationCursor)<this.maxEventId();
+    }
     const turns=this.db.prepare(
       "SELECT value FROM meta WHERE key LIKE 'chatgpt.browser.active.%'"
     ).all() as {value:string}[];
@@ -172,7 +186,7 @@ export class Store {
         throw new Error('Unknown browser turn state; maintenance must fail closed');
       return status==='reserved';
     });
-    return Boolean(active||piReady||pending||reserved);
+    return Boolean(active||piReady||pending||pendingNotifications||reserved);
   }
   /** Only the CURRENT local lease owner may abandon a stalled, fully idle
    * channel. No drain is created: a task-managed restart must not inherit a
@@ -181,10 +195,14 @@ export class Store {
     const owner=this.db.prepare('SELECT owner_pid,owner_host FROM channel_leases WHERE source=?')
       .get(source) as {owner_pid:number;owner_host:string}|undefined;
     if(!owner||owner.owner_pid!==process.pid||owner.owner_host!==hostname()||
-       this.channelDrainRequested(source)||this.channelHasInFlightWork(source))return false;
+       this.channelDrainRequested(source))return false;
     const cursor=this.getMeta(`${source}.notifications_cursor`);
     if(cursor===null||!/^(0|[1-9]\d*)$/.test(cursor)||
        !Number.isSafeInteger(Number(cursor))||Number(cursor)<this.maxEventId())return false;
+    // The watchdog treats corrupt cursor metadata as a refused idle exit,
+    // whereas explicit maintenance drain surfaces the precise parse error.
+    // Check it before the shared maintenance predicate to retain that rule.
+    if(this.channelHasInFlightWork(source))return false;
     return true;
   }
   /** Durable, secret-free evidence for the ONE worker's voluntary idle exit.
