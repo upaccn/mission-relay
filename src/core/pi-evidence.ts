@@ -6,7 +6,8 @@ type EvidencePayload = {requestKey?:unknown;round?:unknown;assistantSha256?:unkn
   responseSha256?:unknown;action?:unknown;independentlyInspected?:unknown;
   previousUrlSha256?:unknown;newUrlSha256?:unknown;promptSha256?:unknown;
   observedEventId?:unknown;decisionEventId?:unknown;originalAssistantSha256?:unknown;
-  correctionEventId?:unknown};
+  correctionEventId?:unknown;retiredUrlSha256?:unknown;activeUrlSha256?:unknown;
+  migrationEventId?:unknown};
 export interface PiRoundEvidence {
   round:number;observedEventId:number;observedAt:string;
   observation:'normal'|'recovered-turn'|'recovered-new-chat';
@@ -36,6 +37,13 @@ export interface PiEvidenceReport {
   violations:string[];ledgerConsistent:boolean;
   rounds:PiRoundEvidence[];
   attributionCorrections:number[];
+  /** Controller-reported isClosed() receipts, correlated with source creation,
+   * new-chat migration and final answer. This independent LEDGER audit cannot
+   * independently query Chrome or prove a vanished tab is physically closed. */
+  tabRetirementReceipts:Array<{
+    eventId:number;migrationEventId:number;observationEventId:number;
+    retiredUrlSha256:string;activeUrlSha256:string;
+  }>;
   /** Same response bytes on distinct rounds is suspicious, not proof of error. */
   repeatedAnswerCandidates:number[];
   /** This is a ledger-integrity report, NOT business acceptance or v1.0 qualification. */
@@ -83,6 +91,7 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
   const allDecisions=new Map<number,MissionEvent[]>();
   const corrections=new Map<number,MissionEvent>();
   const violations:string[]=[];
+  const tabRetirementReceipts:PiEvidenceReport['tabRetirementReceipts']=[];
   let chatSegment=0,chatTurn=0,maxPerChat=0,verified=0;
   let pendingMigration:string|null=null;
   // Consecutive migrations must form one continuous conversation lineage.
@@ -172,6 +181,28 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
         allDecisions.get(r as number)!.push(e);
         decisions.set(r as number,e);
       }
+    }
+    if(e.type==='chatgpt.browser_tab_retired'){
+      const earlier=events.filter(x=>x.id<e.id);
+      const migration=earlier.filter(x=>x.type==='chatgpt.browser_migrated').at(-1);
+      const source=earlier.some(x=>x.id<(migration?.id??0)&&
+        x.type==='chatgpt.browser_migrated'&&
+        payload(x).newUrlSha256===p.retiredUrlSha256);
+      const reply=earlier.find(x=>x.id>=(migration?.id??Number.MAX_SAFE_INTEGER)&&
+        x.type==='chatgpt.browser_observed'&&
+        payload(x).requestKey===payload(migration!).requestKey);
+      if(!SHA.test(String(p.retiredUrlSha256))||!SHA.test(String(p.activeUrlSha256))||
+        p.retiredUrlSha256===p.activeUrlSha256||!migration||!source||!reply||
+        p.migrationEventId!==migration.id||p.observedEventId!==reply.id||
+        payload(migration).previousUrlSha256!==p.retiredUrlSha256||
+        payload(migration).newUrlSha256!==p.activeUrlSha256||
+        tabRetirementReceipts.some(x=>x.retiredUrlSha256===p.retiredUrlSha256))
+        warn('invalid_browser_tab_retirement');
+      else tabRetirementReceipts.push({
+        eventId:e.id,migrationEventId:migration.id,observationEventId:reply.id,
+        retiredUrlSha256:p.retiredUrlSha256 as string,
+        activeUrlSha256:p.activeUrlSha256 as string,
+      });
     }
     if(!hasOwn(observationTypes,e.type))continue;
     const kind=observationTypes[e.type as ObservationType];
@@ -303,7 +334,8 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     pendingNewChatReservation:current?.status==='reserved'&&current.newConversation===true,
     successorId:store.piChainSuccessor(id),parentId:store.piChainParent(id),
     violations,ledgerConsistent:violations.length===0,rounds:observations,
-    attributionCorrections:[...corrections.keys()],repeatedAnswerCandidates,
+    attributionCorrections:[...corrections.keys()],tabRetirementReceipts,
+    repeatedAnswerCandidates,
     businessAcceptanceVerified:false,
   };
 }

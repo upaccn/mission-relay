@@ -16,6 +16,10 @@ another browser Send. An optional `-ResumeMissionId <uuid>` invokes the
 existing exact-checkpoint `pi-resume` gate after restart. This is a locally
 invoked, tested operational action, **not** evidence of an executed GMK
 deployment or an automatic release service.
+An older GMK checkout may not yet contain the `Upgrade` action; its **first**
+promotion must instead bootstrap the same idle-only SQLite drain, verified
+fast-forward, rollback and interactive Scheduled Task restart. Never run an
+unavailable `Upgrade` command or pull source over a live browser Send.
 
 **Windows maintenance diagnostics:** The local read-only
 `scripts/windows/telegram-restart-check.mjs <absolute-sqlite-path>` reports
@@ -52,6 +56,8 @@ request has no active pending evidence; examine `rounds` instead.
 **Post-correction audit continuity:** After a falsely attributed response is independently amended and PI re-reviews the corrected SHA, `pi-evidence` distinguishes that historical completed answer from the *next* active reserved request. It accepts the pending new reservation only if its exact request key, prompt hash and event ordering link to the corrected PI NEXT/HANDOFF decision. No extra observed round is credited. An unlinked or tampered active receipt remains an integrity violation.
 
 **Chrome recovery preflight deadline:** The read-only transcript and connector checks before a PI continuation or browser Send reservation are bounded to 30 seconds per operation. This also covers both full-page snapshots and latest-user prompt SHA checks in an ordinary `browser-drive` fifth-to-sixth Chat handoff, before the new-tab reservation. On timeout the controller fails closed without a new browser Send; any Playwriter connection arriving after its deadline is closed. This is not a timeout on long-running ChatGPT generation, not a browser Retry, and not automatic recovery of an already ambiguous Send.
+
+**Old Relay-owned tab retirement receipt:** After a successful new Chat URL+answer migration, the same running controller can close only the previous tab that it itself created, and only after the Page reports `isClosed()`. It appends a hashed `chatgpt.browser_tab_retired` event linked to the earlier Relay-created page and completed migration; read-only `pi-evidence.tabRetirementReceipts` validates the event lineage and rejects duplicates/forgeries. Never infer permission to close a user-origin tab, an uncertain Send, or a tab from a previous process. A SQLite close receipt is a controller-reported browser readback, not an independent browser inventory confirmation; a missing receipt cannot prove the old tab remains open. The feature requires a future GMK deployment and does not retroactively certify historical tab closure.
 
 **Owner-facing UX and distribution direction:** [Product decisions](docs/product-ux.md) documents the paginated actionable Telegram inbox (unresolved requests first), complete paginated Mission history, non-destructive archiving, read-only interactive buttons, browser/API separation, and proposed portable binary packaging. These are incremental alpha improvements, not evidence of v1.0 production acceptance.
 

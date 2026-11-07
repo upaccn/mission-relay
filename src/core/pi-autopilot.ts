@@ -309,7 +309,10 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
       const rollover=received as BrowserTurnOutcome&{page:Page;url:string};
       const formerPage=page,formerUrl=url;
       page=rollover.page;url=rollover.url;
-      await retireSupersededRelayTab(ownedPage,page,formerUrl);
+      if(await retireSupersededRelayTab(ownedPage,page,formerUrl)){
+        try{store.recordOwnedChatTabRetired(missionId,formerUrl,url);}
+        catch{console.error('Verified old tab closed, but retirement audit could not be committed');}
+      }
       ownedPage=page===formerPage?null:page;
     }
     revision=received.revision;

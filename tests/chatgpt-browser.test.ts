@@ -993,10 +993,13 @@ class SourceWithNewTab extends SyntheticChatPage {
 class RelayOwnedIntermediatePage extends SyntheticNewChatPage {
   closeCalls=0;
   failClose=false;
+  wasClosed=false;
   nextPage:Page|null=null;
+  override isClosed(){return this.wasClosed;}
   async close(){
     this.closeCalls++;
     if(this.failClose)throw new Error('synthetic browser lost connection while closing owned tab');
+    this.wasClosed=true;
   }
   context(){return {newPage:async()=>{
     if(!this.nextPage)throw new Error('Synthetic next tab not configured');
@@ -1037,6 +1040,15 @@ test('a verified second rollover retires only its prior Relay-owned tab, never t
       assert.equal(destination.sends,1);
       assert.equal(f.store.chatLink(f.linked.id),destination.url());
       assert.equal(f.store.events(f.linked.id).filter(e=>e.type==='chatgpt.browser_migrated').length,2);
+      const retirements=f.store.events(f.linked.id).filter(e=>e.type==='chatgpt.browser_tab_retired');
+      assert.equal(retirements.length,failClose?0:1,
+        'Only a positive owned-Page closed readback may append a retirement receipt');
+      if(!failClose){
+        const receipt=retirements[0]!.payload as Record<string,unknown>;
+        assert.deepEqual(Object.keys(receipt).sort(),[
+          'activeUrlSha256','migrationEventId','observedEventId','retiredUrlSha256']);
+        assert.equal(receipt.retiredUrlSha256,createHash('sha256').update(NEXT_CHAT_URL).digest('hex'));
+      }
       assert.equal(f.store.chatBrowserTurn(f.linked.id)?.status,'observed',
         'Best-effort cleanup failure cannot corrupt the committed browser answer');
     }finally{f.cleanup();}
@@ -1045,17 +1057,26 @@ test('a verified second rollover retires only its prior Relay-owned tab, never t
 
 test('owned tab cleanup refuses to close navigated, already closed or active destination tabs',async()=>{
   let closes=0;
+  let closed=false;
   const owned={
-    isClosed:()=>false,url:()=>NEXT_CHAT_URL,
-    close:async()=>{closes++;},
+    isClosed:()=>closed,url:()=>NEXT_CHAT_URL,
+    close:async()=>{closes++;closed=true;},
   } as unknown as Page;
   const destination={isClosed:()=>false,url:()=>URL} as unknown as Page;
-  await retireSupersededRelayTab(owned,owned,NEXT_CHAT_URL);
-  await retireSupersededRelayTab(owned,destination,URL);
-  await retireSupersededRelayTab(null,destination,NEXT_CHAT_URL);
+  assert.equal(await retireSupersededRelayTab(owned,owned,NEXT_CHAT_URL),false);
+  assert.equal(await retireSupersededRelayTab(owned,destination,URL),false);
+  assert.equal(await retireSupersededRelayTab(null,destination,NEXT_CHAT_URL),false);
   assert.equal(closes,0,'Never close active, caller-owned or navigated pages');
-  await retireSupersededRelayTab(owned,destination,NEXT_CHAT_URL);
+  assert.equal(await retireSupersededRelayTab(owned,destination,NEXT_CHAT_URL),true);
   assert.equal(closes,1,'Only a known owned tab at its exact old URL is eligible');
+  assert.equal(await retireSupersededRelayTab(owned,destination,NEXT_CHAT_URL),false,
+    'Already closed tabs cannot produce duplicate proof');
+  let falseCloseCalls=0;
+  const unconfirmed={isClosed:()=>false,url:()=>NEXT_CHAT_URL,
+    close:async()=>{falseCloseCalls++;}} as unknown as Page;
+  assert.equal(await retireSupersededRelayTab(unconfirmed,destination,NEXT_CHAT_URL),false,
+    'A resolved close() without isClosed() is not a durable close receipt');
+  assert.equal(falseCloseCalls,1);
 });
 
 test('browser-drive fifth-to-sixth preflight bounds both source snapshots and both prompt reads',()=>{

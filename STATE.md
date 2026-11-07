@@ -1,5 +1,47 @@
 # Mission Relay project state
 
+## 2026-11-07 live 5→6 turnover and tab-retirement evidence hardening (AIOS source)
+
+- Independent GMK `pi-evidence` readback for Mission
+  `fee3e087-26f1-4386-beee-197ad94d171e`: round five original reservation
+  **#344**, observed **#345**, PI HANDOFF **#346**; actual round-six new-chat
+  reservation **#347**, committed URL migration **#348**, full-answer
+  observation **#349** (SHA-256
+  `5c00ada0a2bae660fa413d79410c73904e5a5c94d345c0df63bea3c0b02bf7a1`),
+  matching PI NEXT **#350**. The next same-chat request **#351** was still
+  RUNNING/reserved under healthy Worker PID 31756. Six observed rounds, two
+  chat segments, max five sends per chat, zero ledger violations.
+- Pinned `browser-binding-health` reported exactly one current linked tab;
+  Playwriter candidates exposed two enabled tabs: the original user anchor
+  (hashed URL `eb78ef5a094a8dce0cdfba1f0e4e4b1338239b05c609d235f91c38c741ac1583`)
+  and new target (`4151d4f131c52d441d4a8c5caaa67c9d2702637f7eca949b502701a72cb41e6b`).
+  The previous Relay-created target (`cea89061f2db5e5eb8ef50e90b9dcb9087ee6da6f720beb459f03f7d73ecfbec`)
+  was absent from **enabled inventory**, not independently proven physically
+  closed. No manual tab close or unverifiable audit backfill was performed.
+- Read-only baseline: clean AIOS/GitHub main
+  `e9213b66b5d79a440c68c2a9084b539256d0ba7a`, exact-head Actions
+  **#42347513681** completed successfully on Ubuntu, macOS and Windows;
+  GMK still clean at `66925b1b2fe37bbaaefa9d45060fbcf5884cb5cc`,
+  restart preflight exit **3**. The installed GMK
+  `telegram-task.ps1` only offers the older actions (no `Upgrade`); the first
+  promotion must therefore bootstrap the same tested SQLite drain, clean
+  fast-forward, rollback and interactive task restart gates once a true idle
+  window exists, rather than invoking a non-existent old-script action.
+  No GMK pull, forced pause, restart or browser Send.
+- Added a controller-observed `Page.isClosed()` gate and an append-only hashed
+  `chatgpt.browser_tab_retired` receipt only for the controller's own prior
+  Relay-created page, after successful new-chat migration. Ledger audit
+  `pi-evidence.tabRetirementReceipts` independently correlates provenance,
+  migration and observed answer, refusing duplicate or forged receipts.
+  It does not constitute an independent physical Chrome readback, and cannot
+  certify the pre-upgrade sixth-round cleanup. Added close-failure, unconfirmed
+  close, owner-anchor, idempotency and forged-event tests.
+- Linux Node 24 verification for this source change: `npm run check`,
+  `npm run privacy-check`, `npm run build`, `git diff --check` passed;
+  full `npm test`: **273 tests, 271 passed, 0 failed, 2 Windows-only skips**.
+  Exact-head three-platform CI, safe GMK deployment and actual subsequent
+  tab-retirement receipts are independent remaining acceptance gates.
+
 ## 2026-11-07 browser-drive preflight hardening and live rollover checkpoint (AIOS source)
 
 - Independently read clean AIOS/GitHub `main` at

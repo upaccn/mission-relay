@@ -77,6 +77,7 @@ Read-only PI health/evidence and Telegram status may expose a **new-conversation
 
 Side-effect-free browser reads used before a PI recovery or Send reservation have a 30-second deadline. An expired read can interrupt PI safely without reserving or retrying a browser Send; a late-created Playwriter connector is closed. Never wrap an actual Send, Retry, reservation or PI decision in that timeout: an external side effect may already have committed.
 The ordinary (non-PI) multi-turn `browser-drive` fifth-to-sixth Chat preflight follows the same 30-second per-read boundary for both full-page snapshots and both latest-user SHA reads. Expiration must stop before any new-tab reservation or Send; it never authorizes a blind replay.
+Close only a Relay-owned Page retained in the current control flow after a distinct new Chat's full answer and URL have committed. An append-only `chatgpt.browser_tab_retired` receipt requires a successful `Page.isClosed()` readback and matching earlier Relay-created tab/migration; never close the human anchor, a currently pending request, an unknown/navigated tab, or a tab inferred from SQLite alone. `pi-evidence.tabRetirementReceipts` audits these hashes/event links, not independent physical Chrome state; absence does not prove the old tab is open. Never backfill a missing receipt without an actual safe close.
 
 This is an independent, public, local-first open-source project. It does not depend on any private AIOS deployment.
 

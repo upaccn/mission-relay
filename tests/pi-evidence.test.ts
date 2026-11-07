@@ -32,6 +32,32 @@ const observe=(store:Store,id:string,round:number,newChatUrl?:string)=>{
     summary:`Stage ${round} independently reviewed`,nextPrompt:round===9?'':'Continue one stage'});
 };
 
+test('owned-tab close receipts require a prior Relay-created chat and are independently audited',()=>{
+  const f=fixture();try{
+    for(let i=1;i<=6;i++)observe(f.store,f.id,i,i===1?first:i===6?second:undefined);
+    assert.throws(()=>f.store.recordOwnedChatTabRetired(f.id,source,second),
+      /previously Relay-created/,'Never certify closure of an owner-linked anchor');
+    f.store.recordOwnedChatTabRetired(f.id,first,second);
+    assert.throws(()=>f.store.recordOwnedChatTabRetired(f.id,first,second),
+      /already has a retirement receipt/,'Do not duplicate a successful close');
+    const report=inspectPiEvidence(f.store,f.id);
+    assert.equal(report.ledgerConsistent,true,report.violations.join(','));
+    assert.equal(report.tabRetirementReceipts.length,1);
+    assert.equal(report.tabRetirementReceipts[0]?.retiredUrlSha256,sha(first));
+    assert.equal(report.tabRetirementReceipts[0]?.activeUrlSha256,sha(second));
+    assert.ok(!JSON.stringify(report).includes('chatgpt.com'),'Keep full browser URLs private');
+    f.store.db.prepare('INSERT INTO events(mission_id,created_at,type,payload_json) VALUES (?,?,?,?)')
+      .run(f.id,new Date().toISOString(),'chatgpt.browser_tab_retired',
+        JSON.stringify({...f.store.events(f.id).at(-1)!.payload,
+          migrationEventId:123456}));
+    const corrupted=inspectPiEvidence(f.store,f.id);
+    assert.equal(corrupted.ledgerConsistent,false);
+    assert.ok(corrupted.violations.includes('invalid_browser_tab_retirement'));
+    assert.equal(corrupted.tabRetirementReceipts.length,1,
+      'Forged receipt must not be credited');
+  }finally{f.cleanup();}
+});
+
 test('read-only PI evidence attributes pending and uncertain requests to the original reservation',()=>{
   const f=fixture();try{
     const promptSha256=sha('private pending prompt');

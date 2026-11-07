@@ -768,6 +768,39 @@ export class Store {
       return this.get(id);
     });
   }
+  /** Append-only receipt that the executing controller observed isClosed()
+   * after closing an in-memory Page it had created. The ledger can validate
+   * provenance, not independently re-observe the physical Chrome tab.
+   * SQLite evidence never authorizes a later close, and a human-linked source
+   * is not an owned page. Never persist raw URLs in this event. */
+  recordOwnedChatTabRetired(id:string,oldUrl:string,newUrl:string):void {
+    const oldLink=normalizeChatGPTUrl(oldUrl),newLink=normalizeChatGPTUrl(newUrl);
+    const hash=(url:string)=>createHash('sha256').update(url).digest('hex');
+    const oldSha=hash(oldLink),newSha=hash(newLink);
+    this.transaction(()=>{
+      const events=this.events(id);
+      const migration=events.filter(e=>e.type==='chatgpt.browser_migrated').at(-1);
+      const p=migration?.payload as {previousUrlSha256?:string;newUrlSha256?:string;requestKey?:string}|undefined;
+      const observed=events.find(e=>e.id>(migration?.id??Number.MAX_SAFE_INTEGER)&&
+        e.type==='chatgpt.browser_observed'&&
+        (e.payload as {requestKey?:string}).requestKey===p?.requestKey);
+      const ownedOrigin=events.some(e=>e.id<(migration?.id??0)&&
+        e.type==='chatgpt.browser_migrated'&&
+        (e.payload as {newUrlSha256?:string}).newUrlSha256===oldSha);
+      if(oldSha===newSha||this.chatLink(id)!==newLink||
+        !migration||!observed||!ownedOrigin||
+        p?.previousUrlSha256!==oldSha||p.newUrlSha256!==newSha||
+        this.chatBrowserTurn(id)?.status!=='observed')
+        throw new Error('Tab retirement requires a completed migration from a previously Relay-created tab');
+      if(events.some(e=>e.type==='chatgpt.browser_tab_retired'&&
+        (e.payload as {retiredUrlSha256?:string}).retiredUrlSha256===oldSha))
+        throw new Error('This Relay-owned tab already has a retirement receipt');
+      this.event(id,'chatgpt.browser_tab_retired',{
+        retiredUrlSha256:oldSha,activeUrlSha256:newSha,
+        migrationEventId:migration.id,observedEventId:observed.id,
+      });
+    });
+  }
   /** Commit the Mission state, browser record, conversation lock and both audit
    * events together. Accept an already PAUSED Mission for recovery of legacy
    * two-step reconciliations whose second transaction never committed. */

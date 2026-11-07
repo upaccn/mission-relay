@@ -71,21 +71,26 @@ export type BrowserDecision='NEXT'|'DONE'|'BLOCKED'|'HANDOFF'|'UNMARKED';
  * currently active destination. The new response and URL must already have
  * committed to SQLite before the caller invokes this best-effort cleanup. */
 export async function retireSupersededRelayTab(ownedPage:Page|null,
-  destination:Page,expectedOldUrl:string):Promise<void>{
-  if(!ownedPage||ownedPage===destination)return;
+  destination:Page,expectedOldUrl:string):Promise<boolean>{
+  if(!ownedPage||ownedPage===destination)return false;
   let timer:ReturnType<typeof setTimeout>|undefined;
   try{
-    if(ownedPage.isClosed()||ownedPage.url().replace(/\/$/,'')!==expectedOldUrl.replace(/\/$/,''))return;
+    if(ownedPage.isClosed()||ownedPage.url().replace(/\/$/,'')!==expectedOldUrl.replace(/\/$/,''))return false;
     await Promise.race([
       ownedPage.close(),
       new Promise<void>((_,reject)=>{
         timer=setTimeout(()=>reject(new Error('owned tab close timeout')),4000);
       }),
     ]);
+    // An attempted close or an absent Playwriter tab is not a verified
+    // close. Only the exact, Relay-owned Page confirming isClosed() may
+    // produce a durable retirement receipt.
+    return ownedPage.isClosed();
   }catch{
     // A cleanup issue after a durable response is not an ambiguous Send and
     // must not prevent PI from evaluating the already-committed destination.
     console.error('Relay-owned previous ChatGPT tab could not be closed; keeping the verified new conversation');
+    return false;
   }finally{if(timer)clearTimeout(timer);}
 }
 /** Flow-control signal, not independent verification of a model's claims. */
@@ -391,7 +396,10 @@ export async function driveChatConversation(input:{
       const migrated=receipt as BrowserTurnOutcome&{page:Page;url:string};
       const formerPage=page,formerUrl=url;
       page=migrated.page;url=migrated.url;
-      await retireSupersededRelayTab(ownedPage,page,formerUrl);
+      if(await retireSupersededRelayTab(ownedPage,page,formerUrl)){
+        try{input.store.recordOwnedChatTabRetired(input.missionId,formerUrl,url);}
+        catch{console.error('Verified old tab closed, but retirement audit could not be committed');}
+      }
       ownedPage=page===formerPage?null:page;
     }
     const signal=browserDecision(receipt.lastAssistant);
