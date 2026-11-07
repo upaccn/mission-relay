@@ -2,6 +2,8 @@
 
 **New-chat diagnostic:** `pi-health.browserNewChatReserved` and `pi-evidence.pendingNewChatReservation` identify only the existing SQLite reservation's new-conversation intent. Telegram `/status` labels this *reserved only*; it does not prove the new tab, submitted message, URL migration or answer exists. A 5/5 old-chat count plus an unobserved sixth reservation is not completed rotation evidence.
 
+**Post-correction audit continuity:** After a falsely attributed response is independently amended and PI re-reviews the corrected SHA, `pi-evidence` distinguishes that historical completed answer from the *next* active reserved request. It accepts the pending new reservation only if its exact request key, prompt hash and event ordering link to the corrected PI NEXT/HANDOFF decision. No extra observed round is credited. An unlinked or tampered active receipt remains an integrity violation.
+
 **Chrome recovery preflight deadline:** The read-only transcript and connector checks before a PI continuation or browser Send reservation are bounded to 30 seconds per operation. On timeout the controller fails closed without a new browser Send; any Playwriter connection arriving after its deadline is closed. This is not a timeout on long-running ChatGPT generation, not a browser Retry, and not automatic recovery of an already ambiguous Send.
 
 **Owner-facing UX and distribution direction:** [Product decisions](docs/product-ux.md) documents the paginated actionable Telegram inbox (unresolved requests first), complete paginated Mission history, non-destructive archiving, read-only interactive buttons, browser/API separation, and proposed portable binary packaging. These are incremental alpha improvements, not evidence of v1.0 production acceptance.

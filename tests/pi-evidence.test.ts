@@ -130,6 +130,46 @@ test('independent latest-answer attribution correction preserves old events, nev
   }finally{f.cleanup();}
 });
 
+test('corrected PI checkpoint stays consistent while its authorized NEXT is reserved, but not for an unlinked receipt',()=>{
+  const f=fixture();try{
+    observe(f.store,f.id,1,first);
+    const original=sha('Private code result for stage 1\n[MISSION_RELAY:NEXT]');
+    f.store.correctPiBrowserAttribution(f.id,f.store.get(f.id).version,{
+      requestPromptSha256:sha('private prompt 1'),
+      assistantSha256:sha('Correct independently re-observed answer\n[MISSION_RELAY:NEXT]'),
+      summary:'Correct independently re-observed answer\n[MISSION_RELAY:NEXT]',
+    });
+    f.store.commitPiPlan(f.id,sha('Correct independently re-observed answer\n[MISSION_RELAY:NEXT]'),[],{
+      action:'NEXT',summary:'Verified correction',nextPrompt:'Continue with the next actual Send',
+    },true);
+    const afterCorrection=inspectPiEvidence(f.store,f.id);
+    assert.equal(afterCorrection.ledgerConsistent,true);
+    assert.equal(afterCorrection.rounds[0]?.originalAnswerSha256,original);
+    const request='after-corrected-next';
+    f.store.reserveChatBrowserTurn(f.id,f.store.get(f.id).version,request,sha('next real prompt'));
+    const pending=inspectPiEvidence(f.store,f.id);
+    assert.equal(pending.pendingBrowserRequest,true);
+    assert.equal(pending.observedTurns,1,'A reservation is not an observed answer');
+    assert.equal(pending.decisionsVerified,1);
+    assert.deepEqual(pending.violations,[],
+      'The active NEXT reservation legitimately replaces the prior corrected receipt');
+    const key=`chatgpt.browser.active.${f.id}`;
+    const originalReceipt=f.store.getMeta(key)!;
+    f.store.setMeta(key,JSON.stringify({...JSON.parse(originalReceipt),requestKey:'unlinked-request'}));
+    const forged=inspectPiEvidence(f.store,f.id);
+    assert.equal(forged.ledgerConsistent,false);
+    assert.ok(forged.violations.includes('corrected_active_browser_receipt_mismatch'));
+    f.store.setMeta(key,originalReceipt);
+    const response='Actual third-round answer\n[MISSION_RELAY:NEXT]';
+    f.store.finishChatBrowserTurn(f.id,request,{kind:'observed',
+      assistantSha256:sha(response),summary:response});
+    const nextUnreviewed=inspectPiEvidence(f.store,f.id);
+    assert.equal(nextUnreviewed.observedTurns,2);
+    assert.deepEqual(nextUnreviewed.pendingPiReviewRounds,[2]);
+    assert.ok(!nextUnreviewed.violations.includes('corrected_active_browser_receipt_mismatch'));
+  }finally{f.cleanup();}
+});
+
 test('attribution correction rejects forged original reservation and PI history before mutation',()=>{
   for(const sabotage of ['changed-reservation-prompt','duplicate-reservation','changed-original-pi-hash'] as const){
     const f=fixture();try{

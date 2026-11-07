@@ -237,7 +237,31 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     !observations.some(o=>o.round===decision))warn('pi_decision_without_observed_round');
   const current=store.chatBrowserTurn(id);
   const latest=observations.at(-1);
+  // A verified correction supersedes ONLY the last completed reply. After
+  // PI independently re-reviews it, the legitimate next Send overwrites the
+  // active receipt with a new RESERVED request. Never compare that pending
+  // next request's absent answer hash to the *previous* corrected answer.
+  // Require its own append-only reservation, exact request/prompt identity
+  // and ordering after the corrected PI decision; an unlinked or forged
+  // active receipt must still fail the independent audit.
+  const correctionDecision=latest?decisions.get(latest.round):undefined;
+  const nextReservation=events.filter(e=>e.type==='chatgpt.browser_reserved').at(-1);
+  const nextPayload=nextReservation?payload(nextReservation):null;
+  const isVerifiedNextReservation=Boolean(
+    latest?.attributionCorrectionEventId&&
+    current?.status==='reserved'&&mission.state==='RUNNING'&&
+    mission.turnCount===latest.round&&
+    correctionDecision?.type==='pi.decision_attribution_corrected'&&
+    ['NEXT','HANDOFF'].includes(String(payload(correctionDecision).action))&&
+    correctionDecision.id>latest.attributionCorrectionEventId&&
+    nextReservation&&nextReservation.id>correctionDecision.id&&
+    nextPayload?.requestKey===current.requestKey&&
+    nextPayload?.promptSha256===current.promptSha256&&
+    reserved.get(current.requestKey)===nextReservation.id&&
+    !used.has(current.requestKey)&&!current.assistantSha256
+  );
   if(latest?.attributionCorrectionEventId&&
+    !isVerifiedNextReservation&&
     (current?.status!=='reconciled'||current.assistantSha256!==latest.answerSha256))
     warn('corrected_active_browser_receipt_mismatch');
   // This highlights the real production failure signature without falsely

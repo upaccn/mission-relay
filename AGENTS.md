@@ -25,6 +25,14 @@ and original PI decision SHA, and reservation → observation → decision event
 order. If any original historical link is missing, duplicated or corrupted,
 fail without appending a correction or changing the active receipt.
 
+The independent PI evidence reader must not compare a corrected *completed*
+answer SHA against the distinct active receipt for a **later authorized
+reserved** Send. Such a reservation is valid only with an exact unmatched
+append-only reservation event after the corrected PI NEXT/HANDOFF decision,
+matching request/prompt hashes, and no observed assistant hash yet. It is not
+proof of the later Send's completion. An unlinked, forged or premature current
+receipt must remain an explicit violation.
+
 An older worker may crash *between* an original browser Send reservation and
 its uncertain/observed receipt. Such a persisted RUNNING+reserved same-chat
 request is **not** authorization to replay. The local
