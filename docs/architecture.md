@@ -1,5 +1,36 @@
 # Architecture
 
+## Goal release gate (WP5)
+
+The Goal ledger uses additive SQLite schema **v5**. `GoalReleaseGate` is an
+evidence verifier, not a PI dispatcher. It creates an exact Git SHA release
+target only after the approved plan's Work Items and their criteria all have
+PI-*reported* PASS; that report never counts as independent acceptance.
+Twelve mandatory release gates cover check, privacy, full tests, build,
+Ubuntu/macOS/Windows CI, live 5→6, real 32→successor, maintenance recovery,
+tab retirement and GMK readback. Every work criterion adds its own independent
+evidence requirement. A verified receipt records source, original proof
+digest, reference, target SHA, observed time and bounded freshness. Every
+target change invalidates prior current receipts while retaining historical
+append-only audit events. Changed Goal/plan/work versions, missing/expired
+evidence, source/receipt audit mismatch, failed verification, or wrong main
+SHA deny DONE. Completion is an immutable row with an append-only audit
+event, exposed as logical Goal `DONE`; the old v4 `goals.status` CHECK
+constraint and historical rows remain untouched.
+
+Only an independent probe supplied by the trusted controller can record
+verification; there is no free-form `mark PASS` endpoint. First-party
+local command probes run only fixed npm scripts against a clean, currently
+checked-out `main` matching `origin/main`, keep original run logs outside
+the repo with SHA-256 references, and directly inspect GitHub Actions
+exact-head, per-platform step outcomes via `gh`. Local CLI mutation commands
+require the existing locally approved build project and do not run any
+ChatGPT Send, Retry, Chrome action or GMK update. The Chrome/GMK/criteria
+probes are deliberately absent until WP6 can independently observe and test
+them in production. The gate remains fail-closed without those probes.
+Never confuse a green synthetic test, stored receipt, or source-only DONE
+algorithm with an actual v1.0 production release.
+
 ## System of record
 
 A **Mission Provider** is the only authority for a given mission. The native provider stores mission state in SQLite through Node's bundled `node:sqlite` API (Node 24+); future external providers (e.g., AIOS) remain authoritative for their own missions. Never copy editable states into a competing database.

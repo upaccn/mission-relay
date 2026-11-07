@@ -1,5 +1,14 @@
 # Telegram (experimental, optional)
 
+**WP5 release status:** Owner `/goal-status <UUID>` shows whether independent
+release verification is targeted, how many separately verified requirements
+exist, and current blockers. The underlying CLI
+`goal-release-status <UUID>` reads this evidence without performing a
+browser Send or upgrading an old database. Source/CI release attestation
+commands remain local-operator-only and require the existing approved
+repository; Telegram is not a free-form PASS/DONE certification channel.
+Real GMK/Chrome proof remains a separate WP6 production release gate.
+
 The Telegram adapter is a single-user **foreground process**. It uses the official Bot API's long polling and requires no public webhook or inbound port. It is not enabled by default. Telegram Bot chats are not end-to-end encrypted; do not send tokens, customer records, browser sessions or confidential model output to this channel.
 
 ## Setup (manual, local)

@@ -1,5 +1,14 @@
 # Mission Relay project state
 
+## 2026-11-07 Goal-driven WP5 independent release evidence (AIOS source only)
+
+- Starting readback: clean AIOS checkout and GitHub `main` at `cceddd4d6ca8a8fb3bbeb15a8c7c52a08af27e7b`; exact WP4 GitHub Actions run `42363575179` completed successfully at that SHA with Ubuntu, macOS and Windows Node 24 (all five required steps per platform).
+- Implemented additive SQLite v5 release targets, immutable completion, 12 mandatory software release gates plus each active plan criterion, source/proof/reference/verified-at/expiry evidence records and append-only audits. Historic Missions, Goal v4 PI claims, reserved browser Sends, prompt snapshots and PI checkpoints are not backfilled. Writable migration must run only under approved GMK maintenance drain; read-only v4 diagnostics do not upgrade.
+- The release API refuses PI/model-only PASS, missing/mismatched/expired/tampered proof, wrong SHA, changed Goal graph, incomplete work and missing independent main readback. Fresh evidence is required for target changes. DONE is a completed release record separate from reported work-item status, not a PI scheduler action.
+- First-party CLI readback probes handle locally executed `check`, `privacy-check`, `test`, `build` and GitHub Actions exact SHA/platform status with original log digests. They require the configured approved local repository. Real Chrome/GMK/criteria probes are explicitly **not** supplied in WP5 and must fail closed until independently implemented and exercised in WP6.
+- GMK is deliberately not deployed/restarted/migrated by WP5. Real 5→6, 32→successor, maintenance recovery, retirement and GMK post-deploy readback remain unverified; no overall v1.0 DONE.
+- **WP5 local qualification (AIOS Node 24):** `npm run check`, `npm run privacy-check`, full `npm test`, `npm run build` and `git diff --check` passed after correcting one outdated WP4 Telegram presentation assertion. **336 tests / 333 passed / 0 failed / 3 Windows-only Linux skips.** The nine dedicated release tests passed; this is synthetic verification of the gate algorithm, NOT independent Chrome/GMK release evidence. Final exact-head GitHub CI must be read back separately after the new source commit.
+
 ## 2026-11-07 Goal-driven WP4 Owner ↔ PI entrypoint (AIOS source only)
 
 - Starting readback: clean AIOS checkout and GitHub `main` at `15a4a931558640fba160e5f1f3b1f8a1953559f7`; exact-head GitHub Actions `42362344056` completed `success` on Node 24 Ubuntu, macOS, Windows. Inspected AGENTS/README/STATE, Goal/PI/Prompt code and real Telegram routing before editing.

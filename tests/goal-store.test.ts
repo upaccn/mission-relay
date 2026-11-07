@@ -267,10 +267,10 @@ test('v3 in-place upgrade preserves complete old Mission/events/receipt and read
     legacyV3(file);
     const oldReader=new Store(file,{readOnly:true});
     assert.equal(oldReader.get('old').turnCount,11);
-    assert.throws(()=>new GoalLedger(oldReader),/schema v4/);
+    assert.throws(()=>new GoalLedger(oldReader),/schema v5/);
     oldReader.close();
     const upgraded=new Store(file);
-    assert.equal(upgraded.getMeta('schema_version'),'4');
+    assert.equal(upgraded.getMeta('schema_version'),'5');
     assert.equal(upgraded.get('old').version,19);
     assert.equal(upgraded.events('old')[0]?.id,1);
     assert.equal(upgraded.events('old')[0]?.type,'chatgpt.browser_reserved');
@@ -282,7 +282,7 @@ test('v3 in-place upgrade preserves complete old Mission/events/receipt and read
       'Do not invent goals for historical Missions');
     upgraded.close();
     const reader=new Store(file,{readOnly:true});
-    assert.equal(reader.getMeta('schema_version'),'4');
+    assert.equal(reader.getMeta('schema_version'),'5');
     assert.equal(reader.get('old').turnCount,11);
     assert.throws(()=>new GoalLedger(reader).createGoal(request),/readonly|SQLITE_READONLY/i);
     reader.close();

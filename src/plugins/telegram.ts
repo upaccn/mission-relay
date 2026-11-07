@@ -15,6 +15,7 @@ import {withReadOnlyDeadline} from '../core/read-only-deadline.js';
 import {drivePiAutopilot,pauseFailedPiPlanning} from '../core/pi-autopilot.js';
 import {AiosPiPlanner,validateRemoteProjectPath,type PiPlanner} from '../core/pi-planner.js';
 import {GoalLedger} from '../core/goal-store.js';
+import {GoalReleaseGate} from '../core/goal-release.js';
 import type {Mission,MissionEvent} from '../core/types.js';
 
 export const telegramPluginManifest:PluginManifest={
@@ -868,13 +869,15 @@ export class TelegramBridge {
       const lineage=missionId?[missionId,...this.engine.list()
         .filter(m=>m.id!==missionId&&new GoalLedger(this.store).missionGoalId(m.id)===id)
         .map(m=>m.id)]:[];
+      const release=new GoalReleaseGate(this.store).report(id);
       return [
         `Goal ${graph.goal.id} [${graph.goal.status}] v${graph.goal.version}`,
         `Objective: ${compactTelegramText(graph.goal.objective,420)}`,
         `Plan: ${approved?`${approved.ordinal} [${approved.status}] v${approved.version}`:'awaiting PI review'}`,
         `Work: ${verified}/${items.length} reported PASSED; ${active?`current ${active.key} [${active.status}] v${active.version}`:'none active'}`,
         `Acceptance: ${graph.acceptance.filter(a=>a.status==='PASS').length}/${graph.acceptance.length} reported PASS (model-reviewed only)`,
-        'Goal DONE: not available until independent release verification',
+        release.complete? `Goal DONE: independently gated at ${release.target?.targetSha.slice(0,12)}`:
+          `Release gate: ${release.target?.targetSha.slice(0,12)??'not targeted'}, ${release.checks.filter(c=>c.state==='PASS').length}/${release.checks.length} independently checked; ${release.blockers.length} blockers (not DONE)`,
         ...lineage.slice(-3).map(mid=>`PI Mission: /status ${mid}`),
       ].join('\n');
     }

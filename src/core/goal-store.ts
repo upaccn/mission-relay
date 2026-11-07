@@ -1,10 +1,9 @@
 import {createHash,randomUUID} from 'node:crypto';
 import type {Store} from './store.js';
 
-/** WP1: durable goal/plan/work-item facts, not a second execution scheduler.
- * Acceptance records are claims with evidence pointers; independent release
- * verification and the PI review protocol belong to later work packages. */
-export type GoalStatus='DRAFT'|'ACTIVE'|'PAUSED'|'BLOCKED';
+/** PI work acceptance is a reported claim; Goal DONE is separately
+ * derived from the immutable, independently verified v5 release ledger. */
+export type GoalStatus='DRAFT'|'ACTIVE'|'PAUSED'|'BLOCKED'|'DONE';
 export type GoalPlanStatus='DRAFT'|'APPROVED'|'SUPERSEDED'|'CANCELLED';
 export type GoalWorkStatus='PENDING'|'READY'|'IN_PROGRESS'|'REVIEW'|'PASSED'|'BLOCKED'|'FAILED';
 export type GoalAcceptanceStatus='PENDING'|'PASS'|'PARTIAL'|'FAIL'|'BLOCKED';
@@ -100,7 +99,7 @@ export class GoalLedger {
   constructor(private readonly store:Store){
     const schema=store.db.prepare('SELECT value FROM meta WHERE key=?').get('schema_version') as
       {value:string}|undefined;
-    if(schema?.value!=='4')throw new Error('Goal ledger requires SQLite schema v4');
+    if(schema?.value!=='5')throw new Error('Goal ledger requires SQLite schema v5');
   }
   private event(goalId:string,type:string,payload:Record<string,unknown>):void{
     this.store.db.prepare('INSERT INTO goal_events(goal_id,created_at,type,payload_json) VALUES(?,?,?,?)')
@@ -120,6 +119,8 @@ export class GoalLedger {
           throw new Error('Idempotency key reused with different intent');
         return JSON.parse(previous.result_json) as T;
       }
+      if(this.store.db.prepare('SELECT 1 FROM goal_release_completion WHERE goal_id=?')
+        .get(goalId))throw new Error('Completed Goal is immutable');
       const result=write();
       this.store.db.prepare(
         'INSERT INTO goal_operations(goal_id,operation_key,request_sha256,result_json) VALUES(?,?,?,?)'
@@ -137,7 +138,7 @@ export class GoalLedger {
       if(previous){
         if(previous.objective!==objective||previous.priority!==input.priority)
           throw new Error('Idempotency key reused with different goal');
-        return toGoal(previous);
+        return this.getGoal(previous.id);
       }
       const id=randomUUID(),at=now();
       this.store.db.prepare(`INSERT INTO goals
@@ -149,12 +150,18 @@ export class GoalLedger {
     });
   }
   getGoal(id:string):Goal{
-    const r=this.store.db.prepare('SELECT * FROM goals WHERE id=?').get(id) as GoalRow|undefined;
+    const r=this.store.db.prepare(`SELECT g.*,
+      CASE WHEN c.goal_id IS NULL THEN g.status ELSE 'DONE' END AS status
+      FROM goals g LEFT JOIN goal_release_completion c ON c.goal_id=g.id
+      WHERE g.id=?`).get(id) as GoalRow|undefined;
     if(!r)throw new Error('Unknown goal');
     return toGoal(r);
   }
   listGoals():Goal[]{
-    return (this.store.db.prepare('SELECT * FROM goals ORDER BY created_at,id').all() as GoalRow[])
+    return (this.store.db.prepare(`SELECT g.*,
+      CASE WHEN c.goal_id IS NULL THEN g.status ELSE 'DONE' END AS status
+      FROM goals g LEFT JOIN goal_release_completion c ON c.goal_id=g.id
+      ORDER BY g.created_at,g.id`).all() as GoalRow[])
       .map(toGoal);
   }
   /** Opt-in association only. Existing Mission records, Chat URLs and request

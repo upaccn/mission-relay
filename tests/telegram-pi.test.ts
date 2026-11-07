@@ -146,7 +146,7 @@ test('WP4 /goal creates durable Goal plus one PI Mission; PI persists a reviewed
       f.message(3103,'/goals'),f.message(3104,`/status ${task.id}`)]);
     await f.bridge.pollOnce(0);
     assert.equal(ledger.listGoals().length,1);
-    assert.ok(f.sent.some(x=>x.includes('Goal DONE: not available')));
+    assert.ok(f.sent.some(x=>x.includes('Release gate: not targeted')&&x.includes('(not DONE)')));
     assert.ok(f.sent.some(x=>x.includes('Persistent Goals: Page 1/1')));
     assert.ok(f.sent.some(x=>x.includes(`Persistent Goal: /goal-status ${graph.goal.id}`)));
     assert.equal(f.store.events(task.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2);

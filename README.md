@@ -1,5 +1,22 @@
 # Mission Relay
 
+**WP5 Goal release gate (AIOS source, not yet deployed to GMK):** SQLite v5
+adds a durable version-pinned release target, 12 required software-release
+checks, and an independent check for each approved work-item criterion.
+PI-reported PASS is only a claim. The Gate requires actual tool-verified,
+SHA-bound, audited, unexpired receipts before recording an immutable Goal
+DONE; a fresh local/remote main SHA readback is mandatory at finalization.
+The local operator CLI offers `goal-release-status`,
+`goal-release-target`, `goal-release-verify` (local command or GitHub
+Actions proof) and `goal-release-finalize`, with the existing approved
+project scope. Raw model claims cannot be submitted as PASS. Chrome 5→6,
+32→successor, maintenance recovery, physical-tab retirement, GMK
+production readback and each work criterion still require real independent
+WP6 probes. They cannot be filled by model testimony or synthetic tests;
+until then Goal DONE is blocked. Upgrading the private GMK SQLite v4 database
+requires the original drain and rollback gates; WP5 does not deploy it.
+See [independent release gate](docs/architecture.md#goal-release-gate-wp5).
+
 **32-to-successor physical-tab retirement:** Once the parent reaches a
 verified 32-turn LIMIT with PI NEXT/HANDOFF, the child opens a fresh Chat
 and commits its first full answer. Before retiring the predecessor's

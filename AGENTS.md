@@ -1,5 +1,24 @@
 # Mission Relay contributor instructions
 
+WP5 independent Goal DONE boundary: writable Store schema v5 adds release
+target SHA, fixed software-release gates, each approved work criterion,
+source-specific independent evidence receipts, expiry, immutable DONE receipt
+and append-only Goal audit. An old v4 Goal/PI PASS is NEVER converted into
+verified acceptance, and old Mission/Send records are NEVER migrated or
+replayed as proof. Release begins only after all PI-reported work packages and
+criteria passed, and may finalize only when every required independently
+inspected receipt matches the exact target SHA, latest Goal/plan/work graph,
+verified source, original audit and freshness window, followed by a fresh
+clean local + remote main SHA readback. Model output, browser response digests,
+commit messages and untrusted evidence pointers do not establish DONE.
+Only the local operator CLI may run first-party check/test/build and GitHub
+Actions readback probes, restricted to the existing approved repository.
+Chrome 5-to-6, real 32-to-successor, maintenance recovery, tab retirement,
+GMK deployment and each work criterion still need separate WP6 live verifier
+adapters; do not fabricate receipts, forge passes or weaken the gate.
+Never deploy/migrate/restart GMK to test WP5 while an in-flight browser Send
+or maintenance drain blocks promotion.
+
 WP4 Goal Owner entrypoint: Telegram `/goal <objective>` is the opt-in read-only
 long-lived Goal route; `/goal-build <objective>` uses ONLY the existing
 locally approved workspace-write repository. `/goals` and `/goal-status`

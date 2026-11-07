@@ -72,8 +72,8 @@ export class Store {
       this.db.exec('PRAGMA query_only = ON');
       const version=this.db.prepare('SELECT value FROM meta WHERE key = ?')
         .get('schema_version') as {value:string}|undefined;
-      if(!['3','4'].includes(version?.value??''))
-        throw new Error('Read-only PI diagnostic requires existing schema v3 or v4; upgrade separately under maintenance');
+      if(!['3','4','5'].includes(version?.value??''))
+        throw new Error('Read-only PI diagnostic requires schema v3–v5; upgrade separately under maintenance');
       return;
     }
     this.db.exec('PRAGMA journal_mode = WAL');
@@ -104,7 +104,7 @@ export class Store {
         this.db.exec("ALTER TABLE missions ADD COLUMN checks_json TEXT NOT NULL DEFAULT '[]'");
         this.db.prepare('UPDATE meta SET value=? WHERE key=?').run('2','schema_version');
       });
-    } else if (!['2','3','4'].includes(version.value)) throw new Error(`Unsupported database schema ${version.value}; upgrade explicitly`);
+    } else if (!['2','3','4','5'].includes(version.value)) throw new Error(`Unsupported database schema ${version.value}; upgrade explicitly`);
     const currentVersion=(this.db.prepare('SELECT value FROM meta WHERE key=?').get('schema_version') as {value:string}).value;
     if (currentVersion === '2') this.transaction(()=>{
       this.db.exec(`CREATE TABLE IF NOT EXISTS channel_commands (
@@ -186,6 +186,41 @@ export class Store {
           );
         `);
         this.db.prepare('UPDATE meta SET value=? WHERE key=?').run('4','schema_version');
+      });
+    // WP5: additive release attestations. The v4 Goal and Mission rows,
+    // including unobserved browser reservations, are not rewritten.
+    if ((this.db.prepare('SELECT value FROM meta WHERE key=?').get('schema_version') as {value:string}).value === '4')
+      this.transaction(()=>{
+        this.db.exec(`
+          CREATE TABLE goal_release_targets (
+            goal_id TEXT PRIMARY KEY REFERENCES goals(id),
+            target_sha TEXT NOT NULL, goal_version INTEGER NOT NULL,
+            plan_id TEXT NOT NULL REFERENCES goal_plans(id),
+            plan_version INTEGER NOT NULL, graph_sha256 TEXT NOT NULL,
+            revision INTEGER NOT NULL CHECK(revision > 0),
+            created_at TEXT NOT NULL
+          );
+          CREATE TABLE goal_release_checks (
+            goal_id TEXT NOT NULL REFERENCES goal_release_targets(goal_id),
+            requirement TEXT NOT NULL, target_sha TEXT NOT NULL,
+            state TEXT NOT NULL CHECK(state IN ('PENDING','PASS','FAIL','BLOCKED')),
+            source TEXT, reference TEXT, proof_sha256 TEXT,
+            verified_at TEXT, expires_at TEXT, revision INTEGER NOT NULL,
+            PRIMARY KEY(goal_id,requirement)
+          );
+          CREATE TABLE goal_release_completion (
+            goal_id TEXT PRIMARY KEY REFERENCES goal_release_targets(goal_id),
+            target_sha TEXT NOT NULL, graph_sha256 TEXT NOT NULL,
+            completed_at TEXT NOT NULL, evidence_sha256 TEXT NOT NULL
+          );
+          CREATE TRIGGER goal_release_completion_no_update
+            BEFORE UPDATE ON goal_release_completion
+            BEGIN SELECT RAISE(ABORT,'Goal completion is immutable'); END;
+          CREATE TRIGGER goal_release_completion_no_delete
+            BEFORE DELETE ON goal_release_completion
+            BEGIN SELECT RAISE(ABORT,'Goal completion is immutable'); END;
+        `);
+        this.db.prepare('UPDATE meta SET value=? WHERE key=?').run('5','schema_version');
       });
     this.db.exec(`CREATE TABLE IF NOT EXISTS channel_leases (
       source TEXT PRIMARY KEY,owner_pid INTEGER NOT NULL,owner_host TEXT NOT NULL,

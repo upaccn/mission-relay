@@ -6,6 +6,8 @@ import { join, resolve } from 'node:path';
 import { statSync, readFileSync } from 'node:fs';
 import { Engine } from './core/engine.js';
 import { Store } from './core/store.js';
+import {GoalReleaseGate} from './core/goal-release.js';
+import {readGitMainSha,localReleaseProbe,githubActionsReleaseProbe} from './core/goal-release-probes.js';
 import {inspectPiEvidence,inspectPiChainEvidence} from './core/pi-evidence.js';
 import {inspectBrowserBinding} from './core/browser-binding-diagnostic.js';
 import {assessPendingBrowserAnswer} from './core/browser-pending-evidence.js';
@@ -70,6 +72,12 @@ Commands:
   pi-health             Inspect active PI/browser requests, observed turns and wait age (no content, no Send)
   pi-evidence <mission-id>  Audit real event/PI SHA correlation and 5-send chat segmentation (no content, no Send)
   pi-chain-evidence <mission-id>  Verify durable 32-turn successor lineage and inherited scope (no Send)
+  goal-release-status <goal-id>  Read-only independent Goal release gates, evidence and blockers
+  goal-release-target <goal-id> --sha <reviewed main SHA>
+                       Begin independent verification after all PI work reports PASS
+  goal-release-verify <goal-id> --requirement <check|privacy-check|test|build|ci-OS>
+                       [--run-id <GitHub Actions run>]   Run actual independent tools
+  goal-release-finalize <goal-id>  DONE only after all evidence and fresh origin/main readback
   create --goal <text> --accept <criterion> [--accept <criterion>...] --workspace <path>
          [--sandbox read-only|workspace-write] [--mode supervised|autopilot]
          [--max-turns 10] [--request-key <stable key>] [--checks-file <path>]
@@ -126,7 +134,7 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
   if (!command || ['help','--help','-h'].includes(command)) return help();
   const home = stateHome();
   const diagnostic=['pi-health','pi-evidence','pi-chain-evidence','browser-binding-health',
-    'browser-pending-evidence'].includes(command);
+    'browser-pending-evidence','goal-release-status'].includes(command);
   const store = new Store(join(home,'missions.sqlite'),{readOnly:diagnostic});
   const engine = new Engine(store,new LazyExecutor(store));
   try {
@@ -307,6 +315,32 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       if(!id||!/^[0-9a-f-]{36}$/i.test(id)||rest.length)
         throw new Error('Provide exactly one PI Mission UUID');
       result=inspectPiChainEvidence(store,id);
+    } else if (command === 'goal-release-status') {
+      if(!id||rest.length)throw new Error('Usage: goal-release-status <goal-id>');
+      result=new GoalReleaseGate(store).report(id);
+    } else if (['goal-release-target','goal-release-verify','goal-release-finalize'].includes(command)) {
+      if(!id||!/^[0-9a-f-]{36}$/i.test(id))
+        throw new Error('Goal release requires an exact Goal UUID');
+      const project=store.getMeta('telegram.build.project');
+      if(!project||project!==store.getMeta('telegram.pi.project')||
+        !statSync(project).isDirectory())
+        throw new Error('Goal release requires the currently approved local build repository');
+      const gate=new GoalReleaseGate(store),mainSha=readGitMainSha(project);
+      if(command==='goal-release-target'){
+        const f=flags(rest),target=option(f,'sha');
+        if(target!==mainSha)throw new Error('Release target differs from independently read origin/main');
+        result=gate.begin(id,target);
+      }else if(command==='goal-release-verify'){
+        const f=flags(rest),requirement=option(f,'requirement');
+        const probe=requirement.startsWith('ci-')
+          ?githubActionsReleaseProbe(project,option(f,'run-id'))
+          :localReleaseProbe({repository:project,
+            privateEvidenceDirectory:join(home,'goal-release-evidence')});
+        result=await gate.inspect(id,requirement,probe);
+      }else{
+        if(rest.length)throw new Error('goal-release-finalize takes no options');
+        result=await gate.finalize(id,async()=>readGitMainSha(project));
+      }
     } else if (command === 'doctor') {
       result=await executorPreflight(store);
       if (!(result as {ok:boolean}).ok) process.exitCode=2;
