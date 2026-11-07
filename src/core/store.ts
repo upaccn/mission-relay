@@ -489,11 +489,17 @@ export class Store {
         (e.payload as {round?:number}).round===m.turnCount);
       const decision=[...events].reverse().find(e=>e.type==='pi.decision'&&
         (e.payload as {round?:number}).round===m.turnCount);
-      if(!observed||!decision||observed.id>=decision.id||
+      const reservations=events.filter(e=>e.type==='chatgpt.browser_reserved'&&
+        (e.payload as {requestKey?:string}).requestKey===record.requestKey);
+      const reservation=reservations[0];
+      if(reservations.length!==1||!reservation||!observed||!decision||
+        reservation.id>=observed.id||observed.id>=decision.id||
+        (reservation.payload as {promptSha256?:string}).promptSha256!==record.promptSha256||
         (observed.payload as {requestKey?:string;assistantSha256?:string}).requestKey!==record.requestKey||
         (observed.payload as {assistantSha256?:string}).assistantSha256!==record.assistantSha256||
+        (decision.payload as {responseSha256?:string}).responseSha256!==record.assistantSha256||
         (decision.payload as {responseSha256?:string}).responseSha256!==plan.responseSha256)
-        throw new Error('Original observation and PI decision cannot be independently linked');
+        throw new Error('Original reservation, observation and PI decision cannot be independently linked');
       const now=new Date().toISOString();
       this.setMeta(this.browserTurnKey(id),JSON.stringify({...record,status:'reconciled',
         assistantSha256:input.assistantSha256,observedAt:now}));

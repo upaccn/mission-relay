@@ -130,6 +130,52 @@ test('independent latest-answer attribution correction preserves old events, nev
   }finally{f.cleanup();}
 });
 
+test('attribution correction rejects forged original reservation and PI history before mutation',()=>{
+  for(const sabotage of ['changed-reservation-prompt','duplicate-reservation','changed-original-pi-hash'] as const){
+    const f=fixture();try{
+      observe(f.store,f.id,1,first);
+      const old='Private code result for stage 1\n[MISSION_RELAY:NEXT]';
+      f.store.reserveChatBrowserTurn(f.id,f.store.get(f.id).version,'round-2',
+        sha('private prompt 2'));
+      f.store.finishChatBrowserTurn(f.id,'round-2',{
+        kind:'observed',assistantSha256:sha(old),summary:old,
+      });
+      f.store.commitPiPlan(f.id,sha(old),[],{
+        action:'NEXT',summary:'Old wrong attribution',nextPrompt:'Continue',
+      });
+      const reservation=f.store.events(f.id).find(e=>e.type==='chatgpt.browser_reserved'&&
+        (e.payload as {requestKey?:string}).requestKey==='round-2')!;
+      const decision=f.store.events(f.id).find(e=>e.type==='pi.decision'&&
+        (e.payload as {round?:number}).round===2)!;
+      if(sabotage==='changed-reservation-prompt'){
+        f.store.db.prepare('UPDATE events SET payload_json=? WHERE id=?').run(
+          JSON.stringify({...reservation.payload,promptSha256:sha('forged other user prompt')}),
+          reservation.id);
+      }else if(sabotage==='duplicate-reservation'){
+        f.store.db.prepare('INSERT INTO events(mission_id,created_at,type,payload_json) VALUES(?,?,?,?)')
+          .run(f.id,new Date().toISOString(),reservation.type,JSON.stringify(reservation.payload));
+      }else{
+        f.store.db.prepare('UPDATE events SET payload_json=? WHERE id=?').run(
+          JSON.stringify({...decision.payload,responseSha256:sha('forged decision')}),
+          decision.id);
+      }
+      const oldEvents=f.store.events(f.id),oldRevision=f.store.get(f.id).version;
+      const oldReceipt=f.store.chatBrowserTurn(f.id);
+      const actual='Actual full second answer\n[MISSION_RELAY:NEXT]';
+      assert.throws(()=>f.store.correctPiBrowserAttribution(f.id,oldRevision,{
+        requestPromptSha256:sha('private prompt 2'),
+        assistantSha256:sha(actual),summary:actual,
+      }),/Original reservation, observation and PI decision cannot be independently linked/,
+      sabotage);
+      assert.equal(f.store.get(f.id).version,oldRevision,sabotage);
+      assert.deepEqual(f.store.chatBrowserTurn(f.id),oldReceipt,sabotage);
+      assert.deepEqual(f.store.events(f.id),oldEvents,sabotage);
+      assert.equal(f.store.events(f.id).filter(e=>
+        e.type==='chatgpt.browser_attribution_corrected').length,0,sabotage);
+    }finally{f.cleanup();}
+  }
+});
+
 test('PI evidence rejects forged attribution corrections without inventing a corrected turn',()=>{
   const f=fixture();try{
     observe(f.store,f.id,1,first);

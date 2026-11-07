@@ -19,6 +19,11 @@ effective hashes, all correction event IDs, and an unreviewed correction as
 inconsistent. Adjacent identical answer hashes are only *suspect*, not proof
 of misattribution: a distinct assistant message can legitimately be identical.
 Never fabricate evidence or clear old error records to bypass this process.
+The correction's SQLite transaction must first validate the **unique original
+reserved request event**, its exact prompt SHA, the matching observed answer
+and original PI decision SHA, and reservation → observation → decision event
+order. If any original historical link is missing, duplicated or corrupted,
+fail without appending a correction or changing the active receipt.
 
 An older worker may crash *between* an original browser Send reservation and
 its uncertain/observed receipt. Such a persisted RUNNING+reserved same-chat
