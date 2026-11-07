@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { randomUUID, createHash } from 'node:crypto';
 import {MAX_RELAY_CHAT_TURNS} from './core/chat-limits.js';
+import {withReadOnlyDeadline} from './core/read-only-deadline.js';
 import { join, resolve } from 'node:path';
 import { statSync, readFileSync } from 'node:fs';
 import { Engine } from './core/engine.js';
@@ -97,6 +98,9 @@ Commands:
   browser-reconcile <id> --acknowledge-side-effects  Manual ambiguous-turn recovery
   browser-recover-turn <id> --revision <n> --acknowledge-side-effects
          Verify a complete reply in the original chat without resending, then credit its observed turn
+  browser-correct-attribution <id> --revision <n> --acknowledge-side-effects
+         Independently re-observe an incorrectly credited latest PI answer; append correction,
+         preserve old events and require new PI review before any further Send
   browser-recover-rollover <id> --revision <n> --new-url <exact new chat URL>
          --acknowledge-side-effects  Read-only inspect old/new chats, then atomic observed recovery
   instruct <id> --text <instruction>
@@ -466,6 +470,44 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       });
       result={...recovered,assistantSha256,verifiedDecision:browserDecision(answer),
         note:'Recovered the observed original-chat reply with no new Send. Historical uncertain event preserved; model DONE is not independent verification.'};
+    }
+    else if (command === 'browser-correct-attribution' && id) {
+      const f=flags(rest);
+      if(!f['--acknowledge-side-effects'])
+        throw new Error('Explicit --acknowledge-side-effects is required for immutable attribution correction');
+      const revision=Number(option(f,'revision'));
+      const m=store.get(id),record=store.chatBrowserTurn(id),url=store.chatLink(id);
+      const bound=store.chatBrowserBinding(id),plan=store.piPlan(id);
+      if(m.version!==revision||m.state!=='PAUSED'||m.stopRequested||
+        record?.status!=='observed'||!url||!bound||!plan||
+        plan.round!==m.turnCount||plan.responseSha256!==record.assistantSha256)
+        throw new Error('Attribution correction requires the original latest PI observed receipt and exact revision');
+      const session=await withReadOnlyDeadline(connectChatPage(url,{browserId:bound}),
+        30_000,late=>late.close());
+      const answer=await withBrowserSession(session,async page=>{
+        const first=await withReadOnlyDeadline(inspectChatPage(page,url));
+        if(first.generating||!first.composerReady||
+          !['DONE','NEXT','BLOCKED','HANDOFF'].includes(browserDecision(first.lastAssistant))||
+          !matchesReservedPromptHash(await withReadOnlyDeadline(lastVisibleUserPromptSha256(page)),record.promptSha256))
+          throw new Error('Live ChatGPT does not show a complete reply to the original reserved request');
+        const firstSha=createHash('sha256').update(first.lastAssistant).digest('hex');
+        if(firstSha===record.assistantSha256)
+          throw new Error('Live assistant answer matches the original receipt; there is no proven attribution error');
+        await new Promise(resolve=>setTimeout(resolve,3000));
+        const second=await withReadOnlyDeadline(inspectChatPage(page,url));
+        if(second.generating||!second.composerReady||
+          second.lastAssistant!==first.lastAssistant||
+          !matchesReservedPromptHash(await withReadOnlyDeadline(lastVisibleUserPromptSha256(page)),record.promptSha256))
+          throw new Error('Corrected answer did not remain stable on the exact original request');
+        return second.lastAssistant;
+      });
+      const assistantSha256=createHash('sha256').update(answer).digest('hex');
+      const corrected=store.correctPiBrowserAttribution(id,revision,{
+        requestPromptSha256:record.promptSha256,assistantSha256,summary:answer,
+      });
+      result={missionId:id,state:corrected.state,revision:corrected.version,
+        round:corrected.turnCount,assistantSha256,
+        note:'Historical browser/PI events preserved. No new Send or turn credited. Original PI decision is invalid until corrected answer is independently re-reviewed.'};
     }
     else if (command === 'browser-recover-rollover' && id) {
       const f=flags(rest);

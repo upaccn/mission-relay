@@ -426,6 +426,49 @@ test('Telegram PI startup reviews an independently recovered rollover with exact
   }finally{f.cleanup();}
 });
 
+test('Telegram controller resumes only the corrected answer of an old falsely credited PI round',async()=>{
+  const answer='Synthetic complete answer\n[MISSION_RELAY:DONE]';
+  const old='Stale re-rendered assistant message\n[MISSION_RELAY:NEXT]';
+  const prompt='Original submitted prompt';
+  const sha=(s:string)=>createHash('sha256').update(s).digest('hex');
+  const f=rig({decide:async context=>{
+    assert.equal(context.turnCount,1);
+    assert.equal(context.responseSha256,sha(answer));
+    assert.equal(context.lastAssistant,answer);
+    return {action:'DONE',summary:'Corrected answer really reviewed',nextPrompt:''};
+  }});try{
+    const created=f.store.create({goal:'Repair an already observed wrong PI answer',
+      acceptance:['Verify corrected evidence'],workspace:'',sandbox:'read-only',
+      mode:'supervised',maxTurns:3,requestKey:'repair-telegram',checks:[]});
+    const linked=f.store.linkChat(created.id,SRC,created.version).mission;
+    const bound=f.store.bindChatBrowser(created.id,'install:Chrome:synthetic',linked.version).mission;
+    f.store.setMeta(`pi.autopilot.enabled.${created.id}`,'1');
+    f.store.reserveChatBrowserTurn(created.id,bound.version,'repair-1',sha(prompt),{newConversation:true});
+    f.store.finishChatBrowserTurn(created.id,'repair-1',{
+      kind:'observed',assistantSha256:sha(old),summary:old,newChatUrl:DEST,
+    });
+    f.store.commitPiPlan(created.id,sha(old),[],{
+      action:'NEXT',summary:'Old bad decision',nextPrompt:'Wrong follow-up',
+    });
+    f.store.correctPiBrowserAttribution(created.id,f.store.get(created.id).version,{
+      requestPromptSha256:sha(prompt),assistantSha256:sha(answer),summary:answer,
+    });
+    assert.equal(f.store.piHealth().missions.find(x=>x.id===created.id)?.phase,
+      'corrected_answer_requires_pi_review');
+    f.primeRecovered(prompt);
+    await (f.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>}).recoverObservedPiCheckpoint();
+    for(let i=0;i<90&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
+    assert.equal(f.state().closed,true);
+    assert.equal(f.state().sends,1); // Fake historical Send only.
+    assert.equal(f.store.get(created.id).turnCount,1);
+    assert.equal(f.store.piPlan(created.id)?.action,'DONE');
+    assert.equal(f.store.piPlan(created.id)?.responseSha256,sha(answer));
+    assert.equal(f.store.get(created.id).lastError,null);
+    assert.equal(f.store.events(created.id).filter(x=>x.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(f.store.events(created.id).filter(x=>x.type==='pi.decision_attribution_corrected').length,1);
+  }finally{f.cleanup();}
+});
+
 test('PI startup refuses a changed last visible user prompt and never submits another browser turn',async()=>{
   const planner:PiPlanner={decide:async()=>{throw new Error('PI must not be called');}};
   const f=rig(planner);try{

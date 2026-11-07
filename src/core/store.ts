@@ -319,6 +319,8 @@ export class Store {
       const phase=m.state==='NEEDS_RECONCILIATION'?'reconciliation_required_do_not_resend':
         receipt?.status==='reserved'?'browser_answer_pending_do_not_resend':
         m.state==='READY'?'awaiting_controller_dispatch':
+        m.state==='PAUSED'&&m.lastError?.startsWith('Corrected answer attribution awaits')?
+          'corrected_answer_requires_pi_review':
         m.state==='PAUSED'&&m.lastError?'controller_interrupted':
         receipt&&['observed','reconciled'].includes(receipt.status)&&
         plan?.round!==m.turnCount?'awaiting_pi_review':
@@ -436,13 +438,65 @@ export class Store {
     if(receipt.status!=='reconciled')return false;
     const round=this.get(id).turnCount;
     return this.events(id).some(event=>{
-      if(!['chatgpt.browser_turn_recovered','chatgpt.browser_rollover_recovered'].includes(event.type))
+      if(!['chatgpt.browser_turn_recovered','chatgpt.browser_rollover_recovered',
+        'chatgpt.browser_attribution_corrected'].includes(event.type))
         return false;
       const evidence=event.payload as {requestKey?:unknown;assistantSha256?:unknown;
         round?:unknown;independentlyInspected?:unknown}|null;
       return evidence?.requestKey===receipt.requestKey &&
         evidence.assistantSha256===receipt.assistantSha256 &&
         evidence.round===round && evidence.independentlyInspected===true;
+    });
+  }
+  /** Correct only the latest *already credited* PI answer after independently
+   * observing the original request's exact user prompt and a different stable
+   * complete assistant response. This is NOT another Send or another round.
+   * Keep the original observation and PI decision immutable in the event log;
+   * the old PI plan must be reviewed again before dispatch can resume. */
+  correctPiBrowserAttribution(id:string,revision:number,input:{
+    requestPromptSha256:string;assistantSha256:string;summary:string;
+  }):Mission {
+    if(!/^[0-9a-f]{64}$/.test(input.requestPromptSha256)||
+      !/^[0-9a-f]{64}$/.test(input.assistantSha256)||!input.summary.trim()||
+      createHash('sha256').update(input.summary).digest('hex')!==input.assistantSha256)
+      throw new Error('Attribution correction requires exact hashes and the complete stable answer');
+    return this.transaction(()=>{
+      const m=this.get(id),record=this.chatBrowserTurn(id),plan=this.piPlan(id);
+      if(m.version!==revision||m.state!=='PAUSED'||m.stopRequested||m.turnCount<1||
+        this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
+        record?.status!=='observed'||!plan||plan.round!==m.turnCount||
+        record.promptSha256!==input.requestPromptSha256||
+        plan.responseSha256!==record.assistantSha256||
+        record.assistantSha256===input.assistantSha256)
+        throw new Error('Only the latest fully observed, mismatched PI checkpoint can be corrected');
+      if(this.events(id).some(e=>e.type==='chatgpt.browser_attribution_corrected'&&
+        (e.payload as {round?:number}).round===m.turnCount))
+        throw new Error('Attribution was already corrected; never overwrite historical correction');
+      const events=this.events(id);
+      const observed=[...events].reverse().find(e=>e.type==='chatgpt.browser_observed'&&
+        (e.payload as {round?:number}).round===m.turnCount);
+      const decision=[...events].reverse().find(e=>e.type==='pi.decision'&&
+        (e.payload as {round?:number}).round===m.turnCount);
+      if(!observed||!decision||observed.id>=decision.id||
+        (observed.payload as {requestKey?:string;assistantSha256?:string}).requestKey!==record.requestKey||
+        (observed.payload as {assistantSha256?:string}).assistantSha256!==record.assistantSha256||
+        (decision.payload as {responseSha256?:string}).responseSha256!==plan.responseSha256)
+        throw new Error('Original observation and PI decision cannot be independently linked');
+      const now=new Date().toISOString();
+      this.setMeta(this.browserTurnKey(id),JSON.stringify({...record,status:'reconciled',
+        assistantSha256:input.assistantSha256,observedAt:now}));
+      this.db.prepare(`UPDATE missions SET version=version+1,updated_at=?,
+        last_summary=?,last_error=? WHERE id=? AND version=?`)
+        .run(now,input.summary.slice(-1000),
+          'Corrected answer attribution awaits independent PI re-review; do not replay browser Send',id,m.version);
+      this.event(id,'chatgpt.browser_attribution_corrected',{
+        round:m.turnCount,requestKey:record.requestKey,
+        observedEventId:observed.id,decisionEventId:decision.id,
+        originalAssistantSha256:record.assistantSha256,
+        assistantSha256:input.assistantSha256,promptSha256:record.promptSha256,
+        independentlyInspected:true,originalEventsPreserved:true,
+      });
+      return this.get(id);
     });
   }
   /** Initial adoption reads an existing human-written conversation; this is
@@ -515,6 +569,13 @@ export class Store {
       if(!['READY','PAUSED'].includes(m.state)) throw new Error(`Cannot run browser turn in state ${m.state}`);
       if(m.stopRequested) throw new Error('Mission has a pending pause request; resume explicitly before another browser turn');
       if(m.turnCount>=m.maxTurns) throw new Error('Browser mission turn budget exhausted');
+      if(m.lastError?.startsWith('Corrected answer attribution awaits'))
+        throw new Error('PI must re-review corrected browser answer before any new Send');
+      const correctionPending=this.events(id).some(e=>
+        e.type==='chatgpt.browser_attribution_corrected'&&
+        (e.payload as {round?:number}).round===m.turnCount);
+      if(correctionPending&&this.piPlan(id)?.responseSha256!==this.chatBrowserTurn(id)?.assistantSha256)
+        throw new Error('Corrected PI browser answer has not received a matching new PI decision');
       // This is the final, atomic dispatch gate. A raw browser-send or future
       // controller path must not bypass the same-chat ceiling by omitting the
       // higher-level PI/browser-drive rotation check. A new-tab Send is
@@ -903,9 +964,14 @@ export class Store {
          !this.hasVerifiedPiBrowserCheckpoint(id)||receipt.assistantSha256!==expectedSha)
         throw new Error('PI decision requires one matching, fully observed and unpaused ChatGPT turn');
       const previous=this.piPlan(id);
+      const correction=[...this.events(id)].reverse().find(e=>e.type==='chatgpt.browser_attribution_corrected'&&
+        (e.payload as {round?:number;assistantSha256?:string}).round===m.turnCount&&
+        (e.payload as {assistantSha256?:string}).assistantSha256===expectedSha);
+      const correctedReview=!!correction&&previous?.round===m.turnCount&&
+        previous.responseSha256!==(expectedSha);
       if(previous?.round===m.turnCount &&
-        (!replaceExisting||!['NEXT','HANDOFF'].includes(previous.action)||
-          reviewedDirectiveIds.length===0))
+        (!replaceExisting||(!correctedReview&&
+          (!['NEXT','HANDOFF'].includes(previous.action)||reviewedDirectiveIds.length===0))))
         throw new Error('PI decision already exists for this turn');
       if(replaceExisting&&previous?.round!==m.turnCount)
         throw new Error('Cannot revise a PI decision for a different turn');
@@ -921,11 +987,17 @@ export class Store {
       const result:PiPlan={...plan,responseSha256:expectedSha,round:m.turnCount,
         reviewedDirectiveIds:[...reviewedDirectiveIds]};
       this.setMeta(`pi.plan.${id}`,JSON.stringify(result));
-      this.event(id,replaceExisting?'pi.decision_revised':'pi.decision',{
+      if(correctedReview)this.db.prepare(`UPDATE missions SET last_error=NULL,
+        version=version+1,updated_at=? WHERE id=? AND version=?`)
+        .run(new Date().toISOString(),id,m.version);
+      this.event(id,correctedReview?'pi.decision_attribution_corrected':
+        replaceExisting?'pi.decision_revised':'pi.decision',{
         action:plan.action,round:m.turnCount,
         summary:plan.summary,
         responseSha256:expectedSha,nextPromptSha256:createHash('sha256').update(plan.nextPrompt).digest('hex'),
-        directivesReviewed:reviewedDirectiveIds.length});
+        directivesReviewed:reviewedDirectiveIds.length,
+        ...(correctedReview?{correctionEventId:correction!.id}:{}),
+      });
       if(['DONE','BLOCKED'].includes(plan.action)||m.turnCount>=m.maxTurns){
         this.event(id,'pi.autopilot_finished',{action:m.turnCount>=m.maxTurns&&['NEXT','HANDOFF'].includes(plan.action)
           ?'LIMIT':plan.action,round:m.turnCount,summary:plan.summary,

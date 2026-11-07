@@ -4,7 +4,9 @@ import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 
 type EvidencePayload = {requestKey?:unknown;round?:unknown;assistantSha256?:unknown;
   responseSha256?:unknown;action?:unknown;independentlyInspected?:unknown;
-  previousUrlSha256?:unknown;newUrlSha256?:unknown};
+  previousUrlSha256?:unknown;newUrlSha256?:unknown;promptSha256?:unknown;
+  observedEventId?:unknown;decisionEventId?:unknown;originalAssistantSha256?:unknown;
+  correctionEventId?:unknown};
 export interface PiRoundEvidence {
   round:number;observedEventId:number;observedAt:string;
   observation:'normal'|'recovered-turn'|'recovered-new-chat';
@@ -12,6 +14,9 @@ export interface PiRoundEvidence {
   decisionEventId:number|null;decisionAction:string|null;
   decisionShaMatches:boolean|null;
   reservedEventId:number|null;independentlyRecovered:boolean;
+  /** The original event remains immutable; an independently checked amendment
+   * may supersede its attribution without creating another browser Send. */
+  attributionCorrectionEventId?:number;originalAnswerSha256?:string;
 }
 export interface PiEvidenceReport {
   missionId:string;state:string;turnCount:number;maxTurns:number;
@@ -24,6 +29,9 @@ export interface PiEvidenceReport {
   successorId:string|null;parentId:string|null;
   violations:string[];ledgerConsistent:boolean;
   rounds:PiRoundEvidence[];
+  attributionCorrections:number[];
+  /** Same response bytes on distinct rounds is suspicious, not proof of error. */
+  repeatedAnswerCandidates:number[];
   /** This is a ledger-integrity report, NOT business acceptance or v1.0 qualification. */
   businessAcceptanceVerified:false;
 }
@@ -67,6 +75,7 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
   const reserved=new Map<string,number>(),used=new Set<string>();
   const decisions=new Map<number,MissionEvent>();
   const allDecisions=new Map<number,MissionEvent[]>();
+  const corrections=new Map<number,MissionEvent>();
   const violations:string[]=[];
   let chatSegment=0,chatTurn=0,maxPerChat=0,verified=0;
   let pendingMigration:string|null=null;
@@ -115,6 +124,47 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
         prior.push(e);
         allDecisions.set(p.round,prior);
         decisions.set(p.round,e);
+      }
+    }
+    if(e.type==='chatgpt.browser_attribution_corrected'){
+      const r=p.round;
+      const observation=observations.find(o=>o.round===r);
+      const originalObservation=events.find(x=>x.id===p.observedEventId);
+      const originalDecision=events.find(x=>x.id===p.decisionEventId);
+      const reservation=events.find(x=>x.id===observation?.reservedEventId);
+      if(typeof r!=='number'||!Number.isInteger(r)||!observation||
+        corrections.has(r)||p.independentlyInspected!==true||
+        !SHA.test(String(p.assistantSha256))||p.assistantSha256===observation.answerSha256||
+        p.originalAssistantSha256!==observation.answerSha256||
+        originalObservation?.id!==observation.observedEventId||
+        originalObservation.type!=='chatgpt.browser_observed'||
+        originalDecision?.type!=='pi.decision'||originalDecision.id>=e.id||
+        originalDecision.id<=observation.observedEventId||
+        payload(originalDecision).round!==r||
+        payload(originalDecision).responseSha256!==observation.answerSha256||
+        payload(originalObservation).requestKey!==p.requestKey||
+        !reservation||payload(reservation).requestKey!==p.requestKey||
+        payload(reservation).promptSha256!==p.promptSha256)
+        warn('invalid_attribution_correction');
+      else {
+        corrections.set(r,e);
+        observation.originalAnswerSha256=observation.answerSha256;
+        observation.answerSha256=p.assistantSha256 as string;
+        observation.attributionCorrectionEventId=e.id;
+      }
+    }
+    if(e.type==='pi.decision_attribution_corrected'){
+      const r=p.round;
+      const correction=typeof r==='number'?corrections.get(r):undefined;
+      if(!correction||p.correctionEventId!==correction.id||
+        p.responseSha256!==payload(correction).assistantSha256||
+        !allDecisions.get(r as number)?.some(d=>
+          d.id===payload(correction).decisionEventId&&d.type==='pi.decision')||
+        allDecisions.get(r as number)?.some(x=>x.type==='pi.decision_attribution_corrected'))
+        warn('invalid_corrected_pi_decision');
+      else {
+        allDecisions.get(r as number)!.push(e);
+        decisions.set(r as number,e);
       }
     }
     if(!hasOwn(observationTypes,e.type))continue;
@@ -169,8 +219,16 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     o.decisionAction=typeof p.action==='string'?p.action:null;
     o.decisionShaMatches=matches;
     if(matches)verified++;
-    else warn('pi_decision_answer_sha_mismatch');
-    if(allDecisions.get(o.round)?.some(d=>payload(d).responseSha256!==o.answerSha256))
+    else {
+      warn(o.attributionCorrectionEventId?'corrected_answer_awaits_pi_review':
+        'pi_decision_answer_sha_mismatch');
+      pending.push(o.round);
+    }
+    if(allDecisions.get(o.round)?.some(d=>payload(d).responseSha256!==o.answerSha256&&
+      !(o.attributionCorrectionEventId&&
+        d.id<o.attributionCorrectionEventId&&
+        payload(d).responseSha256===o.originalAnswerSha256&&
+        ['pi.decision','pi.decision_revised'].includes(d.type))))
       warn('historical_pi_decision_answer_sha_mismatch');
     if(decision.id<=o.observedEventId)warn('pi_decision_precedes_browser_observation');
   }
@@ -178,6 +236,15 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
   for(const decision of decisions.keys())if(decision>0&&
     !observations.some(o=>o.round===decision))warn('pi_decision_without_observed_round');
   const current=store.chatBrowserTurn(id);
+  const latest=observations.at(-1);
+  if(latest?.attributionCorrectionEventId&&
+    (current?.status!=='reconciled'||current.assistantSha256!==latest.answerSha256))
+    warn('corrected_active_browser_receipt_mismatch');
+  // This highlights the real production failure signature without falsely
+  // claiming that two intentional identical ChatGPT answers are impossible.
+  const repeatedAnswerCandidates=observations.filter((o,i)=>i>0&&
+    o.originalAnswerSha256===undefined&&
+    o.answerSha256===observations[i-1]?.answerSha256).map(o=>o.round);
   return {
     missionId:id,state:mission.state,turnCount:mission.turnCount,maxTurns:mission.maxTurns,
     currentChatObservedTurns:store.piChatObservedTurns(id),
@@ -188,6 +255,7 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     pendingNewChatReservation:current?.status==='reserved'&&current.newConversation===true,
     successorId:store.piChainSuccessor(id),parentId:store.piChainParent(id),
     violations,ledgerConsistent:violations.length===0,rounds:observations,
+    attributionCorrections:[...corrections.keys()],repeatedAnswerCandidates,
     businessAcceptanceVerified:false,
   };
 }

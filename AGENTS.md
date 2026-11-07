@@ -9,6 +9,16 @@ non-fallback assistant message identity proves an intentional identical reply.
 Keep the original one-Send reservation, timeout and fail-closed semantics.
 Previously misattributed production rounds require separate, append-only,
 independently evidenced correction; a source fix does not repair old SQLite.
+The local `browser-correct-attribution` recovery requires the pinned original
+ChatGPT tab, unchanged latest reserved user SHA-256, two stable complete
+assistant reads and an exact new full-answer SHA-256. It preserves the false
+observation and original PI decision, appends a one-shot correction without a
+new browser Send/round and locks subsequent dispatch until PI independently
+reviews the corrected answer. `pi-evidence` must report the original and
+effective hashes, all correction event IDs, and an unreviewed correction as
+inconsistent. Adjacent identical answer hashes are only *suspect*, not proof
+of misattribution: a distinct assistant message can legitimately be identical.
+Never fabricate evidence or clear old error records to bypass this process.
 
 Read-only PI health/evidence and Telegram status may expose a **new-conversation reservation intent** flag from private SQLite. It must be false for same-chat and settled requests and must never be treated as proof of a new tab, submitted Send, observed URL or completed response. Never recover, replay or deploy based on this flag alone.
 

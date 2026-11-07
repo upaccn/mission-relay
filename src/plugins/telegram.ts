@@ -456,17 +456,23 @@ export class TelegramBridge {
     // durable LIMIT decision and the child creation. The SQLite request key
     // makes this step idempotent; it does not send a browser message.
     for(const prior of this.engine.list())this.store.createPiSuccessor(prior.id);
-    const candidates=this.engine.list().filter(m=>
-      this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1' &&
-      !m.stopRequested&&!m.lastError&&
+    const candidates=this.engine.list().filter(m=>{
+      const receipt=this.store.chatBrowserTurn(m.id),plan=this.store.piPlan(m.id);
+      const correctedPending=m.lastError?.startsWith('Corrected answer attribution awaits')&&
+        !!receipt?.assistantSha256&&plan?.round===m.turnCount&&
+        plan.responseSha256!==receipt.assistantSha256&&
+        this.store.hasVerifiedPiBrowserCheckpoint(m.id);
+      return this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1' &&
+      !m.stopRequested&&(!m.lastError||correctedPending)&&
       ((m.state==='READY'&&m.turnCount===0&&!!this.store.piChainParent(m.id))||
       (m.state==='PAUSED'&&
         (m.turnCount>0||this.store.chatAdoption(m.id)!==null)))&&
       m.turnCount<=m.maxTurns&&
-      (this.store.piChainParent(m.id)&&m.turnCount===0||
-       this.store.piPlan(m.id)?.round!==m.turnCount||
+      (correctedPending||this.store.piChainParent(m.id)&&m.turnCount===0||
+       plan?.round!==m.turnCount||
         (m.turnCount<m.maxTurns&&
-         ['NEXT','HANDOFF'].includes(this.store.piPlan(m.id)?.action??''))));
+         ['NEXT','HANDOFF'].includes(plan?.action??'')));
+    });
     if(!candidates.length)return;
     // Queued adoptions are processed sequentially, not treated as conflicting
     // writers. Per-conversation SQLite locks still prevent duplicate Sends.

@@ -208,11 +208,27 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
       throw new Error('PI recovery refused: no exact, fully observed browser checkpoint');
     // Only recover a future new Send, never a reserved/uncertain old Send.
     if(plan?.round===origin.turnCount) {
-      if(['DONE','BLOCKED'].includes(plan.action))return;
-      if(!['NEXT','HANDOFF'].includes(plan.action)||
-        last.assistantSha256!==plan.responseSha256)
-        throw new Error('PI recovery refused: the previous plan is terminal or does not match the browser receipt');
-      nextPlan=plan;
+      if(last.assistantSha256!==plan.responseSha256){
+        // The immutable original PI decision was based on a wrongly attributed
+        // answer. A separately verified, append-only correction permits ONLY
+        // a new PI review of the corrected bytes, never replay of the Send.
+        if(!input.recoveredAnswer||
+          input.recoveredAnswer.responseSha256!==last.assistantSha256||
+          createHash('sha256').update(input.recoveredAnswer.lastAssistant).digest('hex')!==last.assistantSha256||
+          !store.events(missionId).some(e=>e.type==='chatgpt.browser_attribution_corrected'&&
+            (e.payload as {round?:number;assistantSha256?:string}).round===origin.turnCount&&
+            (e.payload as {assistantSha256?:string}).assistantSha256===last.assistantSha256))
+          throw new Error('PI recovery refused: corrected attribution requires exact independently re-observed answer');
+        nextPlan=await reviewPiRound(store,planner,missionId,
+          last.assistantSha256,input.recoveredAnswer.lastAssistant,origin.turnCount,true);
+        revision=store.get(missionId).version;
+        if(['DONE','BLOCKED'].includes(nextPlan.action)||origin.turnCount>=origin.maxTurns)return;
+      }else{
+        if(['DONE','BLOCKED'].includes(plan.action))return;
+        if(!['NEXT','HANDOFF'].includes(plan.action))
+          throw new Error('PI recovery refused: previous plan cannot authorize continuation');
+        nextPlan=plan;
+      }
     } else {
       if(!input.recoveredAnswer ||
         input.recoveredAnswer.responseSha256!==last.assistantSha256||

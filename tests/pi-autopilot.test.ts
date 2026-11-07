@@ -563,6 +563,48 @@ test('PI safely reviews a fully observed but not yet PI-reviewed turn after a cr
   }finally{f.cleanup();}
 });
 
+test('PI restarts from a separately corrected answer, re-reviews it once and never replays the original browser Send',async()=>{
+  const f=fixture();try{
+    f.store.setMeta(`pi.autopilot.enabled.${f.mission.id}`,'1');
+    const old='Old, falsely attributed assistant text\n[MISSION_RELAY:NEXT]';
+    const actual='Independently observed corrected answer\n[MISSION_RELAY:DONE]';
+    const sha=(s:string)=>createHash('sha256').update(s).digest('hex');
+    const promptSha=sha('original submitted prompt');
+    const reserved=f.store.reserveChatBrowserTurn(f.mission.id,f.mission.version,
+      'corrected-pi-1',promptSha,{newConversation:true});
+    f.store.finishChatBrowserTurn(reserved.id,'corrected-pi-1',{
+      kind:'observed',assistantSha256:sha(old),summary:old,newChatUrl:DEST});
+    f.store.commitPiPlan(reserved.id,sha(old),[],{
+      action:'NEXT',summary:'Wrong plan based on stale bytes',nextPrompt:'Continue incorrectly',
+    });
+    f.store.correctPiBrowserAttribution(reserved.id,f.store.get(reserved.id).version,{
+      requestPromptSha256:promptSha,assistantSha256:sha(actual),summary:actual,
+    });
+    f.primeRecovered();
+    const planner:PiPlanner={decide:async input=>{
+      assert.equal(input.turnCount,1);
+      assert.equal(input.responseSha256,sha(actual));
+      assert.equal(input.lastAssistant,actual);
+      return {action:'DONE',summary:'Actual answer independently reviewed',nextPrompt:''};
+    }};
+    const args={store:f.store,planner,missionId:reserved.id,
+      revision:f.store.get(reserved.id).version,requestPrefix:'corrected-pi',
+      page:f.fresh,url:DEST};
+    await assert.rejects(drivePiAutopilot(args),/corrected attribution requires exact/);
+    assert.equal(f.results().sends,0);
+    await drivePiAutopilot({...args,recoveredAnswer:{
+      responseSha256:sha(actual),lastAssistant:actual,
+    }});
+    assert.equal(f.results().sends,0);
+    assert.equal(f.store.get(reserved.id).turnCount,1);
+    assert.equal(f.store.piPlan(reserved.id)?.responseSha256,sha(actual));
+    assert.equal(f.store.piPlan(reserved.id)?.action,'DONE');
+    assert.equal(f.store.events(reserved.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(f.store.events(reserved.id).filter(e=>e.type==='pi.decision').length,1);
+    assert.equal(f.store.events(reserved.id).filter(e=>e.type==='pi.decision_attribution_corrected').length,1);
+  }finally{f.cleanup();}
+});
+
 test('PI accepts an independently inspected recovered rollover, without replay or false completion',async()=>{
   const f=fixture();try{
     const answer='First NetBox research answer\n[MISSION_RELAY:DONE]';

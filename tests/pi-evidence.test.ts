@@ -65,6 +65,118 @@ test('PI ledger audits nine observed sends across exact five-turn chat boundary 
   }finally{f.cleanup();}
 });
 
+test('independent latest-answer attribution correction preserves old events, never credits a Send and requires fresh PI review',()=>{
+  const f=fixture();try{
+    observe(f.store,f.id,1,first);
+    const reused='Private code result for stage 1\n[MISSION_RELAY:NEXT]';
+    const incorrectSha=sha(reused);
+    f.store.reserveChatBrowserTurn(f.id,f.store.get(f.id).version,'round-2',sha('private prompt 2'));
+    f.store.finishChatBrowserTurn(f.id,'round-2',{kind:'observed',
+      assistantSha256:incorrectSha,summary:reused});
+    f.store.commitPiPlan(f.id,incorrectSha,[],{
+      action:'NEXT',summary:'PI was fooled by stale reply',nextPrompt:'Continue from false checkpoint',
+    });
+    const original=f.store.events(f.id),originalCount=original.length;
+    const suspected=inspectPiEvidence(f.store,f.id);
+    assert.deepEqual(suspected.repeatedAnswerCandidates,[2]);
+    assert.equal(suspected.ledgerConsistent,true); // SHA equality alone cannot prove attribution.
+    const complete='Actual second stage content with different evidence\n[MISSION_RELAY:NEXT]';
+    const corrected=f.store.correctPiBrowserAttribution(f.id,f.store.get(f.id).version,{
+      requestPromptSha256:sha('private prompt 2'),assistantSha256:sha(complete),summary:complete,
+    });
+    assert.equal(corrected.turnCount,2);
+    assert.equal(f.store.chatBrowserTurn(f.id)?.status,'reconciled');
+    assert.equal(f.store.hasVerifiedPiBrowserCheckpoint(f.id),true);
+    assert.deepEqual(f.store.events(f.id).slice(0,originalCount),original);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_observed').length,2);
+    const pending=inspectPiEvidence(f.store,f.id);
+    assert.equal(pending.ledgerConsistent,false);
+    assert.deepEqual(pending.attributionCorrections,[2]);
+    assert.deepEqual(pending.pendingPiReviewRounds,[2]);
+    assert.equal(pending.decisionsVerified,1);
+    assert.ok(pending.violations.includes('corrected_answer_awaits_pi_review'));
+    assert.equal(pending.rounds[1]?.originalAnswerSha256,incorrectSha);
+    assert.throws(()=>f.store.reserveChatBrowserTurn(f.id,corrected.version,'third',sha('third')),
+      /PI must re-review corrected browser answer/);
+    // Even a later generic error-clear operation must not bypass the atomic
+    // corrected PI decision boundary or submit a browser Send.
+    const cleared=f.store.update(f.id,corrected.version,{lastError:null},
+      'test.error_clear_does_not_authorize_send');
+    assert.throws(()=>f.store.reserveChatBrowserTurn(f.id,cleared.version,'third',sha('third')),
+      /matching new PI decision/);
+    assert.throws(()=>f.store.correctPiBrowserAttribution(f.id,corrected.version,{
+      requestPromptSha256:sha('private prompt 2'),assistantSha256:sha('another'),summary:'another',
+    }),/fully observed|already corrected/);
+    assert.throws(()=>f.store.commitPiPlan(f.id,incorrectSha,[],{
+      action:'NEXT',summary:'Invalid replayed review',nextPrompt:'Continue',
+    },true),/fully observed/);
+    f.store.commitPiPlan(f.id,sha(complete),[],{
+      action:'NEXT',summary:'Now reviewed the independently corrected answer',nextPrompt:'Continue verified work',
+    },true);
+    const accepted=inspectPiEvidence(f.store,f.id);
+    assert.equal(accepted.ledgerConsistent,true);
+    assert.deepEqual(accepted.violations,[]);
+    assert.equal(accepted.decisionsVerified,2);
+    assert.equal(accepted.observedTurns,2);
+    assert.equal(accepted.rounds[1]?.answerSha256,sha(complete));
+    assert.equal(accepted.rounds[1]?.originalAnswerSha256,incorrectSha);
+    assert.equal(f.store.get(f.id).lastError,null);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='pi.decision_attribution_corrected').length,1);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='pi.decision').length,2);
+    const printed=JSON.stringify(accepted);
+    for(const secret of ['Private code result','private prompt','round-2','chatgpt.com'])
+      assert.ok(!printed.includes(secret));
+  }finally{f.cleanup();}
+});
+
+test('PI evidence rejects forged attribution corrections without inventing a corrected turn',()=>{
+  const f=fixture();try{
+    observe(f.store,f.id,1,first);
+    const before=inspectPiEvidence(f.store,f.id);
+    assert.equal(before.ledgerConsistent,true);
+    const event=f.store.events(f.id).find(e=>e.type==='chatgpt.browser_observed')!;
+    f.store.db.prepare('INSERT INTO events(mission_id,created_at,type,payload_json) VALUES(?,?,?,?)')
+      .run(f.id,new Date().toISOString(),'chatgpt.browser_attribution_corrected',
+        JSON.stringify({round:1,requestKey:'forged',observedEventId:event.id,
+          decisionEventId:event.id+1,originalAssistantSha256:(event.payload as {assistantSha256:string}).assistantSha256,
+          assistantSha256:sha('forged answer'),promptSha256:sha('forged prompt'),independentlyInspected:true}));
+    const result=inspectPiEvidence(f.store,f.id);
+    assert.equal(result.ledgerConsistent,false);
+    assert.ok(result.violations.includes('invalid_attribution_correction'));
+    assert.deepEqual(result.attributionCorrections,[]);
+    assert.equal(result.observedTurns,1);
+  }finally{f.cleanup();}
+});
+
+test('corrected PI round independently supersedes earlier owner-directed revisions without deleting them',()=>{
+  const f=fixture();try{
+    observe(f.store,f.id,1,first);
+    const original=sha('Private code result for stage 1\n[MISSION_RELAY:NEXT]');
+    f.store.queuePiOwnerDirective(f.id,'445','Change the review priority');
+    const pending=f.store.pendingPiOwnerDirectives(f.id);
+    f.store.commitPiPlan(f.id,original,[pending[0]!.id],{
+      action:'NEXT',summary:'Original PI decision revised for owner notes',nextPrompt:'New priority',
+    },true);
+    const actual='Stable corrected answer after owner priorities\n[MISSION_RELAY:NEXT]';
+    f.store.correctPiBrowserAttribution(f.id,f.store.get(f.id).version,{
+      requestPromptSha256:sha('private prompt 1'),assistantSha256:sha(actual),summary:actual,
+    });
+    const pendingReview=inspectPiEvidence(f.store,f.id);
+    assert.ok(pendingReview.violations.includes('corrected_answer_awaits_pi_review'));
+    f.store.commitPiPlan(f.id,sha(actual),[],{
+      action:'NEXT',summary:'New PI review of actual latest answer',nextPrompt:'Proceed with real evidence',
+    },true);
+    const report=inspectPiEvidence(f.store,f.id);
+    assert.equal(report.ledgerConsistent,true);
+    assert.equal(report.decisionsVerified,1);
+    assert.equal(report.observedTurns,1);
+    assert.deepEqual(report.attributionCorrections,[1]);
+    assert.deepEqual(f.store.events(f.id).filter(e=>e.type.startsWith('pi.decision')).map(e=>e.type),
+      ['pi.decision','pi.decision_revised','pi.decision_attribution_corrected']);
+  }finally{f.cleanup();}
+});
+
 test('PI ledger exposes pending PI review and duplicate reservations as failures rather than certifying acceptance',()=>{
   const f=fixture();try{
     const answer='Unreviewed private response';
