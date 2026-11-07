@@ -11,6 +11,7 @@ import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUr
   tolerateRolloverNavigation,rolloverUrlClass,newChatBootstrapDelayMs,
   shouldReloadBlankNewChat,reloadBlankDirectNewChat,isFreshResponseLoadFailure,
   canonicalVisibleUserPrompt,matchesSubmittedUserPrompt,matchesReservedPromptHash,isNewAssistantReply,
+  isNewReplyAgainstVerifiedSource,
   visibleLongTaskBanner,clickDeliveryRetryOnce,interruptedDeadline,
   CONNECTION_INTERRUPTED_TEXT,MESSAGE_DELIVERY_TIMEOUT_TEXT,
   INTERRUPTED_WAIT_GRACE_MS,MAX_INTERRUPTED_WAIT_MS,
@@ -190,6 +191,29 @@ test('Same assistant text counts as a new response only with changed message ide
     lastAssistantTurnId:null}),false,'Missing identity must fail closed for identical text');
   assert.equal(isNewAssistantReply(old,{...old,userCount:3,
     lastAssistant:'An actually different answer'}),true);
+});
+test('PI continuation must not credit a previous assistant re-rendered after the new user prompt',()=>{
+  const oldText='Previous complete reply\n[MISSION_RELAY:NEXT]';
+  const oldSha=createHash('sha256').update(oldText).digest('hex');
+  const baseline={url:'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',
+    assistantCount:2,userCount:2,composerReady:true,generating:false,
+    lastAssistant:'',lastAssistantTurnId:null};
+  const source={assistantSha256:oldSha,assistantTurnId:'assistant-turn-6'};
+  const oldReply={...baseline,userCount:3,lastAssistant:oldText,
+    lastAssistantTurnId:'assistant-turn-6'};
+  assert.equal(isNewAssistantReply(baseline,oldReply),true,
+    'The original DOM-only predicate can misattribute the previous answer');
+  assert.equal(isNewReplyAgainstVerifiedSource(baseline,oldReply,source),false,
+    'An exact durable previous-answer SHA must veto a stale assistant re-render');
+  assert.equal(isNewReplyAgainstVerifiedSource(baseline,
+    {...oldReply,lastAssistantTurnId:'fallback-turn-2:80:assistant'},source),false,
+    'A synthetic DOM fallback turn ID cannot establish a new identical answer');
+  assert.equal(isNewReplyAgainstVerifiedSource(baseline,
+    {...oldReply,lastAssistantTurnId:'assistant-turn-7'},source),true,
+    'A distinct stable message identity permits a genuinely repeated answer');
+  assert.equal(isNewReplyAgainstVerifiedSource(baseline,
+    {...oldReply,lastAssistant:'Actual seventh reply\n[MISSION_RELAY:NEXT]'},source),true,
+    'A genuinely changed reply remains observable');
 });
 const URL='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
 const never:AgentAdapter={
@@ -766,6 +790,48 @@ class MismatchedChatPage extends AccessibleChatPage {
   }
 }
 
+/** Emulates the old answer disappearing during the second pre-send read,
+ * then reappearing after the new prompt; ChatGPT has not replied yet. */
+class StalePreviousAnswerPage extends AccessibleChatPage {
+  assistantReads=0;
+  override getByRole(role:string,options:{name:string|RegExp}):any {
+    const original=super.getByRole(role,options);
+    if(role!=='heading'||options.name!=='ChatGPT said:')return original;
+    const last=original.last();
+    return {...original,last:()=>({...last,locator:(selector:string)=>{
+      const node=last.locator(selector);
+      return {...node,
+        innerText:async()=>{
+          this.assistantReads++;
+          return this.assistantReads===2?'ChatGPT said:\n':
+            'ChatGPT said:\nPrevious answer\n[MISSION_RELAY:NEXT]';
+        },
+        getAttribute:async(name:string)=>name==='data-content-search-unit-key'
+          ?'fallback-turn-1:80:assistant':null,
+      };
+    }})};
+  }
+}
+
+test('A stale seventh-round assistant re-render cannot be credited after a verified PI Send',async()=>{
+  const f=fixture();try{
+    const page=new StalePreviousAnswerPage();
+    const hash=(value:string)=>createHash('sha256').update(value).digest('hex');
+    await assert.rejects(()=>executeBrowserTurn({
+      store:f.store,missionId:f.linked.id,revision:f.linked.version,
+      requestKey:'stale-seventh-answer',page:page as unknown as Page,url:URL,
+      prompt:'Seventh-round PI instruction',timeoutMs:10000,requireFinalMarker:true,
+      expectedSource:{promptSha256:hash(''),
+        assistantSha256:hash('Previous answer\n[MISSION_RELAY:NEXT]')},
+    }),/manual reconciliation/);
+    assert.equal(page.sends,1,'The failed read must never submit a second user prompt');
+    assert.equal(f.store.get(f.linked.id).turnCount,0,
+      'The old answer must not be counted as a seventh successful round');
+    assert.equal(f.store.chatBrowserTurn(f.linked.id)?.status,'uncertain');
+    assert.equal(f.store.events(f.linked.id).filter(e=>e.type==='chatgpt.browser_observed').length,0);
+  }finally{f.cleanup();}
+});
+
 test('A second accessible assistant turn with identical text is observed once, not replayed',async()=>{
   const f=fixture();try {
     const fake=new AccessibleChatPage();
@@ -773,7 +839,10 @@ test('A second accessible assistant turn with identical text is observed once, n
     const observed=await executeBrowserTurn({store:f.store,missionId:f.linked.id,
       revision:f.linked.version,requestKey:'identical-answer-1',
       page:fake as unknown as Page,url:URL,prompt:'Continue exact prior test',
-      timeoutMs:10000});
+      timeoutMs:10000,expectedSource:{
+        promptSha256:createHash('sha256').update('').digest('hex'),
+        assistantSha256:createHash('sha256').update('Previous answer').digest('hex'),
+      }});
     assert.equal(fake.sends,1);
     assert.equal(observed.turnCount,1);
     assert.equal(observed.assistantSha256,

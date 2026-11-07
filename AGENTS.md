@@ -1,5 +1,15 @@
 # Mission Relay contributor instructions
 
+For an existing-chat continuation, a newly matching latest user prompt is not
+proof that the visible assistant belongs to that prompt. ChatGPT can re-render
+the prior assistant while the new response is pending. Compare candidates with
+the **durably verified previous assistant SHA-256** (not only a transient
+post-click DOM baseline); never credit unchanged prior bytes unless a distinct,
+non-fallback assistant message identity proves an intentional identical reply.
+Keep the original one-Send reservation, timeout and fail-closed semantics.
+Previously misattributed production rounds require separate, append-only,
+independently evidenced correction; a source fix does not repair old SQLite.
+
 Read-only PI health/evidence and Telegram status may expose a **new-conversation reservation intent** flag from private SQLite. It must be false for same-chat and settled requests and must never be treated as proof of a new tab, submitted Send, observed URL or completed response. Never recover, replay or deploy based on this flag alone.
 
 Side-effect-free browser reads used before a PI recovery or Send reservation have a 30-second deadline. An expired read can interrupt PI safely without reserving or retrying a browser Send; a late-created Playwriter connector is closed. Never wrap an actual Send, Retry, reservation or PI decision in that timeout: an external side effect may already have committed.

@@ -242,6 +242,22 @@ export function isNewAssistantReply(before:ChatPageSnapshot,
       before.lastAssistantTurnId!==current.lastAssistantTurnId));
 }
 
+/** A provisional DOM snapshot can lose the old assistant while ChatGPT
+ * re-renders a newly submitted user turn. A changed/blank `before` then makes
+ * the *old* answer look new. The durable prior-answer digest is the authority:
+ * never credit those same bytes unless a distinct, stable message identity
+ * establishes that a genuinely new assistant turn repeated the same answer.
+ * Synthetic `fallback-turn-*` identities are not sufficient for that proof. */
+export function isNewReplyAgainstVerifiedSource(before:ChatPageSnapshot,
+  current:ChatPageSnapshot,source?:{assistantSha256:string;assistantTurnId:string|null}):boolean {
+  if(!isNewAssistantReply(before,current))return false;
+  if(!source || createHash('sha256').update(current.lastAssistant).digest('hex')!==
+    source.assistantSha256)return true;
+  const oldId=source.assistantTurnId,newId=current.lastAssistantTurnId;
+  return Boolean(oldId&&newId&&oldId!==newId &&
+    !oldId.startsWith('fallback-turn-')&&!newId.startsWith('fallback-turn-'));
+}
+
 function delay(ms:number):Promise<void> {return new Promise(resolve=>setTimeout(resolve,ms));}
 
 export const DEFAULT_BROWSER_TURN_TIMEOUT_MS=60*60*1000;
@@ -408,7 +424,8 @@ export function isFreshResponseLoadFailure(before:ChatPageSnapshot,
 
 /** Never retry the send click after an ambiguous exception. Caller owns durable reservation. */
 export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
-  timeoutMs=DEFAULT_BROWSER_TURN_TIMEOUT_MS,requireFinalMarker=false):Promise<BrowserReceipt> {
+  timeoutMs=DEFAULT_BROWSER_TURN_TIMEOUT_MS,requireFinalMarker=false,
+  verifiedSource?:{assistantSha256:string;assistantTurnId:string|null}):Promise<BrowserReceipt> {
   if(typeof prompt!=='string'||!prompt.trim()||prompt.length>12000)
     throw new Error('Prompt must contain 1–12000 characters');
   if(!Number.isInteger(timeoutMs)||timeoutMs<10000||timeoutMs>MAX_BROWSER_TURN_TIMEOUT_MS)
@@ -468,7 +485,7 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
     }else failureSince=null;
     let finalCandidate=false;
     if(current.userCount>0 && current.assistantCount>0 &&
-       isNewAssistantReply(before,current) &&
+       isNewReplyAgainstVerifiedSource(before,current,verifiedSource) &&
        newestUserMatchesPrompt) {
       if(current.lastAssistant!==last||current.lastAssistantTurnId!==lastTurnId){
         last=current.lastAssistant;

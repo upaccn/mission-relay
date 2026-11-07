@@ -41,7 +41,9 @@ export async function executeBrowserTurn(input:{
   const promptSha256=createHash('sha256').update(prompt.trim()).digest('hex');
   store.reserveChatBrowserTurn(missionId,revision,requestKey,promptSha256);
   try {
-    const receipt=await submitChatTurn(page,url,prompt,input.timeoutMs,input.requireFinalMarker);
+    const receipt=await submitChatTurn(page,url,prompt,input.timeoutMs,input.requireFinalMarker,
+      input.expectedSource?{assistantSha256:input.expectedSource.assistantSha256,
+        assistantTurnId:before.lastAssistantTurnId??null}:undefined);
     const assistantSha256=createHash('sha256').update(receipt.lastAssistant).digest('hex');
     const flow=browserDecision(receipt.lastAssistant);
     const terminal=input.telegramBatch?.lastAuthorizedTurn||
