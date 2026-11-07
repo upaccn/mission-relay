@@ -34,7 +34,7 @@ export function remoteReleaseCommand(config:PictlRemoteConfig,operation:
   }else if(operation==='ci'){
     if(!argument||!/^[1-9][0-9]{4,19}$/.test(argument))
       throw new Error('Invalid GitHub Actions run id');
-    command=`gh run view ${argument} --json headSha,status,conclusion,url,jobs`;
+    command=`gh run view ${argument} --json databaseId,workflowName,event,headBranch,headSha,status,conclusion,url,jobs`;
   }else command=fixed[operation];
   return `cd ${remote.project} && ${command}`;
 }

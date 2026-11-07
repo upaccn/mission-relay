@@ -20,7 +20,7 @@ test('remote release invokes only fixed commands inside the approved AIOS projec
     assert.equal(remoteReleaseCommand(config,'test',script),
       `cd ${config.project} && npm run ${script}`);
   assert.equal(remoteReleaseCommand(config,'ci','42365396806'),
-    `cd ${config.project} && gh run view 42365396806 --json headSha,status,conclusion,url,jobs`);
+    `cd ${config.project} && gh run view 42365396806 --json databaseId,workflowName,event,headBranch,headSha,status,conclusion,url,jobs`);
 });
 
 test('remote release refuses injected host, directory, script, run ID and arbitrary command',()=>{
@@ -42,6 +42,7 @@ const stepNames=['Run npm ci','Run npm run privacy-check','Run npm run check',
   'Run npm test','Run npm run build'];
 function ci(sha=SHA,platform='windows',all=true):string{
   return JSON.stringify({
+    databaseId:42365396806,workflowName:'CI',event:'push',headBranch:'main',
     headSha:sha,status:'completed',conclusion:'success',
     url:'https://github.com/upaccn/mission-relay/actions/runs/42365396806',
     jobs:[{
@@ -70,4 +71,22 @@ test('remote CI readback must match the exact commit, platform and required step
   incomplete.status='in_progress';
   assert.throws(()=>assessGitHubActionsReadback(JSON.stringify(incomplete),'ci-windows',SHA),
     /incomplete/);
+});
+
+test('other workflows, manual/PR runs, foreign branches and run identities cannot attest release',()=>{
+  const changes:Record<string,unknown>={
+    workflowName:'Other workflow',event:'workflow_dispatch',headBranch:'feature',
+    databaseId:42365396807,
+    url:'https://github.com/upaccn/mission-relay/actions/runs/42365396807',
+  };
+  for(const [key,value] of Object.entries(changes)){
+    const altered=JSON.parse(ci()) as Record<string,unknown>;
+    altered[key]=value;
+    assert.throws(()=>assessGitHubActionsReadback(JSON.stringify(altered),'ci-windows',SHA),
+      /provenance/,key);
+  }
+  const duplicate=JSON.parse(ci()) as {jobs:{steps:{name:string;conclusion:string}[]}[]};
+  duplicate.jobs[0]!.steps.push({...duplicate.jobs[0]!.steps[0]!});
+  assert.equal(assessGitHubActionsReadback(JSON.stringify(duplicate),'ci-windows',SHA).state,
+    'FAIL');
 });

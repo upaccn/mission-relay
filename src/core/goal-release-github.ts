@@ -62,7 +62,7 @@ export function githubReleaseRunCommand(repository:string,runId:string):string[]
   if(!/^[1-9][0-9]{4,19}$/.test(runId))
     throw new Error('Invalid GitHub Actions release run id');
   return ['run','view',runId,'--repo',repo,
-    '--json','headSha,status,conclusion,url,jobs'];
+    '--json','databaseId,workflowName,event,headBranch,headSha,status,conclusion,url,jobs'];
 }
 /** Re-read a specific CI run directly from GitHub and verify per-step
  * success. Unlike a model report, the raw GitHub response is hashed into

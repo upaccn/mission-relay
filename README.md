@@ -1,12 +1,15 @@
 # Mission Relay
 
-**WP6.1 independent GitHub proof fallback (source-only; not yet deployed):**
+**WP6.1 independent GitHub proof fallback:**
 The GMK runtime already has GitHub CLI. Operator-only
 `goal-release-target` and `goal-release-finalize` can independently
 read GitHub `main` without SSH access to the AIOS source directory.
 `goal-release-verify <Goal UUID> --requirement <check|privacy-check|test|build|ci-ubuntu|ci-macos|ci-windows> --run-id <Actions run ID>`
 reads the real same-repository, exact-SHA GitHub Actions run and verifies
-its successful individual test/build steps. Omitting `--run-id` for a
+its successful individual test/build steps. The verifier additionally requires
+the actual `CI` workflow, a `push` on `main`, the unique run ID and a matching
+Actions run URL; similarly named steps from another event or workflow are not
+release proof. Omitting `--run-id` for a
 source-script requirement retains the fixed-command AIOS SSH probe,
 which fails closed on permissions errors. The GMK checkout supplies only
 the GitHub repository identity, not the published SHA. This does not

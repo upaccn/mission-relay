@@ -1,5 +1,17 @@
 # Mission Relay contributor instructions
 
+WP6.2 release CI provenance: an exact-SHA GitHub Actions job and named npm
+steps are insufficient if they came from another workflow, event, branch or
+run. The independent source-gate verifier requires the `CI` workflow, `push`
+event on `main`, a positive unique database run ID, matching run URL and one
+successful instance of each required step. Keep proof tied to the approved
+origin repository and explicitly selected run ID. Never use a PR,
+workflow_dispatch, renamed workflow or duplicated step as v1.0 evidence.
+GMK's clean checkout and readable schema v5 alone do not prove the live
+interactive Worker loaded that build. An active reserved browser Send must
+continue to block GMK restart/deployment, even if its notification cursor is
+fully caught up.
+
 WP6 GitHub release readback: GitHub `main` is the exact release boundary;
 the GMK pull-only checkout supplies ONLY its existing `origin` repository
 identity, never the release SHA. The already-installed GitHub CLI can read

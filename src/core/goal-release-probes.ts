@@ -56,6 +56,7 @@ export function localReleaseProbe(input:{
   }};
 }
 interface GitHubRun {
+  databaseId:number;workflowName:string;event:string;headBranch:string;
   headSha:string;status:string;conclusion:string;url:string;
   jobs:{name:string;status:string;conclusion:string;
     steps:{name:string;conclusion:string}[]}[];
@@ -70,13 +71,21 @@ export function assessGitHubActionsReadback(raw:string,requirement:string,
   if(result.headSha!==targetSha||result.status!=='completed'||
     result.conclusion!=='success'||!/^https:\/\/github\.com\//.test(result.url))
     throw new Error('GitHub Actions run is incomplete, failed or for another SHA');
+  // An arbitrary workflow_dispatch or PR workflow can run a job with the
+  // same name and steps. Only the published push CI on main is release proof.
+  if(result.workflowName!=='CI'||result.event!=='push'||
+    result.headBranch!=='main'||!Number.isSafeInteger(result.databaseId)||
+    result.databaseId<=0||
+    !result.url.endsWith(`/actions/runs/${result.databaseId}`))
+    throw new Error('GitHub Actions release workflow provenance is invalid');
   const platform=requirement.slice(3);
   const jobs=result.jobs.filter(job=>job.name===`test (${platform}-latest, 24)`);
   if(jobs.length!==1)throw new Error('Missing or duplicate CI platform job');
   const job=jobs[0]!;
   const steps=['Run npm ci','Run npm run privacy-check','Run npm run check',
     'Run npm test','Run npm run build'];
-  const matched=steps.every(name=>job.steps.some(s=>s.name===name&&s.conclusion==='success'));
+  const matched=steps.every(name=>job.steps.filter(s=>s.name===name&&s.conclusion==='success').length===1&&
+    job.steps.filter(s=>s.name===name).length===1);
   const successful=job.status==='completed'&&job.conclusion==='success'&&matched;
   return {state:successful?'PASS':'FAIL',reference:result.url,
     proofSha256:sha(raw),observedSha:result.headSha};
@@ -92,7 +101,13 @@ export function githubActionsReleaseProbe(repository:string,runId:string):Releas
     if(readGitMainSha(cwd)!==targetSha)
       throw new Error('CI release verification requires the exact checked-out main');
     const raw=run('gh',['run','view',runId,'--json',
-      'headSha,status,conclusion,url,jobs'],cwd);
-    return assessGitHubActionsReadback(raw,requirement,targetSha);
+      'databaseId,workflowName,event,headBranch,headSha,status,conclusion,url,jobs'],cwd);
+    const observed=assessGitHubActionsReadback(raw,requirement,targetSha);
+    const origin=run('git',['remote','get-url','origin'],cwd);
+    const repo=/^(?:git@github\.com:|https:\/\/github\.com\/)([a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+?)(?:\.git)?$/.exec(origin)?.[1];
+    if(!repo||repo.split('/').some(part=>part==='.'||part==='..')||
+      observed.reference!==`https://github.com/${repo}/actions/runs/${runId}`)
+      throw new Error('GitHub Actions run is for a different release repository or run ID');
+    return observed;
   }};
 }

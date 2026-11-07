@@ -21,7 +21,7 @@ test('GitHub release repository must come from one canonical origin',()=>{
 test('GitHub readback receives fixed read-only args and rejects an untrusted run id',()=>{
   assert.deepEqual(githubReleaseRunCommand('upaccn/mission-relay','42366651487'),
     ['run','view','42366651487','--repo','upaccn/mission-relay',
-      '--json','headSha,status,conclusion,url,jobs']);
+      '--json','databaseId,workflowName,event,headBranch,headSha,status,conclusion,url,jobs']);
   for(const bad of ['0','-1','abc','42366; rm -rf /','42366651487 --repo other']){
     assert.throws(()=>githubReleaseRunCommand('upaccn/mission-relay',bad),
       /Invalid GitHub Actions release run id/);
