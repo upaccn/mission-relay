@@ -5,7 +5,10 @@ param(
     [string]$Action = 'Status',
     [string]$ProxyUrl = '',
     [string]$ExpectedSha = '',
-    [string]$ResumeMissionId = ''
+    [string]$ResumeMissionId = '',
+    # One-time bootstrap of Upgrade from an exact reviewed GitHub script
+    # while an older pull-only GMK checkout still lacks this action.
+    [string]$BootstrapRoot = ''
 )
 
 Set-StrictMode -Version Latest
@@ -13,7 +16,14 @@ $ErrorActionPreference = 'Stop'
 $OutputEncoding = [Console]::OutputEncoding = [Console]::InputEncoding = [System.Text.UTF8Encoding]::new()
 
 $taskName = 'MissionRelay-Telegram'
-$root = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+if ($BootstrapRoot -and $Action -ne 'Upgrade') {
+    throw 'BootstrapRoot is permitted only for an explicitly requested Upgrade'
+}
+$root = if ($BootstrapRoot) {
+    (Resolve-Path -LiteralPath $BootstrapRoot -ErrorAction Stop).Path
+} else {
+    (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+}
 $node = Join-Path $env:USERPROFILE 'scoop\apps\nodejs-lts\current\node.exe'
 $cli = Join-Path $root 'dist\cli.js'
 $privateDir = Join-Path $env:LOCALAPPDATA 'MissionRelay\telegram-task'
@@ -69,7 +79,10 @@ function New-RecoveryTriggers {
 function Assert-OurTask {
     $task = Get-Task
     if (-not $task) { throw 'Task not installed; use Enroll in the local interactive PowerShell session' }
-    $expected = [IO.Path]::GetFullPath($PSCommandPath)
+    # Check the canonical *enrolled worker* path, never the maintainer's
+    # temporary Upgrade bootstrap path. The latter must not replace or launch
+    # the registered Worker or create a second poller.
+    $expected = [IO.Path]::GetFullPath((Join-Path $root 'scripts\windows\telegram-task.ps1'))
     if (-not ($task.Actions | Where-Object { $_.Arguments -like "*${expected}*" -and $_.Arguments -like '*-Action Worker*' })) {
         throw 'Existing task has a different action; refusing to modify it'
     }
@@ -135,6 +148,27 @@ function Assert-UpgradeTarget([string]$sha) {
     }
     if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
         throw 'npm.cmd is unavailable; build prerequisites must be installed before a maintenance drain'
+    }
+}
+
+function Assert-ReviewedBootstrapScript([string]$sha) {
+    if (-not $BootstrapRoot) { return }
+    # The temporary script MUST be byte-identical to the reviewed target
+    # commit. PowerShell 7.4+ preserves native stdout bytes on file redirect.
+    # A missing local target object fails before any drain or task action.
+    $blob = Join-Path $env:TEMP ('mission-relay-reviewed-upgrade-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    try {
+        & git -C $root show "${sha}:scripts/windows/telegram-task.ps1" > $blob
+        if ($LASTEXITCODE -ne 0) { throw 'Reviewed bootstrap script is not present in the local Git object database' }
+        $actual=(Get-FileHash -Algorithm SHA256 -LiteralPath $PSCommandPath).Hash
+        $reviewed=(Get-FileHash -Algorithm SHA256 -LiteralPath $blob).Hash
+        if ($actual -cne $reviewed) {
+            throw 'Temporary bootstrap script does not match the exact reviewed GitHub commit'
+        }
+    } finally {
+        if (Test-Path -LiteralPath $blob) {
+            Remove-Item -LiteralPath $blob -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -367,6 +401,7 @@ switch ($Action) {
         Assert-Prerequisites
         $null=Assert-OurTask
         Assert-UpgradeTarget $ExpectedSha
+        Assert-ReviewedBootstrapScript $ExpectedSha
         Assert-SafeRestart
         if ((Get-ChannelStatus).drainRequested) {
             throw 'Another maintenance drain is active; refusing duplicate upgrade'

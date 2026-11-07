@@ -20,6 +20,17 @@ An older GMK checkout may not yet contain the `Upgrade` action; its **first**
 promotion must instead bootstrap the same idle-only SQLite drain, verified
 fast-forward, rollback and interactive Scheduled Task restart. Never run an
 unavailable `Upgrade` command or pull source over a live browser Send.
+On that first upgrade only, after a fully settled cooperative pause and
+successful local maintenance preflight, fetch the exact reviewed commit into
+Git's object database **without modifying checkout files**, extract
+`<sha>:scripts/windows/telegram-task.ps1` as raw bytes into a private
+temporary `.ps1`, then invoke it with
+`-Action Upgrade -BootstrapRoot <existing-GMK-checkout> -ExpectedSha <sha>`
+(optionally `-ResumeMissionId <eligible-paused-mission-id>`). The temporary
+script's SHA-256 must equal the exact reviewed Git blob or it fails before
+draining the worker. It checks the **existing registered Worker path** and
+never starts Chrome from Session 0. Delete the temporary script afterward;
+future upgrades use the installed `Upgrade` action directly.
 
 **Windows maintenance diagnostics:** The local read-only
 `scripts/windows/telegram-restart-check.mjs <absolute-sqlite-path>` reports

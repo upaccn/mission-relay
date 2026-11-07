@@ -2,6 +2,30 @@
 
 ## 2026-11-07 live 5→6 turnover and tab-retirement evidence hardening (AIOS source)
 
+- First-upgrade bootstrap was also implemented in the **same** guarded
+  `telegram-task.ps1`: temporary copy of the exact GitHub-reviewed script
+  accepts `-BootstrapRoot` only with `Upgrade`, compares its full SHA-256
+  to the target commit's own Git blob **before** the SQLite drain, and checks
+  the canonical enrolled interactive-user task rather than the temporary
+  maintainer filename. The existing exact SHA, idle gate, atomic drain,
+  fast-forward, rollback and new Worker health checks remain authoritative.
+  A non-invasive **actual GMK PowerShell 7.6.9** test confirmed native Git
+  stdout redirection preserved the exact script blob bytes
+  (`BOOTSTRAP_NATIVE_BYTES_PASS`), without any worker stop/pull/SQLite change.
+- Additional read-only promotion prerequisites: Linux Git verified GMK's
+  `66925b1` is a fast-forward ancestor of reviewed `ff20a39`; GMK checkout
+  was clean, local TypeScript and compiled CLI were installed, `npm.cmd`
+  available, ~203.7 GiB free on C:, and enrolled task was `Interactive` /
+  `Limited`. The remote maintenance terminal was in Session **0** while
+  Chrome processes and the worker were in Session **1**. These checks remove
+  prerequisite uncertainty but DO NOT override the in-flight Mission's
+  atomic maintenance gate exit **3**.
+- Linux Node 24 source verification for bootstrap changes: `npm run check`,
+  `npm run privacy-check`, `npm run build`, `git diff --check` passed and full
+  `npm test` reported **273 total / 271 pass / 0 fail / 2 Windows skips**.
+  The Windows-specific bootstrap rejection assertion was added separately
+  and remains a **CI Windows** gate; the live GMK upgrade itself has not run.
+
 - Independent GMK `pi-evidence` readback for Mission
   `fee3e087-26f1-4386-beee-197ad94d171e`: round five original reservation
   **#344**, observed **#345**, PI HANDOFF **#346**; actual round-six new-chat

@@ -35,6 +35,16 @@ test('GMK pull-only upgrade is ordered behind the SQLite drain and never install
   }
   assert.match(upgrade,/\$remoteSha -cne \$ExpectedSha/);
   assert.match(script,/function Assert-OurTask \{[\s\S]*?Principal\.LogonType -ne 'Interactive'[\s\S]*?Principal\.RunLevel -ne 'Limited'/);
+  assert.match(script,/\[string\]\$BootstrapRoot = ''/);
+  assert.match(script,/if \(\$BootstrapRoot -and \$Action -ne 'Upgrade'\)/,
+    'A temporary bootstrap must not operate on task enrollment or generic restarts');
+  assert.match(script,/\$expected = \[IO\.Path\]::GetFullPath\(\(Join-Path \$root 'scripts\\windows\\telegram-task\.ps1'\)\)/,
+    'Foreign temporary scripts must validate the actual registered worker action');
+  assert.match(script,/function Assert-ReviewedBootstrapScript\(\[string\]\$sha\)/);
+  assert.match(script,/Get-FileHash -Algorithm SHA256 -LiteralPath \$PSCommandPath/);
+  assert.match(script,/Get-FileHash -Algorithm SHA256 -LiteralPath \$blob/);
+  assert.match(upgrade,/Assert-ReviewedBootstrapScript \$ExpectedSha[\s\S]*Assert-SafeRestart/,
+    'A modified bootstrap must be rejected before the idle maintenance gate or drain');
   assert.match(script,/'Worker'\s*\{\s*Assert-Prerequisites\s+Assert-InteractiveSession/);
   assert.doesNotMatch(upgrade,/Assert-InteractiveSession\s*$/m,
     'Session 0 may coordinate a known interactive task but must never run a Chrome Worker itself');
@@ -61,6 +71,14 @@ test('PowerShell parses guarded Upgrade script and its exact-SHA guard fails bef
       {encoding:'utf8',timeout:12000});
     assert.equal(checked.status,0,`${checked.stderr} ${checked.stdout}`);
     assert.match(checked.stdout,/upgrade-syntax-pass/);
+
+    const unauthorizedBootstrap=spawnSync('pwsh',[
+      '-NoProfile','-NonInteractive','-File',path,
+      '-Action','Status','-BootstrapRoot',resolve('.')],
+      {encoding:'utf8',timeout:12000});
+    assert.notEqual(unauthorizedBootstrap.status,0,
+      'A bootstrap checkout override cannot be used with Status or any non-Upgrade task action');
+    assert.match(unauthorizedBootstrap.stderr,/BootstrapRoot is permitted only/);
 
     const start=script.indexOf('function Assert-UpgradeTarget(');
     const end=script.indexOf('\nfunction Stop-FencedTelegramTask',start);
