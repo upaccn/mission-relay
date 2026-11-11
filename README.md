@@ -93,7 +93,6 @@ The TypeScript build rejects unused local imports/parameters; run targeted tests
 - [AGENTS.md](AGENTS.md) — durable contributor invariants; read first.
 - [STATE.md](STATE.md) — concise latest observed state and v1.0 release blockers.
 - [Architecture](docs/architecture.md) — execution boundaries, Goal ledger, PI and independent release gates.
-- [Staged Goal intake](docs/staged-goal-intake.md) — authenticated STAGE → read-only VERIFY → PI REVIEW → separately gated ACTIVATE; source-only until qualified deployment.
 - [Operations](docs/operations.md) — GMK upgrades, SQLite maintenance, recovery and diagnostics.
 - [Telegram](docs/telegram.md) and [browser operations](docs/playwriter-evaluation.md) — configuration and existing user-facing workflows.
 - [Plugin API](docs/plugin-api.md) and [optional Codex adapter](examples/executors/codex/README.md) — separately installed native execution.

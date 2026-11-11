@@ -1,7 +1,7 @@
 # Optional Windows interactive-user lifecycle for the Mission Relay Telegram poller.
 # No task or credentials are created until the owner runs -Action Enroll locally.
 param(
-    [ValidateSet('Enroll','Worker','Status','Start','Restart','Upgrade','Compatibility','UpgradeSchedule','HideWorker','SetProxy','ClearProxy','Remove')]
+    [ValidateSet('Enroll','Worker','Status','Start','Restart','Upgrade','ResetProjects','Compatibility','UpgradeSchedule','HideWorker','SetProxy','ClearProxy','Remove')]
     [string]$Action = 'Status',
     [string]$ProxyUrl = '',
     [string]$ExpectedSha = '',
@@ -10,6 +10,9 @@ param(
     # is rebuilt as a parentless clean release root. Existing workers stay
     # fenced, backup/restore and rollback are identical to a normal upgrade.
     [switch]$HistoryReset,
+    # Explicit, one-time pre-production project reset. Keeps local enrollment,
+    # PI route, Telegram cursor and approved Chrome profile; not a Git reset.
+    [switch]$ConfirmResetProjects,
     # One-time bootstrap of Upgrade from an exact reviewed GitHub script
     # while an older pull-only GMK checkout still lacks this action.
     [string]$BootstrapRoot = '',
@@ -31,6 +34,9 @@ if ($LegacyMigration -and ($Action -notin @('Upgrade','Compatibility') -or -not 
 }
 if ($HistoryReset -and $Action -ne 'Upgrade') {
     throw 'HistoryReset requires an explicit guarded Upgrade action'
+}
+if ($ConfirmResetProjects -and $Action -ne 'ResetProjects') {
+    throw 'ConfirmResetProjects is permitted only for ResetProjects'
 }
 $root = if ($BootstrapRoot) {
     (Resolve-Path -LiteralPath $BootstrapRoot -ErrorAction Stop).Path
@@ -656,6 +662,126 @@ function Test-UpgradeEvidence {
 }
 
 switch ($Action) {
+    'ResetProjects' {
+        if (-not $ConfirmResetProjects) { throw 'Explicit -ConfirmResetProjects is required' }
+        Assert-Prerequisites
+        $null=Assert-OurTask
+        Assert-SafeRestart
+        if ((Get-ChannelStatus).drainRequested) { throw 'Maintenance already active' }
+        $currentSha=(& git -C $root rev-parse HEAD | Out-String).Trim()
+        $before=Get-ChannelStatus
+        if ($LASTEXITCODE -ne 0 -or $currentSha -cnotmatch '^[a-f0-9]{40}$' -or
+            -not $before.pollerPresent -or -not $before.runtimeProvenance -or
+            $before.runtimeProvenance.sourceSha -cne $currentSha -or
+            $before.runtimeProvenance.pid -ne $before.pollerPid) {
+            throw 'Exact running Worker identity is required'
+        }
+        New-UpgradeEvidence $currentSha $currentSha ([int]$before.pollerPid)
+        Write-UpgradeEvidence 'project_reset_authorized' @{ownerApproval=$true;sha=$currentSha}
+        Assert-AuditPreflight
+        $drainId=Request-ChannelDrain
+        Write-UpgradeEvidence 'drain_acquired' @{drainIdSha256=(Hash-UpgradeEvidence $drainId)}
+        $dbFile=Join-Path $env:LOCALAPPDATA 'MissionRelay\missions.sqlite'
+        $resetTool=Join-Path $root 'scripts\windows\fresh-project-db.mjs'
+        $disabled=$false
+        $changed=$false
+        $admitted=$false
+        try {
+            # The repeating recovery trigger must not start another worker
+            # while the old SQLite is replaced. The original drain stays held.
+            Stop-FencedTelegramTask
+            Disable-ScheduledTask -TaskName $taskName | Out-Null
+            $disabled=$true
+            if ((Get-ChannelStatus).pollerPresent) {
+                throw 'Recurring trigger raced with project reset; no data modified'
+            }
+            Write-UpgradeEvidence 'worker_stopped' @{oldPid=$before.pollerPid}
+            Backup-FencedSQLite
+            Verify-IsolatedSQLiteRestore
+            if (-not (Test-Path -LiteralPath $resetTool -PathType Leaf)) {
+                throw 'Reviewed reset module missing from installed source'
+            }
+            # A reset subprocess could exit between committing its rename
+            # and printing the receipt. Always restore from the verified
+            # snapshot if it fails, even when no success output was returned.
+            $changed=$true
+            $raw=(& $node $resetTool --reset $dbFile $drainId $script:upgradeAuditDir | Out-String)
+            if ($LASTEXITCODE -ne 0) { throw 'Fresh project database creation failed' }
+            $reset=$raw | ConvertFrom-Json
+            if ($reset.result -cne 'RESET_VERIFIED' -or $reset.missions -ne 0 -or
+                $reset.goals -ne 0 -or $reset.events -ne 0) {
+                throw 'Fresh project ledger did not verify'
+            }
+            Write-UpgradeEvidence 'project_history_reset' @{
+                oldMissions=$reset.before.missions;oldGoals=$reset.before.goals;
+                oldEvents=$reset.before.events;activeMissions=0;activeGoals=0}
+            $fresh=(& $node $resetTool --verify $dbFile $drainId | Out-String)
+            if ($LASTEXITCODE -ne 0 -or ($fresh | ConvertFrom-Json).result -cne 'EMPTY_PROJECT_HISTORY') {
+                throw 'Empty SQLite validation failed before worker startup'
+            }
+            Enable-ScheduledTask -TaskName $taskName | Out-Null
+            $disabled=$false
+            Start-ScheduledTask -TaskName $taskName
+            Wait-ForChannel $true
+            $after=Assert-FencedWorker $currentSha ([int]$before.pollerPid)
+            $fresh=(& $node $resetTool --verify $dbFile $drainId | Out-String)
+            if ($LASTEXITCODE -ne 0 -or ($fresh | ConvertFrom-Json).result -cne 'EMPTY_PROJECT_HISTORY') {
+                throw 'Post-start empty project readback failed'
+            }
+            Write-UpgradeEvidence 'fresh_worker_verified' @{
+                sha=$currentSha;pid=$after.pollerPid;transport=$after.transportHealth}
+            Test-UpgradeEvidence
+            Write-UpgradeEvidence 'drain_release_requested' @{sha=$currentSha}
+            Release-VerifiedChannelDrain $drainId $currentSha ([int]$after.pollerPid) (([datetime]$after.runtimeProvenance.at).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ'))
+            $admitted=$true
+            Write-UpgradeEvidence 'drain_released' @{confirmed=$true;sha=$currentSha}
+            Write-UpgradeEvidence 'complete' @{result='fresh_projects_verified';sha=$currentSha;pid=$after.pollerPid}
+            Test-UpgradeEvidence
+            Write-Output ('Old project ledger cleared; Telegram healthy at '+$currentSha)
+            Write-Output ('Private rollback evidence: '+$script:upgradeAuditDir)
+        } catch {
+            $reason=$_.Exception.Message
+            if ($admitted) {
+                throw ('Empty state already admitted; do not restore old projects. '+$reason)
+            }
+            try {
+                Write-UpgradeEvidence 'project_reset_failed' @{changed=$changed}
+                # Stop-FencedTelegramTask needs the enrolled task enabled to
+                # distinguish its Worker from an unrelated process. Re-enable
+                # only long enough to perform the safe stop behind the drain.
+                if ($disabled) { Enable-ScheduledTask -TaskName $taskName | Out-Null; $disabled=$false }
+                Stop-FencedTelegramTask
+                Disable-ScheduledTask -TaskName $taskName | Out-Null
+                $disabled=$true
+                if ((Get-ChannelStatus).pollerPresent) {
+                    throw 'Worker still present after disabling recovery; do not restore SQLite'
+                }
+                if ($changed) {
+                    $snapshot=Join-Path $script:upgradeAuditDir 'missions.sqlite'
+                    if (-not (Test-Path -LiteralPath $snapshot -PathType Leaf)) { throw 'Original backup missing' }
+                    foreach($suffix in @('-wal','-shm')){
+                        $sidecar=$dbFile+$suffix
+                        if(Test-Path -LiteralPath $sidecar){Remove-Item -LiteralPath $sidecar -Force}
+                    }
+                    Copy-Item -LiteralPath $snapshot -Destination $dbFile -Force
+                }
+                Enable-ScheduledTask -TaskName $taskName | Out-Null
+                $disabled=$false
+                Start-ScheduledTask -TaskName $taskName
+                Wait-ForChannel $true
+                $restored=Assert-FencedWorker $currentSha ([int]$before.pollerPid)
+                if ($changed) { Verify-UpgradeSQLiteContinuity }
+                Assert-SafeRestart
+                Release-VerifiedChannelDrain $drainId $currentSha ([int]$restored.pollerPid) (([datetime]$restored.runtimeProvenance.at).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ'))
+                Write-UpgradeEvidence 'rollback_verified' @{oldHistoryRestored=$true;pid=$restored.pollerPid}
+                Write-UpgradeEvidence 'drain_released' @{rollback=$true}
+                Test-UpgradeEvidence
+            } catch {
+                throw ('Reset failed and original maintenance drain remains fenced: '+$reason+'; '+$_.Exception.Message)
+            }
+            throw ('Reset failed safely; original history restored: '+$reason)
+        }
+    }
     'Compatibility' {
         # Source-only readback; safe even while a protected Mission is live.
         # A positive result is NOT a restart/preflight/drain authorization.

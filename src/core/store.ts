@@ -1070,8 +1070,6 @@ export class Store {
     if(Boolean(snapshot)!==Boolean(options.goalBinding))
       throw new Error('Goal work prompt snapshot and versioned Goal binding must be recorded together');
     return this.transaction(()=>{
-      if(this.getMeta(`goal.stage.hold.${id}`)==='1')
-        throw new Error('Staged Goal has not passed PI review and activation');
       if(this.channelDrainRequested('telegram'))
         throw new Error('Telegram maintenance drain active; new browser Sends are refused');
       const m=this.get(id);
@@ -1691,8 +1689,6 @@ export class Store {
     if(!/^\d+$/.test(externalId)||!text.trim()||text.length>1500)
       throw new Error('PI owner instruction requires a Telegram update ID and 1–1500 characters');
     return this.transaction(()=>{
-      if(this.getMeta(`goal.stage.hold.${id}`)==='1')
-        throw new Error('Staged Goal is held; owner notes require separate activation');
       const m=this.get(id);
       if(['COMPLETED','CANCELLED','BLOCKED','NEEDS_RECONCILIATION'].includes(m.state))
         throw new Error('PI Mission cannot accept an instruction in its current state');
@@ -2150,8 +2146,6 @@ export class Store {
     });
   }
   acquire(id: string, expectedVersion?: number): Mission {
-    if(this.getMeta(`goal.stage.hold.${id}`)==='1')
-      throw new Error('Staged Goal cannot run before explicit activation');
     const m = this.get(id);
     if (expectedVersion !== undefined && m.version !== expectedVersion)
       throw new Error(`State conflict for ${id}: expected ${expectedVersion}, got ${m.version}`);

@@ -74,9 +74,35 @@ test('Telegram /help presents a short human-facing menu; rare commands remain di
     f.transport.updates=[f.message(52,'/help advanced')];
     await f.bridge.pollOnce(0);
     const advanced=f.transport.sent.at(-1)!;
-    assert.match(advanced,/\/goal-stage/);
+    assert.match(advanced,/\/agent/);
     assert.match(advanced,/\/resume/);
     assert.equal(f.engine.list().length,1,'help must never start a Mission');
+  }finally{f.cleanup();}
+});
+
+test('status and pause work without UUID when a single task exists',async()=>{
+  const f=fixture();
+  try{
+    f.transport.updates=[f.message(61,'/status'),f.message(62,'/pause')];
+    await f.bridge.pollOnce(0);
+    assert.ok(f.transport.sent.some(x=>x.includes(f.m.id)&&x.includes('Turn')));
+    assert.ok(f.transport.sent.some(x=>x.includes('Pause recorded')));
+    assert.equal(f.store.get(f.m.id).state,'PAUSED');
+    assert.equal(f.agent.calls,0);
+  }finally{f.cleanup();}
+});
+
+test('pause without UUID refuses to guess among multiple active tasks',async()=>{
+  const f=fixture();
+  try{
+    const other=f.engine.create({goal:'Another pending task',acceptance:['No execution'],
+      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:1,
+      requestKey:'another-pending-task'});
+    f.transport.updates=[f.message(63,'/pause')];
+    await f.bridge.pollOnce(0);
+    assert.ok(f.transport.sent.some(x=>x.includes('No single active task')));
+    assert.equal(f.engine.get(f.m.id).state,'READY');
+    assert.equal(f.engine.get(other.id).state,'READY');
   }finally{f.cleanup();}
 });
 
@@ -369,7 +395,7 @@ test('Telegram list prioritizes old reconciliation and pages all tasks and audit
     const [first,second,historyFirst,historyLast]=f.transport.sent;
     assert.match(first!,/Missions requiring attention: Page 1\/2 \(14 total\)/);
     assert.ok(first!.includes(uncertain.id),'Old uncertain Mission must outrank newer READY tasks');
-    assert.match(first!,/NEEDS_RECONCILIATION v1/);
+    assert.match(first!,/NEEDS_RECONCILIATION · turn 0\/32/);
     assert.match(second!,/Missions requiring attention: Page 2\/2/);
     assert.ok(second!.includes(f.m.id),'Oldest READY task must be accessible on the second page');
     assert.match(historyFirst!,/Recent Mission history: Page 1\/3 \(23 total/);
@@ -1432,7 +1458,8 @@ test('Explicit /new creates one isolated ChatGPT tab, commits URL and final SHA,
     const newUrl='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174001';
     const linked=f.store.linkChat(f.m.id,anchor,f.m.version).mission;
     f.store.bindChatBrowser(f.m.id,'install:Chrome:synthetic',linked.version);
-    f.store.setMeta('telegram.chatgpt.anchorMissionId',f.m.id);
+    f.store.setMeta('telegram.chatgpt.anchorUrl',f.store.chatLink(f.m.id)!);
+    f.store.setMeta('telegram.chatgpt.browserId',f.store.chatBrowserBinding(f.m.id)!);
     let newPages=0,sends=0,entered='',location='about:blank',closed=false;
     const answer='Telegram-ready summary\nOutcome: synthetic read-only report\n[MISSION_RELAY:DONE]';
     const fakeLocator=(fresh:boolean)=>(selector:string)=>{
@@ -1509,12 +1536,13 @@ test('Natural-language new chat refuses an absent or nonmatching approved Chrome
       async()=>{throw new Error('Should not connect without an anchor');});
     f.transport.updates=[f.message(502,'/new Check NetBox app reviews')];
     await rejected.pollOnce(0);
-    assert.ok(f.transport.sent.some(x=>/No owner-approved ChatGPT anchor/.test(x)));
+    assert.ok(f.transport.sent.some(x=>/No owner-approved ChatGPT profile/.test(x)));
     assert.equal(f.engine.list().length,1);
     const url='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
     const linked=f.store.linkChat(f.m.id,url,f.m.version).mission;
     f.store.bindChatBrowser(f.m.id,'install:Chrome:synthetic',linked.version);
-    f.store.setMeta('telegram.chatgpt.anchorMissionId',f.m.id);
+    f.store.setMeta('telegram.chatgpt.anchorUrl',f.store.chatLink(f.m.id)!);
+    f.store.setMeta('telegram.chatgpt.browserId',f.store.chatBrowserBinding(f.m.id)!);
     const wrongPage={url:()=> 'https://example.com/',isClosed:()=>false} as unknown as Page;
     const wrong=new TelegramBridge(f.store,f.engine,f.transport,1001,2001,
       async()=>{throw new Error('Codex should not run');},

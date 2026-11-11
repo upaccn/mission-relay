@@ -3,7 +3,6 @@ import {createHash} from 'node:crypto';
 import {childEnvironment} from './child-env.js';
 import type {PiOwnerDirective,PiPlanAction} from './store.js';
 import type {Sandbox} from './types.js';
-import type {StageBaselineDimensions} from './staged-goal-intake.js';
 import {goalPlanPrompt,goalReviewPrompt,parseGoalPlanProposal,parseGoalReview,
   type GoalPlanContext,type GoalReviewContext,type GoalPlanProposal,type GoalReview} from './goal-pi.js';
 
@@ -16,28 +15,16 @@ export interface PiTurnContext {
 export interface PiDecision {
   action:PiPlanAction;summary:string;nextPrompt:string;
 }
-/** Captured from the REAL pictl infer JSON envelope, not from model prose.
- * The invocation policy is from our fixed tool-free argv, with no overrides. */
-export interface StagedPiInferenceEvidence {
-  observedProvider:string;observedModel:string;responseSha256:string;
-  argvSha256:string;modelOverride:false;providerOverride:false;thinkingOverride:false;
-}
-export interface StagedPiReviewResult {
-  verdict:'APPROVE'|'REJECT';summary:string;inference:StagedPiInferenceEvidence;
-}
 export interface PiPlanner {
   decide(input:PiTurnContext):Promise<PiDecision>;
-  /** Optional to legacy PI integrations; REQUIRED to approve a staged Goal. */
-  invocationPolicy?():Pick<StagedPiInferenceEvidence,
+  /** Fixed no-override policy; needed for durable model invocation evidence. */
+  invocationPolicy?():Pick<{
+    argvSha256:string;modelOverride:false;providerOverride:false;thinkingOverride:false;
+  },
     'argvSha256'|'modelOverride'|'providerOverride'|'thinkingOverride'>;
   /** Goal-driven opt-in: existing legacy PI planners need not implement this. */
   proposeGoalPlan?(input:GoalPlanContext):Promise<GoalPlanProposal>;
   reviewGoalWork?(input:GoalReviewContext):Promise<GoalReview>;
-  reviewStagedGoal?(input:{
-    goalId:string;missionId:string;objective:string;checkpointSha256:string;
-    baselineSha256:string;baselineEvidence:StageBaselineDimensions;
-    workspace:string;browserIdSha256:string;
-  }):Promise<StagedPiReviewResult>;
 }
 export interface PictlRemoteConfig {sshHost:string;project:string}
 
@@ -135,70 +122,6 @@ export class SshPiPlanner implements PiPlanner {
     try{return parseGoalReview(answer);}
     catch{throw new RetryablePiError('PI Goal review format invalid; retry the settled checkpoint only');}
   }
-  async reviewStagedGoal(input:{
-    goalId:string;missionId:string;objective:string;checkpointSha256:string;
-    baselineSha256:string;baselineEvidence:StageBaselineDimensions;
-    workspace:string;browserIdSha256:string;
-  }):Promise<StagedPiReviewResult>{
-    const prompt=[
-      'You are the tool-free, independent PI reviewer of a newly staged owner Goal.',
-      'This is a ZERO-TURN pre-send checkpoint, not a ChatGPT answer or product release.',
-      'Do not call tools, authorize browser Send, change model/provider settings, or claim live verification.',
-      'Assess only the owner scope and the controller-provided checkpoint identifiers.',
-      'Approve a valid staged checkpoint for SEPARATE owner activation, or reject with a concrete reason.',
-      'Return strictly one JSON object: {"verdict":"APPROVE|REJECT","summary":"reason (1-600 characters)"}',
-      `Goal ID: ${input.goalId}`,`Mission ID: ${input.missionId}`,
-      `Checkpoint SHA-256: ${input.checkpointSha256}`,
-      `Independent seven-dimensional baseline SHA-256: ${input.baselineSha256}`,
-      ...Object.entries(input.baselineEvidence).map(([domain,proof])=>
-        `External ${domain} evidence: ${proof.source} sha256:${proof.evidenceSha256}`),
-      `Approved browser profile SHA-256: ${input.browserIdSha256}`,
-      `Execution scope: ${input.workspace||'read-only'}`,
-      `Owner objective: ${input.objective}`,
-      'Approval is advisory until the original single controller persists this verdict and enforces activation gates.',
-    ].join('\n');
-    const envelope=await sshPictlInfer(prompt,this.remote);
-    return parseStagedPiInference(envelope,this.invocationPolicy());
-  }
-}
-
-/** Reject a model-created claim of model identity. Trust only the external
- * pictl envelope and hash those exact bytes; never persist a private prompt
- * or raw inference output in the Goal event log. */
-export function parseStagedPiInference(raw:string,policy:{
-  argvSha256:string;modelOverride:false;providerOverride:false;thinkingOverride:false;
-}):StagedPiReviewResult {
-  let outer:{ok?:unknown;provider?:unknown;model?:unknown;result?:unknown};
-  try{outer=JSON.parse(raw) as typeof outer;}
-  catch{throw new RetryablePiError('Staged PI inference envelope is not valid JSON');}
-  if(outer?.ok!==true||typeof outer.result!=='string'||
-    typeof outer.provider!=='string'||typeof outer.model!=='string'||
-    !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(outer.provider)||
-    !/^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,127}$/.test(outer.model)||
-    !/^[a-f0-9]{64}$/.test(policy.argvSha256)||
-    policy.modelOverride!==false||policy.providerOverride!==false||
-    policy.thinkingOverride!==false)
-    throw new RetryablePiError('Staged PI inference lacks attested model or default argv policy');
-  let decision:unknown;
-  try{decision=JSON.parse(outer.result.trim()
-    .replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''));}
-  catch{throw new RetryablePiError('Staged PI review is not valid JSON');}
-  if(!decision||typeof decision!=='object'||Array.isArray(decision)||
-    !['APPROVE','REJECT'].includes(String((decision as {verdict?:unknown}).verdict))||
-    typeof (decision as {summary?:unknown}).summary!=='string'||
-    !(decision as {summary:string}).summary.trim()||
-    (decision as {summary:string}).summary.length>600)
-    throw new RetryablePiError('Staged PI review has invalid verdict or summary');
-  const result=decision as {verdict:'APPROVE'|'REJECT';summary:string};
-  return {
-    verdict:result.verdict,summary:result.summary.trim(),
-    inference:{
-      observedProvider:outer.provider,observedModel:outer.model,
-      responseSha256:createHash('sha256').update(raw).digest('hex'),
-      argvSha256:policy.argvSha256,modelOverride:false,
-      providerOverride:false,thinkingOverride:false,
-    },
-  };
 }
 
 export function piDecisionPrompt(input:PiTurnContext):string {

@@ -18,8 +18,7 @@ import {drivePiAutopilot,pauseFailedPiPlanning,
   deferTransientPiBrowserRecovery} from '../core/pi-autopilot.js';
 import {SshPiPlanner,validateRemoteProjectPath,type PiPlanner} from '../core/pi-planner.js';
 import {GoalLedger} from '../core/goal-store.js';
-import {StagedGoalIntake,isFreshStagedApproval,type StageBaselineDimensions} from '../core/staged-goal-intake.js';
-import {collectStagedGoalBaseline} from '../core/staged-goal-baseline.js';
+import {telegramChatAnchor} from '../core/chat-anchor.js';
 import {GoalReleaseGate} from '../core/goal-release.js';
 import type {RuntimeProvenance} from '../core/runtime-provenance.js';
 import type {Mission,MissionEvent} from '../core/types.js';
@@ -306,8 +305,6 @@ export class TelegramBridge {
     }),
     private readonly watchCandidates:(browserId:string)=>Promise<ConnectedChatCandidate[]>=listConnectedChatCandidates,
     private readonly startupProvenance:RuntimeProvenance|null=null,
-    private readonly stageBaselineProbe:(store:Store,goalId:string,planner:PiPlanner)=>
-      Promise<StageBaselineDimensions>=collectStagedGoalBaseline,
   ) {
     if(!Number.isSafeInteger(userId)||userId<=0||!Number.isSafeInteger(chatId)||chatId<=0)
       throw new Error('Set numeric Telegram owner user and private chat IDs');
@@ -753,10 +750,9 @@ export class TelegramBridge {
       throw new Error('Write-enabled PI task needs a locally approved project matching the PI route; configure telegram-build-project first');
     const writeWorkspace=approved?validateRemoteProjectPath(approved):null;
     browserFreshTaskPrompt(goal,writeWorkspace);
-    const anchorId=this.store.getMeta('telegram.chatgpt.anchorMissionId');
-    if(!anchorId)throw new Error('No approved PI ChatGPT anchor; use telegram-anchor locally');
-    const url=this.store.chatLink(anchorId),browserId=this.store.chatBrowserBinding(anchorId);
-    if(!url||!browserId)throw new Error('PI source Chrome binding is missing');
+    const anchor=telegramChatAnchor(this.store);
+    if(!anchor)throw new Error('No approved ChatGPT profile; configure telegram-anchor locally');
+    const {url,browserId}=anchor;
     if(this.piPlanner instanceof SshPiPlanner)
       await this.piPlanner.preflight(); // Avoid starting Chrome if PI is already offline.
     // The anchor is an approved Chrome PROFILE identity, not a permanent tab
@@ -807,7 +803,15 @@ export class TelegramBridge {
         try{await session.close();}catch{console.error('PI Playwriter session cleanup warning');}
         finally{this.activeMission=null;this.activeTask=null;}
       });
-      return `${ownerGoal?`Goal ${ownerGoal.id} created (persistent; not yet independently accepted).\n`:''}PI-coordinated ChatGPT Mission ${m.id} accepted (${writeWorkspace?'workspace-write':'read-only'}, unbounded Mission turns, max ${MAX_RELAY_CHAT_TURNS} per chat).\n${writeWorkspace?`Approved source: ${writeWorkspace}\n`:''}PI reviews each complete ChatGPT answer and decides the next action.\nAdditional plain-text instructions are queued for PI. Progress: /status ${m.id}.${ownerGoal?` Goal: /goal-status ${ownerGoal.id}.`:''} Do not resend.`;
+      return [
+        `Task started — ${writeWorkspace?'approved repository work':'research and analysis'}.`,
+        `Mission: ${m.id}`,
+        ...(ownerGoal?[`Long-term Goal: ${ownerGoal.id}`]:[]),
+        'The controller will plan and review each step automatically.',
+        `Each Chat is limited to ${MAX_RELAY_CHAT_TURNS} Sends; the Mission has no fixed turn limit.`,
+        'Send another message to adjust the task. Use /status to check or /pause to stop.',
+        'Please do not resend the original task.',
+      ].join('\n');
     }catch(error){
       try{await session.close();}catch{console.error('PI source preflight cleanup warning');}
       throw error;
@@ -843,11 +847,9 @@ export class TelegramBridge {
     if(this.activeMission)return this.alreadyRunning(task.trim());
     const goal=task.trim();
     const prompt=browserFreshTaskPrompt(goal);
-    const anchorId=this.store.getMeta('telegram.chatgpt.anchorMissionId');
-    if(!anchorId)throw new Error('No owner-approved ChatGPT anchor; configure telegram-anchor locally first');
-    const url=this.store.chatLink(anchorId);
-    const browserId=this.store.chatBrowserBinding(anchorId);
-    if(!url||!browserId)throw new Error('Configured ChatGPT anchor is missing its exact URL or Chrome binding');
+    const anchor=telegramChatAnchor(this.store);
+    if(!anchor)throw new Error('No owner-approved ChatGPT profile; configure telegram-anchor locally first');
+    const {url,browserId}=anchor;
     const session=await this.browserConnector(url,{browserId,bootstrapMissingAnchor:true});
     try{
       const pageState=await inspectChatPage(session.page,url);
@@ -919,15 +921,14 @@ export class TelegramBridge {
 
   private async handle(text:string,commandId='local-test'):Promise<string> {
     const clean=text.trim();
-    const [cmd,id,...words]=clean.split(/\s+/);
+    const [cmd,explicitId,...words]=clean.split(/\s+/);
+    let id=explicitId;
     if(!cmd) return 'Send /help for available commands.';
     if(cmd==='/help'||cmd==='/start') return id==='advanced'?[
       'Mission Relay — advanced commands (rarely needed)',
       '/history [page] — historical audit; /goals [page] and /goal-status <id> — Goals',
       '/handoff <id> — open linked ChatGPT context; /new <task> — single-turn chat',
       '/auto <task> — alias for plain-text task; /agent <task> — installed native executor',
-      '/goal-stage and /goal-stage-build — held Goal creation',
-      '/goal-verify, /goal-review, /goal-activate — staged Goal approval',
       '/continue, /resume, /cancel, /instruct — legacy/manual revision-gated actions',
       'Recovery, approvals and secrets remain local CLI operations.',
     ].join('\n'):[
@@ -937,8 +938,8 @@ export class TelegramBridge {
       '/goal <objective> — track a persistent goal',
       '/goal-build <objective> — persistent goal with approved code writes',
       '/list — tasks requiring attention',
-      '/status <mission-id> — progress and next action',
-      '/pause <mission-id> — safely stop further work',
+      '/status — latest task (or /status <mission-id>)',
+      '/pause — stop current task (or /pause <mission-id>)',
       'While a task runs, send another message to update its instructions.',
       '/help advanced — less common commands',
     ].join('\n');
@@ -948,62 +949,6 @@ export class TelegramBridge {
       return this.startPiChat(clean.replace(/^chatgpt\s*[:：]\s*/i,''),commandId);
     if(cmd==='/goal')return this.startPiChat(clean.slice(5),commandId,false,true);
     if(cmd==='/goal-build')return this.startPiChat(clean.slice(11),commandId,true,true);
-    if(cmd==='/goal-stage'||cmd==='/goal-stage-build'){
-      const write=cmd==='/goal-stage-build';
-      const project=write?this.store.getMeta('telegram.build.project'):null;
-      if(write&&(!project||project!==this.store.getMeta('telegram.pi.project')))
-        throw new Error('Staged write Goal requires matching locally approved PI/build project');
-      const workspace=project?validateRemoteProjectPath(project):'';
-      const result=new StagedGoalIntake(this.store).stage({
-        ownerId:this.userId,commandId,objective:clean.slice(cmd.length).trim(),workspace,
-      });
-      return [
-        `STAGED Goal ${result.record.goalId} / Mission ${result.record.missionId}`,
-        `Checkpoint: ${result.record.checkpointSha256}`,
-        `State: ${result.missionState}, ${result.turnCount} turns, ${result.browserReservations} reservations; no PI/Send scheduled.`,
-        `Verify: /goal-verify ${result.record.goalId}`,
-        `PI review: /goal-review ${result.record.goalId}`,
-        'Activation requires a separate owner command and current safety gates.',
-      ].join('\n');
-    }
-    if(cmd==='/goal-verify'||cmd==='/goal-review'){
-      if(!id||!/^[0-9a-f-]{36}$/i.test(id)||words.length)
-        throw new Error(`Use ${cmd} <complete staged Goal UUID>`);
-      const staging=new StagedGoalIntake(this.store);
-      const current=staging.verifyReadOnly(id);
-      if(current.record.ownerId!==this.userId)
-        throw new Error('Staged Goal belongs to another owner');
-      const needsReview=cmd==='/goal-review'&&!isFreshStagedApproval(current.review);
-      if(needsReview){
-        const evidence=await this.stageBaselineProbe(this.store,id,this.piPlanner);
-        staging.recordOperationalBaseline(id,this.userId,evidence);
-      }
-      const result=needsReview
-        ?await staging.reviewByPi(id,this.userId,this.piPlanner)
-        :staging.verifyReadOnly(id);
-      if(result.record.ownerId!==this.userId)
-        throw new Error('Staged Goal belongs to another owner');
-      return [
-        `Goal ${id}; Mission ${result.record.missionId}`,
-        `Checkpoint: ${result.record.checkpointSha256}`,
-        `Seven-dimensional baseline: ${result.baseline?.baselineSha256??'PENDING'}.`,
-        `Independent readback: ${result.unchanged?'MATCH':'CHANGED'}; ${result.missionState}; ${result.turnCount} turns; ${result.browserReservations} reservations; parent ${result.parentId??'none'}.`,
-        `PI review: ${result.review?.verdict??'PENDING'}${result.review?` at ${result.review.reviewedAt}`:''}${result.review?.verdict==='APPROVE'&&!isFreshStagedApproval(result.review)?' (EXPIRED; use /goal-review to renew)':''}.`,
-        ...(result.review?.inference?[
-          `PI actual inference: ${result.review.inference.observedProvider}/${result.review.inference.observedModel}; default invocation flags: model=false, provider=false, thinking=false.`,
-          `PI inference envelope SHA-256: ${result.review.inference.responseSha256}; argv SHA-256: ${result.review.inference.argvSha256}.`,
-        ]:[]),
-        `Activated: ${result.activated?'YES':'NO'}.`,
-        ...(isFreshStagedApproval(result.review)?
-          [`Owner activation: /goal-activate ${id} ${result.record.checkpointSha256}`]:[]),
-      ].join('\n');
-    }
-    if(cmd==='/goal-activate'){
-      if(!id||!/^[0-9a-f-]{36}$/i.test(id)||words.length!==1)
-        throw new Error('Use /goal-activate <complete staged Goal UUID> <checkpoint SHA-256>');
-      const result=new StagedGoalIntake(this.store).activate(id,this.userId,words[0]!,commandId);
-      return `Goal ${id} activated as READY Mission ${result.record.missionId}. Dispatch is controlled by the single existing PI Worker; no browser Send was submitted by activation. Progress: /status ${result.record.missionId}`;
-    }
     if(cmd==='/goals'){
       const goals=new GoalLedger(this.store).listGoals();
       const {page,pages,start}=missionPage(id,words,goals.length);
@@ -1033,8 +978,8 @@ export class TelegramBridge {
         `Plan: ${approved?`${approved.ordinal} [${approved.status}] v${approved.version}`:'awaiting PI review'}`,
         `Work: ${verified}/${items.length} reported PASSED; ${active?`current ${active.key} [${active.status}] v${active.version}`:'none active'}`,
         `Acceptance: ${graph.acceptance.filter(a=>a.status==='PASS').length}/${graph.acceptance.length} reported PASS (model-reviewed only)`,
-        release.complete? `Goal DONE: independently gated at ${release.target?.targetSha.slice(0,12)}`:
-          `Release gate: ${release.target?.targetSha.slice(0,12)??'not targeted'}, ${release.checks.filter(c=>c.state==='PASS').length}/${release.checks.length} independently checked; ${release.blockers.length} blockers (not DONE)`,
+        release.complete?'Independent verification: complete':
+          'Independent verification: pending; reported work results are not final acceptance',
         ...lineage.slice(-3).map(mid=>`PI Mission: /status ${mid}`),
       ].join('\n');
     }
@@ -1063,7 +1008,7 @@ export class TelegramBridge {
       const {page,pages,start}=missionPage(id,words,all.length);
       return all.length?[`Missions requiring attention: Page ${page}/${pages} (${all.length} total)`,
         ...all.slice(start,start+TELEGRAM_MISSION_PAGE_SIZE).map(m=>
-        `${m.id.slice(0,8)}… — ${m.state} v${m.version}, ${formatMissionTurns(m.turnCount,m.maxTurns)}\n/status ${m.id}`),
+        `${compactTelegramText(m.goal,74)}\n${m.state} · turn ${formatMissionTurns(m.turnCount,m.maxTurns)} · /status ${m.id}`),
         'Full Mission audit history: /history'].join('\n'):
         'No active or unresolved Missions. Historical records: /history';
     }
@@ -1077,6 +1022,21 @@ export class TelegramBridge {
     }
     if(!['/status','/handoff','/pause','/resume','/cancel','/instruct','/continue'].includes(cmd))
       throw new Error('Unknown command. Send /help. Native agents use /agent, not a vendor-specific command.');
+    if(!id&&cmd==='/status'){
+      id=this.activeMission??this.engine.list().find(m=>!this.store.isMissionArchived(m.id))?.id;
+      if(!id)return 'No tasks yet. Send a normal message or /build <task> to begin.';
+    }
+    if(!id&&cmd==='/pause'){
+      const active=this.activeMission;
+      if(active)id=active;
+      else{
+        const eligible=this.engine.list().filter(m=>!m.stopRequested&&
+          ['RUNNING','READY','VERIFYING'].includes(m.state));
+        if(eligible.length!==1)
+          throw new Error('No single active task to pause. Use /list, then /pause <mission-id>.');
+        id=eligible[0]!.id;
+      }
+    }
     if(!id || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Provide a complete mission UUID');
     const m=this.engine.get(id);
     if(cmd==='/status') {

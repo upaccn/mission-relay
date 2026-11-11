@@ -10,6 +10,41 @@ import {DatabaseSync} from 'node:sqlite';
 const path=resolve('scripts/windows/telegram-task.ps1');
 const script=readFileSync(path,'utf8');
 
+test('Windows lifecycle PowerShell parses without errors before production enrollment',
+  {skip:process.platform!=='win32'},()=>{
+    const quote=(s:string)=>`'${s.replaceAll("'","''")}'`;
+    const code=`$tokens=$null;$errors=$null;[System.Management.Automation.Language.Parser]::ParseFile(${quote(path)},[ref]$tokens,[ref]$errors)|Out-Null;if($errors.Count -gt 0){$errors|ForEach-Object{Write-Error $_.Message};exit 2};Write-Output 'PARSER_OK'`;
+    const result=spawnSync('pwsh',['-NoProfile','-NonInteractive','-Command',code],
+      {encoding:'utf8',timeout:15000});
+    assert.equal(result.status,0,result.stderr+' '+result.stdout);
+    assert.match(result.stdout,/PARSER_OK/);
+  });
+
+test('project-history reset is explicit, fenced, backup-first and cannot silently re-enroll',
+  ()=>{
+    const start=script.indexOf("    'ResetProjects' {");
+    const end=script.indexOf("    'Compatibility' {",start);
+    assert.ok(start>0&&end>start,'ResetProjects must be an isolated owner action');
+    const reset=script.slice(start,end);
+    assert.match(reset,/\$ConfirmResetProjects/);
+    assert.match(reset,/Assert-SafeRestart/);
+    assert.match(reset,/Request-ChannelDrain/);
+    assert.match(reset,/Stop-FencedTelegramTask/);
+    assert.match(reset,/Disable-ScheduledTask/);
+    assert.match(reset,/Backup-FencedSQLite/);
+    assert.match(reset,/Verify-IsolatedSQLiteRestore/);
+    assert.match(reset,/--reset \$dbFile \$drainId/);
+    assert.match(reset,/--verify \$dbFile \$drainId/);
+    assert.match(reset,/Assert-FencedWorker/);
+    assert.match(reset,/Release-VerifiedChannelDrain/);
+    assert.match(reset,/Copy-Item -LiteralPath \$snapshot -Destination \$dbFile -Force/);
+    assert.ok(reset.indexOf('Backup-FencedSQLite')<reset.indexOf('--reset $dbFile'),
+      'Destructive reset must occur only after a verified backup');
+    assert.ok(reset.indexOf('Assert-FencedWorker')<reset.indexOf('Release-VerifiedChannelDrain'),
+      'A healthy attested replacement must precede maintenance admission');
+    assert.doesNotMatch(reset,/git -C \$root reset|Register-ScheduledTask|browser-send/);
+  });
+
 test('copied rollback bytes must match original compiled JS and manifest before upgrade',
   {skip:process.platform!=='win32'},()=>{
     const sha=(s:string)=>createHash('sha256').update(s).digest('hex');

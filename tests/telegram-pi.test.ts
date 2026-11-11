@@ -31,7 +31,8 @@ function rig(planner:PiPlanner,options:{failFirstRecoveryConnect?:boolean;
     requestKey:'approved-anchor',checks:[]});
   const linked=store.linkChat(m.id,SRC,m.version).mission;
   store.bindChatBrowser(m.id,'install:Chrome:synthetic',linked.version);
-  store.setMeta('telegram.chatgpt.anchorMissionId',m.id);
+  store.setMeta('telegram.chatgpt.anchorUrl',SRC);
+  store.setMeta('telegram.chatgpt.browserId','install:Chrome:synthetic');
   let sends=0,newTabs=0,closed=false,entered='',location='about:blank';
   let connectorAttempts=0;
   const connectorOptions:Array<{browserId?:string;bootstrapMissingAnchor?:boolean}|undefined>=[];
@@ -135,7 +136,7 @@ test('WP4 /goal creates durable Goal plus one PI Mission; PI persists a reviewed
     assert.ok(task);
     assert.equal(task.sandbox,'read-only');
     assert.equal(ledger.missionGoalId(task.id),goals[0]!.id);
-    assert.ok(f.sent.some(x=>x.includes(`Goal ${goals[0]!.id} created`)));
+    assert.ok(f.sent.some(x=>x.includes(`Long-term Goal: ${goals[0]!.id}`)));
     for(let i=0;i<160&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
     assert.equal(f.state().closed,true);
     const graph=ledger.graph(goals[0]!.id);
@@ -155,7 +156,7 @@ test('WP4 /goal creates durable Goal plus one PI Mission; PI persists a reviewed
       f.message(3103,'/goals'),f.message(3104,`/status ${task.id}`)]);
     await f.bridge.pollOnce(0);
     assert.equal(ledger.listGoals().length,1);
-    assert.ok(f.sent.some(x=>x.includes('Release gate: not targeted')&&x.includes('(not DONE)')));
+    assert.ok(f.sent.some(x=>x.includes('Independent verification: pending')));
     assert.ok(f.sent.some(x=>x.includes('Persistent Goals: Page 1/1')));
     assert.ok(f.sent.some(x=>x.includes(`Persistent Goal: /goal-status ${graph.goal.id}`)));
     assert.equal(f.store.events(task.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2);
@@ -227,7 +228,7 @@ test('WP4 /goal-build requires existing explicit local repository approval; fail
     const mission=f.engine.list().find(x=>x.goal===objective)!;
     assert.equal(mission.sandbox,'workspace-write');
     assert.equal(mission.workspace,APPROVED_PROJECT);
-    assert.ok(f.sent.some(x=>x.includes(`Goal ${goal.id} created`)));
+    assert.ok(f.sent.some(x=>x.includes(`Long-term Goal: ${goal.id}`)));
     for(let i=0;i<150&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
     assert.equal(f.state().closed,true);
     assert.ok(f.state().sentPrompts[0]?.includes(APPROVED_PROJECT));
@@ -561,7 +562,7 @@ test('Telegram default text starts PI autopilot and later owner text is queued u
   const f=rig(planner);try{
     f.setUpdates([f.message(970,'Read-only NetBox field operations research')]);
     await f.bridge.pollOnce(0);
-    assert.ok(f.sent.some(x=>/PI-coordinated ChatGPT Mission/.test(x)));
+    assert.ok(f.sent.some(x=>/Task started/.test(x)));
     const mission=f.engine.list().find(m=>m.goal==='Read-only NetBox field operations research');
     assert.ok(mission);
     assert.equal(mission.maxTurns,0,'new PI Missions have no turn ceiling');
@@ -1309,7 +1310,7 @@ test('A durably interrupted old PI task does not block unrelated new owner work 
     assert.equal(f.store.get(old.id).state,'PAUSED');
     f.setUpdates([f.message(991,'A new separate read-only task')]);
     await f.bridge.pollOnce(0);
-    assert.ok(f.sent.some(text=>text.includes('PI-coordinated ChatGPT Mission')));
+    assert.ok(f.sent.some(text=>text.includes('Task started')));
     for(let i=0;i<110&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
     assert.equal(f.state().sends,1); // Only the new task sent a new prompt.
     assert.equal(f.store.get(old.id).version,oldVersion);

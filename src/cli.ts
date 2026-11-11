@@ -31,6 +31,7 @@ import { TelegramBridge, TelegramHttpTransport } from './plugins/telegram.js';
 import { stateHome } from './core/paths.js';
 import {verifiedRuntimeProvenance} from './core/runtime-provenance.js';
 import { renderChatGPTHandoff, normalizeChatGPTUrl } from './core/chatgpt-handoff.js';
+import {setTelegramChatAnchor} from './core/chat-anchor.js';
 import { connectChatPage, inspectChatPage, matchesSubmittedUserPrompt, matchesReservedPromptHash, lastVisibleUserPromptSha256, listConnectedChatCandidates, prepareNewChatOrigin, submitNewChatTurn, withBrowserSession } from './plugins/chatgpt-browser.js';
 import { executeBrowserTurn, driveChatConversation, browserDecision, exactReservedRolloverPrompt, browserRolloverPiPlan } from './core/browser-controller.js';
 import {SshPiPlanner,validatePictlRemoteConfig,validateRemoteProjectPath} from './core/pi-planner.js';
@@ -80,7 +81,8 @@ Commands:
   channel-drain-release --id <drain-id>  Release only the matching maintenance fence
   channel-drain-release-verified --id <drain-id> --expected-sha <sha> --expected-pid <pid> --expected-attested-at <ISO-8601>
                          Atomically admit only the freshly healthy, SHA-bound single Worker
-  telegram-anchor <mission-id>|--clear  Locally approve/revoke the exact pinned new-chat source tab
+  telegram-anchor --url <ChatGPT conversation> --browser-id <Chrome ID> | --clear
+                       Locally approve a browser launch profile, independent of any Mission
   telegram-agent-workspace --workspace <dir>|--clear  Optional native executor workspace approval
   telegram-pi-config --ssh-host <alias> --project <remote-absolute-path> | --clear
                       Configure tool-free PI inference through the existing SSH connection
@@ -281,19 +283,19 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
         foregroundPollerPresent:store.channelStatus('telegram').pollerPresent,
         note:'The foreground Telegram controller is the sole PI/browser writer. It will verify the exact original tab and review the human answer before sending.'};
     } else if (command === 'telegram-anchor' && id === '--clear') {
-      store.setMeta('telegram.chatgpt.anchorMissionId','');
+      store.setMeta('telegram.chatgpt.anchorUrl','');
+      store.setMeta('telegram.chatgpt.browserId','');
       result={configured:false,note:'The Telegram fresh-chat launcher has been locally revoked.'};
-    } else if (command === 'telegram-anchor' && id) {
-      const url=store.chatLink(id);
-      const browserId=store.chatBrowserBinding(id);
-      if(!url||!browserId)throw new Error('Anchor requires an existing ChatGPT mission with an explicitly pinned Chrome profile');
+    } else if (command === 'telegram-anchor') {
+      const f=flags(argv.slice(1));
+      const url=normalizeChatGPTUrl(option(f,'url'));
+      const browserId=option(f,'browser-id');
       const session=await connectChatPage(url,{browserId});
       const snapshot=await withBrowserSession(session,page=>inspectChatPage(page,url));
       if(!snapshot.composerReady||snapshot.generating)
         throw new Error('Anchor ChatGPT tab must be idle with a visible composer');
-      store.setMeta('telegram.chatgpt.anchorMissionId',id);
-      result={configured:true,anchorMissionId:id,chatUrl:url,
-        note:'Explicitly approved source tab only; future Telegram tasks create separate new tabs, never send in this old conversation.'};
+      setTelegramChatAnchor(store,url,browserId);
+      result={configured:true,note:'Approved browser launch profile saved. New tasks create separate fresh Chats; the source tab is never sent a message.'};
     } else if (command === 'telegram-agent-workspace' && id === '--clear') {
       store.setMeta('telegram.agent.workspace','');
       result={configured:false,note:'Native executor workspace authorization revoked.'};

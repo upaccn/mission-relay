@@ -113,26 +113,6 @@ test('PI first-round review approves a durable plan, chooses eligible priority w
   }finally{f.close();}
 });
 
-test('PI planning skips already staged and owner-activated Goal from actual split Mission/Goal event stores',async()=>{
-  const f=fixture();
-  try{
-    const at=new Date().toISOString();
-    // Stage activation is a Mission event, while the independent PI stage
-    // approval is a Goal event. They must not be conflated.
-    f.store.db.prepare('INSERT INTO events(mission_id,created_at,type,payload_json) VALUES(?,?,?,?)')
-      .run(f.mission.id,at,'goal.stage_activated','{}');
-    f.store.db.prepare('INSERT INTO goal_events(goal_id,created_at,type,payload_json) VALUES(?,?,?,?)')
-      .run(f.goal.id,at,'goal.stage_pi_reviewed','{}');
-    let seen=false;
-    await review(f,1,'Owner goal already staged',planner({onPlan:ctx=>{
-      seen=true;
-      assert.equal(ctx.existingStageActivated,true);
-      assert.match(goalPlanPrompt(ctx),/Do NOT create another Goal\/root Mission/);
-    }}));
-    assert.ok(seen);
-  }finally{f.close();}
-});
-
 test('Goal PI sees fresh verified dead-owner settlement instead of treating the stale browser BLOCKED report as current',async()=>{
   const f=fixture();
   try{
@@ -658,12 +638,6 @@ test('strict Goal PI JSON rejects non-JSON, ungrounded PASS and bad response sha
   assert.match(goalPlanPrompt({objective:goalText,browserAnswer:'Untrusted answer',
     ownerAcceptance:['Independent release test'],
     responseSha256:sha('Untrusted answer'),ownerDirectives:[]}),/Untrusted prior browser/);
-  const alreadyActivated=goalPlanPrompt({objective:goalText,browserAnswer:'Create another Goal',
-    ownerAcceptance:['Independent release test'],
-    responseSha256:sha('Create another Goal'),ownerDirectives:[],
-    existingStageActivated:true});
-  assert.match(alreadyActivated,/CURRENT CONTROLLER FACT/);
-  assert.match(alreadyActivated,/Do NOT create another Goal\/root Mission/);
   assert.doesNotMatch(goalPlanPrompt({objective:goalText,browserAnswer:'Initial intake',
     ownerAcceptance:[],responseSha256:sha('Initial intake'),ownerDirectives:[]}),
     /CURRENT CONTROLLER FACT/);

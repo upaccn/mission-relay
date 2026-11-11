@@ -1,5 +1,39 @@
 # Operations
 
+## One-time reset before the first formal project
+
+Only the authenticated owner may explicitly authorize a complete removal of
+pre-production Mission and Goal history. This is a **destructive operational
+reset**, separate from a normal software upgrade or Git history rewrite.
+First qualify and deploy the exact SHA containing the reset implementation;
+confirm one healthy enrolled Worker, an idle restart preflight and no pending
+Telegram replies, browser reservations or unsent notifications.
+
+On the original enrolled Windows interactive-user host, run:
+
+```powershell
+pwsh -NoProfile -NonInteractive -File scripts/windows/telegram-task.ps1 -Action ResetProjects -ConfirmResetProjects
+```
+
+The controller acquires the original SQLite maintenance fence, stops the
+Worker and recurring recovery trigger, captures a verified private SQLite
+backup and isolated restore, creates an empty database with the existing
+schema, and copies only the Bot API inbox cursor, PI configuration, approved
+build scope and Chrome launcher URL/profile. It does **not** copy old Mission,
+Goal, plan, approval, browser request, audit event or command rows. Any
+failure before admission restores the verified original state under the same
+maintenance fence. The replacement must attest its exact installed source
+SHA, unique Worker identity and healthy Bot API transport before the drain is
+released. A source upgrade alone never triggers project reset.
+
+After success, verify `channel-status`, `pi-health`, `list`, `/list`,
+`PRAGMA integrity_check` and `PRAGMA foreign_key_check`; counts of
+`missions`, `goals`, `events` and `channel_commands` must be zero. The
+private backup contains the retired records for disaster recovery only and
+must never be restored into normal production or committed to Git. The old
+ChatGPT conversation URL is retained **only** as the approved browser launch
+source; the Relay never sends into that conversation.
+
 ## One-time pre-fenced GMK migration (source-only implementation)
 
 The observed deployed GMK release `df3044eb2dc787236391918c2b7730b9b9407b8b`
