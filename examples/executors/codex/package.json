@@ -1,0 +1,14 @@
+{
+  "name": "@mission-relay/example-executor-codex",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Optional Codex native executor; not required by Mission Relay",
+  "scripts": {
+    "init": "node init.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@openai/codex-sdk": "0.166.0"
+  }
+}

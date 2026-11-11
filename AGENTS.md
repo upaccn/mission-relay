@@ -1,0 +1,49 @@
+# Mission Relay — contributor and operator rules
+
+Read this file and [STATE.md](STATE.md) before editing. Current code, tests, private production readbacks and latest GitHub main outrank historical milestone prose. For detailed safeguards use [operations](docs/operations.md) and [architecture](docs/architecture.md). Do not include operator-private deployment evidence or personal filesystem paths in this public repository.
+
+## Authoritative topology
+
+- **Source:** One operator-selected canonical checkout. Develop, test, commit and push from here only. GitHub `main` is the software release boundary; runtime copies are pull-only.
+- **Runtime:** GMK Windows is a pull-only, single-Worker production copy with private SQLite, Chrome/Playwriter and owner-enrolled Telegram task. Do not edit GMK source or create a second Worker.
+- **PI:** planning, arbitration and review use only the currently configured operator-managed host pictl default model. The approved SSH invocation is pictl infer --project <approved> --stdin --timeout 120 --json; **never** add --model, provider, thinking/effort or other model selection overrides. PI does not receive arbitrary execution tools.
+- **ChatGPT:** execute the current approved work package through the exact bound Playwriter-enabled Chrome profile. Browser prompt authority does not grant OS sandbox capabilities or new account permissions.
+- **Native executors:** entirely optional trusted, operator-installed JS modules. Core owns Mission state, leases and verification; agent/vendor credentials, SDKs and sandbox stay in the plugin. Keep optional Codex outside Core.
+
+## Non-negotiable state and request invariants
+
+1. SQLite is the single owner of Mission, Goal, request and audit state. Preserve historical records and append-only events, optimistic revisions, unique request keys, conversation locks and one writer. Never directly edit production SQLite to manufacture a receipt or clear a lock.
+2. Never replay an original ChatGPT Send just because Playwriter, Telegram, a model or a network connection timed out. Differentiate **reserved**, **uncertain**, **observed**, **reconciled** and independently recovered states.
+3. The same Chat may have at most **five durably observed Relay Sends**. The sixth requires a distinct newly observed Chat URL and an atomically committed reply. A Mission may have at most **32 turns**. Round 33 requires one distinct, zero-turn, reciprocal successor Mission for the same active Goal, with previously approved scope and work item retained.
+4. Reserve exact request identity and the complete prompt SHA before external side effects. Verify the *latest* visible canonical user prompt and full assistant text before crediting an answer; source user/assistant SHAs must be checked again directly before each next Send. A stale prior assistant rerender is not a new answer.
+5. Browser UI file cards may follow the model's terminal marker. Exclude them only when the entire trailing visible suffix exactly equals independently identified resource-row text and a single MarkdownRoot prose block itself ends with the terminal marker. Never strip arbitrary answer prose or relax the final marker regex.
+6. A recovered response needs the immutable original reservation, correct source/destination link, matching prompt SHA and final answer hash, one stable complete reply, exclusive destination, original source lock and still-unspent request. Recheck all in the same transaction that credits one turn. Do not invent an intermediate uncertainty event.
+7. For a new-chat first Send left RUNNING + reserved, **only a definitely exited same-host original PID** permits the special dead-owner inspection path. Live, foreign or unknown owners never qualify, even when the new page visibly contains a complete answer. The preexisting uncertain-rollover path remains compatible with older reservations.
+8. Owner pause survives restart and recovery. An in-flight Send must settle or be explicitly reconciled under the original request; do not resume historical PAUSED/BLOCKED tasks or silently cancel a stop flag. PI review after recovery is mandatory; model DONE does not establish Goal DONE.
+9. Only Relay-created, provably superseded tabs can be closed, after destination settlement and stable original physical tab provenance. Never close human tabs, navigated tabs, tabs still holding a Send, or an old tab simply because its URL was seen in SQLite.
+10. Normal browser polling is one local DOM observation per 60 seconds. 'Connection interrupted' means wait for the same reply with bounded grace. 'Message delivery timed out' permits at most one unique existing-message **UI Retry**, with original prompt SHA verified, never another composer Send. Do not shorten safety waits to conceal ambiguous side effects.
+11. Fresh owner ChatGPT tasks allow at most **4,000 characters**; PI nextPrompt, queued owner notes and browser one-turn directives allow **1,500**; total browser prompt size is capped at **12,000**. Never silently truncate a full owner Goal to meet a handoff budget; compact only redundant excerpts with exact reserved-prompt reconstruction.
+
+## Goal, PI and execution boundaries
+
+- The Goal Plan/Work Item/Acceptance graph persists independently of Chat and Mission lifetimes. Only PI may mark a work item PASS/PARTIAL/FAIL/REPLAN/BLOCKED. Code, test, build and CI failures are normally repairable; a permanent BLOCKED requires an actual external barrier with evidence and release condition.
+- Current-work executor prompts carry the chosen work item, acceptance, minimal workspace scope and approved next instruction. Do not insert full owner strategy/PI policy or untrusted prior assistant content as owner authority. The initial Goal plan-creation browser turn may receive the full Goal **only for read-only analysis**, even when the eventual Mission has write scope; no work-package execution is authorized until PI has approved a durable Plan and selected exactly one item. Versioned prompt snapshots bind selected work, PI decisions and exact requests in the same transaction; reconstruct snapshots, or use SHA-matched legacy reconstruction, on recovery.
+- PI may review a **fully observed** answer with durable backoff after a typed, temporary operator-managed host inference or browser-read failure. PI retries must never repeat ChatGPT Send. Fresh SQLite controller facts must be presented separately from potentially stale model reports, and a PI decision must cite the exact observed answer SHA.
+- A user-configured native executor may run trusted code through its own plugin; locally configured deterministic checks use argv without a shell, bounded time, process cleanup and a minimal inherited environment. The verification system is not a security sandbox. Do not start/execute a native Mission in a browser-linked Mission.
+- Telegram owner intake is authenticated, deduplicated and durable. Emergency pause is distinct from a restart/deployment permission. The single worker's heartbeat demonstrates Telegram transport only, never Chrome progress.
+
+## Release and operational boundaries
+
+- Do not push secrets, private URLs, browser IDs, prompts/answers, Telegram tokens, SQLite files or private evidence into Git. Run privacy-check and inspect Git status before every public commit.
+- Promote only an exact, clean local SHA identical to authenticated GitHub main with its **own** successful CI/push/main Ubuntu, Windows and macOS jobs including dependency installation, privacy, type check, tests and build. Earlier green commits are not proof for a newer SHA.
+- GMK deployment requires the real read-only SQLite restart preflight **and** an atomic maintenance drain. Any RUNNING/VERIFYING Mission, PI READY work, reserved Send, undelivered Telegram command or event notification blocks maintenance. Use only the enrolled Windows Upgrade task, backed-up private SQLite and existing rollback evidence; never force-stop a live owner, hot-swap dist, fast-forward GMK source by hand, or bypass the drain.
+- Software release and Goal acceptance are **separate**. `software-release-status` qualifies exact-SHA three-platform CI without any Goal; deployment requires runtime gates. Existing `goal-release-*` commands handle historical Goal/business acceptance, not software shipment. PI reports and Git/CI success never establish Goal DONE.
+- Keep private audit journals outside the public source tree, and never restore old snapshots over current production data. Do not publish historical operator identities or paths.
+
+## Verification and code hygiene
+
+- Inspect existing code, AGENTS, STATE, Git, CI and current GMK before modifications. Run targeted tests, then npm run check, npm run privacy-check, npm test, npm run build and git diff --check. Keep TypeScript noUnusedLocals/noUnusedParameters enabled.
+- Tests must use fake executors, synthetic Playwriter pages and isolated SQLite. Never run Send, browser Retry, owner task restart, credential enrollment or a production upgrade as a side effect of ordinary tests.
+- Prefer small typed functions and existing adapters. No extra daemon, database, background scheduler, vendor SDK or component framework without a measured need. Keep legacy branches only when current production/historical data can require them; prove obsolescence before removal.
+- Update durable docs when behavior changes, not by appending a new dated status paragraph to README or AGENTS. Put **only latest state** in STATE; Git retains older milestones. Review and update obsolete documentation claims with each affected change.
+- Finish with clean Git status, a reviewable diff, tests/CI for exact SHA, and explicit distinction between source verified, production deployed and externally accepted. Never mark a Goal or project DONE from model output alone.
