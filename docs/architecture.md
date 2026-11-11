@@ -123,7 +123,7 @@ does not automatically establish a business outcome. Every unmapped
 criterion remains PENDING; this is not a general semantic oracle.
 The gate stays fail-closed without every independent receipt.
 Never confuse a green synthetic test, stored receipt, or source-only DONE
-algorithm with an actual v1.0 production release.
+algorithm with an actual software release and independent business acceptance.
 
 ## System of record
 
@@ -161,7 +161,7 @@ The optional `GoalLedger` in `src/core/goal-store.ts` operates **on the same Sto
 
 All state-changing operations use `Store.atomic()` and durable idempotency keys. Repeated keyed mutations return the original result without another write; repeated Goal creation returns the existing Goal's *current* version. Changed intent using a reused key fails. Optimistic versions reject stale changes, including across separate connections. A separate append-only `goal_events` sequence records lifecycle, plan creation, status, historical evidence references and digests; SQL triggers reject updates and deletes. Versioned Goal/Plan/Work/Acceptance data remains accessible after a restart without any Chat/Mission record. This does **not** migrate historical Missions into invented Goals or modify the existing PI planner, Playwriter, Send, or recovery paths.
 
-**Evidence boundary:** `PASS` and `PASSED` are persisted *PI-reported statuses*, not independent business completion. Goal creation and status are now available through authenticated Telegram owner commands, but only the separate SHA-bound `GoalReleaseGate` can certify immutable DONE, after all independent requirements pass. Neither a Goal API nor synthetic tests prove the v1.0 release. Never migrate an active GMK database outside the original SQLite idle/drain, backup and pull-only upgrade gates.
+**Evidence boundary:** `PASS` and `PASSED` are persisted *PI-reported statuses*, not independent business completion. Goal creation and status are now available through authenticated Telegram owner commands, but only the separate SHA-bound `GoalReleaseGate` can certify immutable DONE, after all independent requirements pass. Neither a Goal API nor synthetic tests prove a software release or business completion. Never migrate an active GMK database outside the original SQLite idle/drain, backup and pull-only upgrade gates.
 
 ### Goal work Prompt isolation (WP3)
 

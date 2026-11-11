@@ -6,8 +6,12 @@ import {existsSync,mkdirSync,renameSync,rmSync,statSync} from 'node:fs';
 import {dirname,join,resolve,isAbsolute} from 'node:path';
 import {pathToFileURL} from 'node:url';
 
-const TABLES=['missions','events','goals','goal_plans','goal_work_items',
-  'goal_acceptance','goal_events','channel_commands'];
+const PROJECT_TABLES=['missions','events','goals','goal_plans','goal_work_items',
+  'goal_acceptance','goal_dependencies','goal_operations','goal_release_checks',
+  'goal_release_completion','goal_release_targets','goal_events',
+  'pi_owner_directives','channel_commands'];
+const RESET_EMPTY_TABLES=[...PROJECT_TABLES,'channel_leases'];
+const SUPPORTED_TABLES=new Set([...RESET_EMPTY_TABLES,'meta']);
 const PRESERVE=['schema_version','telegram.inbox_cursor','telegram.pi.sshHost',
   'telegram.pi.project','telegram.build.project','telegram.agent.workspace',
   'telegram.chatgpt.anchorUrl','telegram.chatgpt.browserId',
@@ -55,8 +59,10 @@ function snapshotSource(db){
   if(!/^https:\/\/chatgpt\.com\/(?:c\/[A-Za-z0-9-]{20,}|g\/[A-Za-z0-9_-]+\/c\/[A-Za-z0-9-]{20,})$/.test(url)||
     !/^[\w.:/-]{1,200}$/.test(browserId))
     throw new Error('Old approved ChatGPT browser launch identity missing or malformed');
-  if(!settings.get('telegram.pi.sshHost')||!settings.get('telegram.pi.project'))
-    throw new Error('PI configuration missing; reset would leave Telegram unusable');
+  if(!settings.get('telegram.pi.sshHost')||!settings.get('telegram.pi.project')||
+    !settings.get('telegram.build.project')||
+    settings.get('telegram.pi.project')!==settings.get('telegram.build.project'))
+    throw new Error('PI host/project and matching approved build scope are required');
   return settings;
 }
 
@@ -83,8 +89,14 @@ export function resetProjectDatabase(dbPath,drainId,auditDir){
     summary={missions:count(original,'missions'),goals:count(original,'goals'),
       events:count(original,'events'),goalEvents:count(original,'goal_events')};
     const schema=original.prepare(
-      "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY rowid"
+      "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY type,name"
     ).all();
+    if(schema.some(item=>!['table','index','trigger'].includes(item.type)))
+      throw new Error('Unsupported SQLite schema object; reset refused');
+    const actualTables=schema.filter(item=>item.type==='table').map(item=>item.name);
+    if(actualTables.length!==SUPPORTED_TABLES.size||
+      actualTables.some(name=>!SUPPORTED_TABLES.has(name)))
+      throw new Error('Unsupported SQLite table set; reset refused');
     target=new DatabaseSync(temp);
     target.exec('PRAGMA foreign_keys=OFF; BEGIN IMMEDIATE');
     try{
@@ -101,7 +113,10 @@ export function resetProjectDatabase(dbPath,drainId,auditDir){
     }catch(err){target.exec('ROLLBACK');throw err}
     if(target.prepare('PRAGMA integrity_check').get().integrity_check!=='ok'||
       target.prepare('PRAGMA foreign_key_check').all().length||
-      TABLES.some(table=>count(target,table)!==0))
+      RESET_EMPTY_TABLES.some(table=>count(target,table)!==0)||
+      JSON.stringify(target.prepare(
+        "SELECT type,name,sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY type,name"
+      ).all())!==JSON.stringify(schema))
       throw new Error('Fresh project database failed independent empty-state checks');
   }finally{
     target?.close();
@@ -131,8 +146,12 @@ export function verifyFreshProjectDatabase(dbPath,drainId){
     if(db.prepare('PRAGMA integrity_check').get().integrity_check!=='ok'||
        db.prepare('PRAGMA foreign_key_check').all().length||
        getMeta(db,'telegram.maintenance.drain')!==drainId||
-       TABLES.some(t=>count(db,t)!==0)||
-       !getMeta(db,'telegram.inbox_cursor')||
+       PROJECT_TABLES.some(t=>count(db,t)!==0)||
+       !/^(0|[1-9][0-9]*)$/.test(getMeta(db,'telegram.inbox_cursor')??'')||
+       !getMeta(db,'telegram.pi.sshHost')||
+       !getMeta(db,'telegram.pi.project')||
+       !getMeta(db,'telegram.build.project')||
+       getMeta(db,'telegram.pi.project')!==getMeta(db,'telegram.build.project')||
        !getMeta(db,'telegram.chatgpt.anchorUrl')||
        !getMeta(db,'telegram.chatgpt.browserId'))
       throw new Error('Fresh project readback failed');

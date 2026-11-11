@@ -1,8 +1,8 @@
 # Mission Relay
 
-Mission Relay is a local-first, Node.js 24+ Mission controller for long-running AI work. It persists goals, plans, bounded execution turns, browser requests, independent review decisions and audit evidence in SQLite. The default path is **Telegram → tool-free PI planning → a user-approved ChatGPT Chrome tab**. An optional, separately installed native executor plugin provides a different execution route; Codex is not bundled with Core.
+Mission Relay is a local-first, Node.js 24+ Mission controller for long-running AI work. It persists goals, plans, unbounded PI Missions, browser requests, independent review decisions and audit evidence in SQLite. Each Chat is limited to five durably observed Relay Sends; new PI Missions have no fixed turn ceiling. The default path is **Telegram → tool-free PI planning → a user-approved ChatGPT Chrome tab**. An optional, separately installed native executor plugin provides a different execution route; Codex is not bundled with Core.
 
-**Version: v1.0.0.** Local-first production operation requires an exact-SHA GitHub CI qualification, a maintenance-gated Windows promotion and independent runtime readback. Package version and CI do not establish that an individual Goal has independently passed its release gate; inspect the current deployed source and [current state](STATE.md) before declaring any Goal DONE.
+**Version: v1.1.0.** Local-first production operation requires an exact-SHA GitHub CI qualification, a maintenance-gated Windows promotion and independent runtime readback. Package version and CI do not establish that an individual Goal has independently passed its release gate; inspect the current deployed source and [current state](STATE.md) before declaring any Goal DONE.
 
 ## Installation and read-only inspection
 
@@ -91,7 +91,8 @@ The TypeScript build rejects unused local imports/parameters; run targeted tests
 ## Documentation map
 
 - [AGENTS.md](AGENTS.md) — durable contributor invariants; read first.
-- [STATE.md](STATE.md) — concise latest observed state and v1.0 release blockers.
+- [STATE.md](STATE.md) — concise latest observed state and current release boundaries.
+- [CHANGELOG.md](CHANGELOG.md) — versioned product changes and known limitations.
 - [Architecture](docs/architecture.md) — execution boundaries, Goal ledger, PI and independent release gates.
 - [Operations](docs/operations.md) — GMK upgrades, SQLite maintenance, recovery and diagnostics.
 - [Telegram](docs/telegram.md) and [browser operations](docs/playwriter-evaluation.md) — configuration and existing user-facing workflows.

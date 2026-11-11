@@ -10,6 +10,10 @@ import {GoalLedger} from '../src/core/goal-store.js';
 
 const cli=resolve('scripts/windows/fresh-project-db.mjs');
 const anchor='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
+const EMPTY_PROJECT_TABLES=['missions','events','goals','goal_plans','goal_work_items',
+  'goal_acceptance','goal_dependencies','goal_operations','goal_release_checks',
+  'goal_release_completion','goal_release_targets','goal_events','pi_owner_directives',
+  'channel_commands','channel_leases'];
 
 function fixture(){
   const home=mkdtempSync(join(tmpdir(),'relay-fresh-preproduction-'));
@@ -26,6 +30,7 @@ function fixture(){
   store.setMeta('telegram.pi.sshHost','approved-pi');
   store.setMeta('telegram.pi.project','/srv/projects/project');
   store.setMeta('telegram.build.project','/srv/projects/project');
+  store.setMeta('telegram.agent.workspace','/srv/projects/project');
   store.setMeta('telegram.inbox_cursor','700001');
   store.setMeta('telegram.notifications_cursor',String(store.maxEventId()));
   store.setMeta('browser.watch.seen','historical-chat-list-must-not-migrate');
@@ -54,6 +59,11 @@ test('fenced fresh reset preserves owner configuration and cursors but zero proj
       assert.equal(reopened.list().length,0);
       assert.equal(new GoalLedger(reopened).listGoals().length,0);
       assert.equal(reopened.maxEventId(),0);
+      const emptyCheck=new DatabaseSync(f.dbFile,{readOnly:true});
+      try{
+        for(const table of EMPTY_PROJECT_TABLES)
+          assert.equal(emptyCheck.prepare(`SELECT count(*) AS n FROM ${table}`).get().n,0,table);
+      }finally{emptyCheck.close()}
       assert.equal(reopened.getMeta('telegram.inbox_cursor'),'700001');
       assert.equal(reopened.getMeta('telegram.notifications_cursor'),null);
       assert.equal(reopened.getMeta('telegram.chatgpt.anchorUrl'),anchor);
@@ -61,6 +71,8 @@ test('fenced fresh reset preserves owner configuration and cursors but zero proj
       assert.equal(reopened.getMeta('telegram.chatgpt.anchorMissionId'),null);
       assert.equal(reopened.getMeta('browser.watch.seen'),null);
       assert.equal(reopened.getMeta('telegram.build.project'),'/srv/projects/project');
+      assert.equal(reopened.getMeta('telegram.pi.project'),'/srv/projects/project');
+      assert.equal(reopened.getMeta('telegram.agent.workspace'),'/srv/projects/project');
       assert.equal(reopened.channelDrainId('telegram'),f.drain);
       assert.equal(reopened.getMeta('telegram.pi.sshHost'),'approved-pi');
     }finally{reopened.close()}
@@ -81,4 +93,48 @@ test('fresh reset fails closed without its original drain and leaves prior recor
     db.close();
     assert.equal(existsSync(join(f.archive,'pre-reset-live.sqlite')),false);
   }finally{f.close()}
+});
+
+test('fresh reset refuses unsupported schema objects before replacing the original database',()=>{
+  const f=fixture();
+  try{
+    const db=new DatabaseSync(f.dbFile);
+    db.exec('CREATE VIEW legacy_test_view AS SELECT id FROM missions');
+    db.close();
+    const result=invoke('--reset',f.dbFile,f.drain,f.archive);
+    assert.notEqual(result.status,0);
+    const readback=new DatabaseSync(f.dbFile,{readOnly:true});
+    try{
+      assert.equal(readback.prepare('SELECT count(*) AS n FROM missions').get().n,1);
+      assert.equal(readback.prepare('SELECT count(*) AS n FROM sqlite_master WHERE type=? AND name=?')
+        .get('view','legacy_test_view').n,1);
+    }finally{readback.close()}
+    assert.equal(existsSync(join(f.archive,'pre-reset-live.sqlite')),false);
+  }finally{f.close()}
+});
+
+test('fresh reset refuses an unknown table and mismatched PI/build scope before replacing state',()=>{
+  for(const mutation of ['unknown-table','mismatched-scope']){
+    const f=fixture();
+    try{
+      const db=new DatabaseSync(f.dbFile);
+      if(mutation==='unknown-table')
+        db.exec('CREATE TABLE future_settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)');
+      else db.prepare('UPDATE meta SET value=? WHERE key=?')
+        .run('/srv/projects/other','telegram.build.project');
+      db.close();
+      const result=invoke('--reset',f.dbFile,f.drain,f.archive);
+      assert.notEqual(result.status,0,mutation);
+      const readback=new DatabaseSync(f.dbFile,{readOnly:true});
+      try{
+        assert.equal(readback.prepare('SELECT count(*) AS n FROM missions').get().n,1);
+        if(mutation==='unknown-table')
+          assert.equal(readback.prepare('SELECT count(*) AS n FROM sqlite_master WHERE type=? AND name=?')
+            .get('table','future_settings').n,1);
+        else assert.equal(readback.prepare('SELECT value FROM meta WHERE key=?')
+          .get('telegram.build.project').value,'/srv/projects/other');
+      }finally{readback.close()}
+      assert.equal(existsSync(join(f.archive,'pre-reset-live.sqlite')),false);
+    }finally{f.close()}
+  }
 });

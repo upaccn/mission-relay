@@ -1,4 +1,4 @@
-# Telegram (experimental, optional)
+# Telegram (optional)
 
 **WP6.1 release evidence update:** The owner-only Goal release CLI may
 read GitHub `main` and an exact Actions run directly through the
@@ -72,7 +72,7 @@ The task manages **Telegram only**, not the separate Playwriter relay server. A 
 
 Native coding-agent plugins configure their own network and authentication. The base Telegram controller does not install or configure a Codex subprocess, require its SDK or set a system-wide proxy.
 
-Do not enable a startup service or publish credentials before an end-to-end mobile test. The current bridge is opt-in, not an unattended-production setup.
+The bridge is opt-in and intended for an owner-controlled interactive Windows session. Its enrolled Scheduled Task can keep the single Worker running while that user is logged on; it is not a Session 0 service and does not run when the owner is logged off.
 
 ### In-process idle-stall recovery (v0.2)
 
@@ -111,7 +111,12 @@ WP5/6 release gates and real GMK smoke testing remain separate.
 
 The vendor-neutral optional native route is `/agent <task>` or `Agent: <task>`, and requires an independently installed executor plugin plus a locally approved `telegram-agent-workspace`. Plain text and `ChatGPT:` remain browser-first without native executor selection. Vendor-specific aliases (`/codex`, `Codex:`) are **not** supported by the new CLI; they were used in earlier prototypes. See [plugin API](plugin-api.md).
 
-`/list [page]`, `/history [page]`, `/status <uuid>`, `/handoff <uuid>`, `/continue <uuid> v<revision>`, `/pause <uuid>`, `/resume <uuid> v<revision>`, `/instruct <uuid> v<revision> <text>`, `/cancel <uuid> v<revision>`.
+`/list [page]`, `/history [page]`, `/status [uuid]`, `/handoff <uuid>`, `/continue <uuid> v<revision>`, `/pause [uuid]`, `/resume <uuid> v<revision>`, `/instruct <uuid> v<revision> <text>`, `/cancel <uuid> v<revision>`.
+
+For convenience, `/status` without an ID selects the latest non-archived
+Mission. `/pause` without an ID targets the sole eligible active Mission;
+when more than one task could be affected, specify its UUID. Neither command
+requires copying a revision number.
 
 `/list` presents **actionable** Missions in eight-item pages. Ambiguous Sends and `NEEDS_RECONCILIATION` come before ordinary RUNNING, BLOCKED and READY tasks, regardless of age. `/list 2` and the Previous/Next inline buttons expose older actionable records, including paused PI checkpoints. `/history` and `/history 2`, etc., page the **entire** Mission ledger newest-first, including live and unresolved records, with archival labels; history is not a business-completion verdict. Each entry includes its version and full `/status` link. Task messages and notifications have **read-only Telegram inline buttons** for viewing or refreshing status, moving between pages, returning to Tasks, and opening History. Callback actions use the same authenticated owner and private chat restrictions and the existing deduplicated Telegram update ledger. They cannot approve, restart, delete or reconcile a Mission. This is an inline-keyboard UI, not a custom Telegram Mini App or editable HTML card.
 
@@ -190,7 +195,14 @@ After updating code, `npm run build` and restart the existing foreground Telegra
 
 `/handoff` returns a locally linked ChatGPT conversation URL and a manual continuation prompt. `/continue` on a linked Mission executes a **Playwriter browser continuation** (up to three turns) in that exact operator-enabled Chrome tab; on an unlinked Mission, it requires a separately installed native executor plugin. There is never silent fallback. **Before browser continuation, bind the intended Chrome profile locally using `browser-list` then `browser-bind`.** See [ChatGPT browser control](playwriter-evaluation.md).
 
-**Revision required:** All mutating commands **except emergency `/pause`** require the current mission revision (for example, `/continue 123e4567-e89b-42d3-a456-426614174000 v0`). First issue `/status <uuid>`; it prints the current revision as `v0`, `v1`, etc. After any state/event change, retrieve the latest revision again. A stale or missing revision is rejected, rather than reinterpreted against a changed mission. `/list` also shows the current revision. `/pause <uuid>` intentionally remains revision-free so a stop request works even while turn events are advancing the revision. This is an intentional protocol change from the initial phone acceptance trial; upgrade the foreground poller before using the new syntax.
+**Revision required:** Mutating continuation commands such as `/continue`,
+`/resume`, `/instruct` and `/cancel` require the current Mission revision
+(for example, `/continue 123e4567-e89b-42d3-a456-426614174000 v0`). Issue
+`/status [uuid]` to read it. A stale or missing revision is rejected rather
+than reinterpreted against a changed Mission. `/pause [uuid]` intentionally
+remains revision-free so an emergency stop works while turn events are
+advancing the revision; omitting its UUID is allowed only when one eligible
+task is unambiguous.
 
 **Legacy remote continuation is read-only:** Telegram `/continue` and `/resume` reject all `workspace-write` missions, including locally created native-engine tasks. The separate owner-authorized `/build` route is PI-owned, and accepts queued owner `/instruct` notes only within the original approved source scope; it never falls back to the legacy `/continue` driver. Telegram `/pause` and `/cancel` remain available as stop controls and cannot expand write permissions.
 

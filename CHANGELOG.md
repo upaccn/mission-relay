@@ -1,0 +1,31 @@
+# Changelog
+
+## 1.1.0 — 2026-11-11
+
+### Product and workflow
+
+- New PI Missions have no fixed Mission-level turn ceiling. The five-observed-Send limit per Chat remains enforced; legacy finite-limit Missions retain their saved behavior.
+- Goal planning, plan validation, work-item selection and PI review are system-owned. The former user-facing stage/verify/review/activate workflow is removed.
+- Telegram `/status` defaults to the latest non-archived Mission. `/pause` can omit its UUID only when one eligible active Mission is unambiguous.
+- The approved ChatGPT launch URL and Chrome profile are stored independently from any Mission, so a fresh project does not depend on historical task records.
+
+### Operations and recovery
+
+- Adds the explicit, one-time Windows `ResetProjects -ConfirmResetProjects` operation for pre-production history cleanup. It requires an idle preflight and atomic drain, captures a private SQLite backup, independently restores it, rebuilds the same supported schema without project rows, preserves owner connection configuration and the Telegram inbox cursor, then verifies the replacement Worker before releasing maintenance.
+- The reset refuses unsupported SQLite schema objects and checks every Mission, Goal, Acceptance, dependency, release, owner-directive and command table for emptiness.
+- Documents the human-facing interaction contract and the safe first-project baseline.
+
+### Compatibility and quality
+
+- CI now tests Node.js 24 and 26 on Ubuntu, Windows and macOS (six matrix jobs).
+- Runtime remains Node.js 24+; the GMK deployment runs Node.js 26.
+- Legacy finite-limit Mission records and their historical successor evidence remain readable.
+
+### Known dependency audit
+
+- At release qualification, `npm audit --omit=dev` reports seven **moderate** transitive advisories in the pinned Playwriter 0.9.0 dependency tree; no high or critical advisories were reported.
+- The suggested Playwriter 0.5.0 downgrade is a breaking browser-integration change, not a safe patch. The pinned integration is retained until an upstream-compatible update can be qualified against the actual Chrome extension, tab custody and recovery paths. Re-run the dependency audit when updating Playwriter.
+
+## 1.0.0 — 2026-11-11
+
+- Initial public v1.0 baseline and exact-SHA, three-platform release qualification.
