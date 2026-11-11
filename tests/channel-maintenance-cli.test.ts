@@ -63,7 +63,12 @@ test('enrolled task channel and drain status remain read-only while the final SQ
         assert.equal(channel.source,'telegram');
         assert.equal(channel.drainRequested,false);
       }else assert.equal(channel.requested,false);
-      assert.equal(status.stderr,'');
+      // Node 26 reports a loader-only DEP0205 warning from the pinned tsx
+      // --import hook. This is not output from the read-only CLI. Reject
+      // every other stderr message rather than suppressing all warnings.
+      const loaderWarning=/^\(node:\d+\) \[DEP0205\] DeprecationWarning: `module\.register\(\)` is deprecated\. Use `module\.registerHooks\(\)` instead\.\r?\n\(Use `node --trace-deprecation \.\.\.` to show where the warning was created\)\r?\n$/;
+      assert.ok(status.stderr===''||loaderWarning.test(status.stderr),
+        `Unexpected CLI stderr: ${status.stderr}`);
       }
     }finally{store.db.exec('ROLLBACK');}
   }finally{store.close();rmSync(home,{recursive:true,force:true});}
