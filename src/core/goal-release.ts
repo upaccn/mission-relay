@@ -11,7 +11,7 @@ import {inspectGoalRequestLedger} from './request-ledger.js';
  * no CLI command that accepts a user/model-supplied PASS flag or receipt. */
 export const RELEASE_GATES=[
   'check','privacy-check','test','build','ci-ubuntu','ci-macos','ci-windows',
-  'chrome-5-to-6','mission-32-successor','maintenance-resume',
+  'chrome-5-to-6','maintenance-resume',
   'relay-tab-retirement','gmk-production-readback',
 ] as const;
 export type ReleaseGate=typeof RELEASE_GATES[number];

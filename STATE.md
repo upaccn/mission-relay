@@ -11,7 +11,8 @@
 ## Operational invariants
 
 - One Windows interactive-user Worker with Playwriter/Chrome access and a user-scoped, optionally hidden Telegram Scheduled Task. A session-0 service cannot substitute for an interactive Chrome Worker.
-- At most five durable Relay Sends per Chat and 32 turns per Mission. Never resend an uncertain original request. Owner pauses and historic events remain immutable unless a separately authorized, verified state transition occurs.
+- New PI Missions have no turn ceiling (stored `max_turns=0`); the five-observed-Send limit per Chat is unchanged. Previously created bounded Missions retain their saved limits and historical successor evidence. Never resend an uncertain original request. Owner pauses and historic events remain immutable unless a separately authorized, verified state transition occurs.
+- Telegram uses a short daily `/help` menu and an opt-in `/help advanced` reference; low-frequency legacy routes remain available without advertising them as the default user experience.
 - The remote PI adapter inherits its operator-configured default model, provider and thinking settings. Its SSH project and host are configured privately rather than embedded in source.
 - Source-controlled old audit snapshots are retired from the public tree. The authoritative private production database and its recovery materials are not deleted as part of a Git history cleanup.
 

@@ -431,20 +431,17 @@ test('GoalReleaseGate stores only a verified successor source-SHA receipt and ca
       ['browser-sha256:'+sha(childAnswer)],'synthetic-work-passed');
     const gate=new GoalReleaseGate(f.store),begin=gate.begin(f.goalId,SRC_SHA);
     assert.equal(begin.target?.targetSha,SRC_SHA);
-    assert.equal(begin.checks.find(x=>x.requirement==='mission-32-successor')?.state,'PENDING');
-    const stored=await gate.inspect(f.goalId,'mission-32-successor',{
-      source:'chrome-readback',
-      inspect:async(requirement,sha)=> {
-        assert.equal(requirement,'mission-32-successor');
-        return inspectStoredGoalSuccessorWitnesses(f.store,f.goalId,f.dir,sha);
-      },
-    });
-    const receipt=stored.checks.find(x=>x.requirement==='mission-32-successor')!;
-    assert.equal(receipt.state,'PASS');
-    assert.equal(receipt.targetSha,SRC_SHA);
-    assert.match(receipt.proofSha256!,/^[a-f0-9]{64}$/);
-    assert.equal(stored.ready,false);
-    assert.equal(stored.complete,false);
+    assert.equal(begin.checks.find(x=>x.requirement==='mission-32-successor'),undefined,
+      'new release targets do not require a historical 32-turn handoff');
+    // Legacy persisted witnesses remain independently verifiable and immutable.
+    const evidence=await inspectStoredGoalSuccessorWitnesses(f.store,f.goalId,f.dir,SRC_SHA);
+    assert.equal(evidence.state,'PASS');
+    assert.match(evidence.proofSha256,/^[a-f0-9]{64}$/);
+    await assert.rejects(gate.inspect(f.goalId,'mission-32-successor',{
+      source:'chrome-readback',inspect:async()=>evidence,
+    }),/requirement|target|registered/i);
+    assert.equal(begin.ready,false);
+    assert.equal(begin.complete,false);
     await assert.rejects(gate.finalize(f.goalId,async()=>SRC_SHA),/missing|failed|stale/);
     assert.equal(f.store.events(childId).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
   }finally{f.close();}

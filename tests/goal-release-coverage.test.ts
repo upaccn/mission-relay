@@ -33,22 +33,22 @@ function fixture(counts:number[]=[4,3,4,3,3,3,3,4]){
   }};
 }
 
-test('release coverage maps all 39 Goal requirements with distinct candidate vs trusted evidence',()=>{
+test('release coverage maps 38 active Goal requirements without obsolete 32-turn gate',()=>{
   const f=fixture();
   try{
     const beforeEvents=f.ledger.graph(f.goal.id).events.length;
     const first=inspectGoalReleaseCoverage(f.store,f.goal.id,sha);
-    assert.equal(first.requirements.length,39);
-    assert.equal(first.summary.total,39);
+    assert.equal(first.requirements.length,38);
+    assert.equal(first.summary.total,38);
     assert.equal(first.summary.recordedPass,0);
-    assert.equal(first.summary.unverified,39);
+    assert.equal(first.summary.unverified,38);
     assert.equal(first.candidateSha,sha);
     assert.equal(first.releaseTargetSha,null);
     assert.ok(first.requirements.every(row=>row.existingTargetState==='PENDING'&&
       row.candidateState==='NOT_TARGET'&&row.missing.length>0));
     const fixed=first.requirements.filter(row=>row.kind==='fixed');
-    assert.equal(fixed.length,12);
-    for(const name of ['chrome-5-to-6','mission-32-successor',
+    assert.equal(fixed.length,11);
+    for(const name of ['chrome-5-to-6',
       'maintenance-resume','relay-tab-retirement']){
       const row=fixed.find(x=>x.requirement===name);
       assert.ok(row);
@@ -83,11 +83,11 @@ test('release matrix excludes superseded plan work and criteria without deleting
     assert.equal(graph.acceptance.length,3,'historical acceptance must be preserved');
     const matrix=inspectGoalReleaseMatrix(f.store,f.goal.id);
     assert.deepEqual(matrix.workItems.map(item=>item.key),['new-work']);
-    assert.equal(matrix.requirements.length,13,'only current criterion plus twelve fixed gates');
+    assert.equal(matrix.requirements.length,12,'only current criterion plus eleven fixed gates');
     for(const criterion of oldCriteria)
       assert.ok(!matrix.requirements.some(r=>r.requirement===`criterion:${criterion}`));
     const coverage=inspectGoalReleaseCoverage(f.store,f.goal.id,sha);
-    assert.equal(coverage.summary.total,13);
+    assert.equal(coverage.summary.total,12);
     assert.deepEqual(coverage.workItems.map(item=>item.key),['new-work']);
     assert.equal(f.ledger.graph(f.goal.id).acceptance.length,3,
       'diagnostic readbacks must not rewrite historical plan rows');
@@ -269,7 +269,7 @@ test('read-only coverage CLI cannot create a missing SQLite database or accept m
     assert.equal(valid.status,0,valid.stderr);
     const report=JSON.parse(valid.stdout) as {candidateSha:string;summary:{total:number}};
     assert.equal(report.candidateSha,sha);
-    assert.equal(report.summary.total,12);
+    assert.equal(report.summary.total,11);
     const reopened=new Store(join(home,'missions.sqlite'),{readOnly:true});
     try{
       assert.equal(logicalDigest(reopened),originalDigest,

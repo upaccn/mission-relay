@@ -6,6 +6,7 @@ import {inspectChatPage,lastVisibleUserPromptSha256,chatTabTargetSha256} from '.
 import {executeBrowserTurn,executeBrowserRollover,retireSupersededRelayTab,browserFreshTaskPrompt,browserGoalPlanningPrompt,
   browserNewChatPrompt,browserTaskPolicy,executorTaskGoal,type BrowserTurnOutcome} from './browser-controller.js';
 import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
+import {missionTurnLimitReached,missionTurnsRemaining} from './mission-turns.js';
 import {withReadOnlyDeadline} from './read-only-deadline.js';
 import {GoalLedger} from './goal-store.js';
 import {reviewGoalPiRound} from './goal-pi.js';
@@ -227,12 +228,12 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
   if(chainParentId&&origin.turnCount===0){
     const parent=store.get(chainParentId),plan=store.piPlan(chainParentId);
     const receipt=store.chatBrowserTurn(chainParentId);
-    if(parent.turnCount!==parent.maxTurns||parent.stopRequested||parent.lastError||
+    if((parent.maxTurns===0||parent.turnCount!==parent.maxTurns)||parent.stopRequested||parent.lastError||
       plan?.round!==parent.maxTurns||!['NEXT','HANDOFF'].includes(plan.action)||
       !receipt||!store.hasVerifiedPiBrowserCheckpoint(chainParentId)||
       receipt.assistantSha256!==plan.responseSha256||
       store.piChainSuccessor(chainParentId)!==missionId)
-      throw new Error('PI chain source is not a verified, continuing 32-turn checkpoint');
+      throw new Error('PI chain source is not a verified legacy bounded-Mission checkpoint');
     const first=await withReadOnlyDeadline(inspectChatPage(page,url));
     if(first.generating||!first.composerReady||
       await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))!==receipt.promptSha256||
@@ -294,7 +295,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
         nextPlan=await reviewPiRound(store,planner,missionId,
           last.assistantSha256,input.recoveredAnswer.lastAssistant,origin.turnCount,true);
         revision=store.get(missionId).version;
-        if(['DONE','BLOCKED'].includes(nextPlan.action)||origin.turnCount>=origin.maxTurns)return;
+        if(['DONE','BLOCKED'].includes(nextPlan.action)||missionTurnLimitReached(origin.maxTurns,origin.turnCount))return;
       }else{
         if(['DONE','BLOCKED'].includes(plan.action))return;
         if(!['NEXT','HANDOFF'].includes(plan.action))
@@ -308,10 +309,10 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
         throw new Error('PI recovery refused: the pending unreviewed browser response was not independently re-observed');
       nextPlan=await reviewPiRound(store,planner,missionId,
         input.recoveredAnswer.responseSha256,input.recoveredAnswer.lastAssistant,origin.turnCount);
-      if(['DONE','BLOCKED'].includes(nextPlan.action)||origin.turnCount>=origin.maxTurns)return;
+      if(['DONE','BLOCKED'].includes(nextPlan.action)||missionTurnLimitReached(origin.maxTurns,origin.turnCount))return;
     }
   }
-  for(let i=origin.turnCount;i<origin.maxTurns;i++){
+  for(let i=origin.turnCount;missionTurnsRemaining(origin.maxTurns,i);i++){
     const before=store.get(missionId);
     let exactSource:{promptSha256:string;assistantSha256:string}|undefined;
     if(before.stopRequested) return;
@@ -450,7 +451,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
     if(store.get(missionId).stopRequested)return;
     nextPlan=await reviewPiRound(store,planner,missionId,
       received.assistantSha256,lastAssistant,received.turnCount);
-    if(['DONE','BLOCKED'].includes(nextPlan!.action)||received.turnCount>=origin.maxTurns)
+    if(['DONE','BLOCKED'].includes(nextPlan!.action)||missionTurnLimitReached(origin.maxTurns,received.turnCount))
       return;
     revision=store.get(missionId).version;
   }

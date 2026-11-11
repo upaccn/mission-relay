@@ -241,8 +241,10 @@ test('every registered ReleaseProbe has an exact source binding, with no cross-s
     'gmk-production-readback':'gmk-readback',
     'criterion:123e4567-e89b-42d3-a456-426614174001':'independent-work',
   };
+  // The old 32-to-successor probe remains a supported legacy evidence source,
+  // but it is no longer a gate when registering a new Goal release target.
   assert.deepEqual(Object.keys(bound).filter(x=>!x.startsWith('criterion:')).sort(),
-    [...RELEASE_GATES].sort());
+    [...RELEASE_GATES,'mission-32-successor'].sort());
   const allSources=['local-command','github-actions','chrome-readback',
     'maintenance-readback','gmk-readback','independent-work','model-answer',null];
   for(const [requirement,source] of Object.entries(bound)){

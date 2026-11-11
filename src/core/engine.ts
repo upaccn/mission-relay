@@ -1,5 +1,6 @@
 import type { AgentAdapter, CreateMission, Decision, Mission, Verification } from './types.js';
 import { Store } from './store.js';
+import {missionTurnLimitReached,formatMissionTurns} from './mission-turns.js';
 import { runChecks } from './checks.js';
 
 function compactError(error: unknown): string {
@@ -19,7 +20,7 @@ export class Engine {
       'You are an AI executor working under a durable external Mission Controller.',
       `Mission ID: ${m.id}`, `Goal: ${m.goal}`,
       'Acceptance criteria:', ...m.acceptance.map((a,i) => `${i+1}. ${a}`),
-      `Current turn: ${m.turnCount + 1} of ${m.maxTurns}`,
+      `Current turn: ${formatMissionTurns(m.turnCount+1,m.maxTurns)}`,
       `Instruction for this turn: ${instruction}`,
       'Work only in the authorized workspace and within the configured sandbox.',
       'Do not deploy to production, spend money, delete external resources, or expand permissions.',
@@ -42,7 +43,7 @@ export class Engine {
       while (m.state === 'RUNNING') {
         m = this.store.get(id);
         if (m.stopRequested) return this.stop(m, 'Operator requested pause');
-        if (m.turnCount >= m.maxTurns) return this.stop(m, 'Turn budget exhausted');
+        if (missionTurnLimitReached(m.maxTurns,m.turnCount)) return this.stop(m, 'Turn budget exhausted');
         const dispatchedInstruction = m.nextInstruction;
         const prompt = this.prompt(m);
         this.store.update(id,m.version,{},'turn.dispatched',{turn: m.turnCount+1, threadId:m.threadId, sandbox:m.sandbox});
@@ -149,7 +150,7 @@ export class Engine {
     if(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1')
       throw new Error('PI-owned Mission cannot use generic resume; use local pi-resume after a settled, verified checkpoint');
     if (!['PAUSED','BLOCKED'].includes(m.state)) throw new Error(`Cannot resume ${m.state}`);
-    if (m.turnCount >= m.maxTurns) throw new Error('Turn budget exhausted; create a follow-up mission');
+    if (missionTurnLimitReached(m.maxTurns,m.turnCount)) throw new Error('Turn budget exhausted; create a follow-up mission');
     return this.store.update(id,m.version,{state:'READY',lastError:null,stopRequested:false},'mission.resumed',{});
   }
   instruct(id: string, note: string, expectedVersion?: number): Mission {

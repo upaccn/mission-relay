@@ -1,5 +1,5 @@
 /** Maximum Relay-submitted turns per ChatGPT conversation.
- * This is independent from the 32-send Mission budget. New PI turns must
+ * This is independent of any Mission turn budget. New PI turns must
  * automatically HANDOFF at this limit rather than growing the same Chrome
  * conversation. Keep controller, audit, and operator status in sync.
  */

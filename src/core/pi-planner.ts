@@ -235,7 +235,7 @@ export function piDecisionPrompt(input:PiTurnContext):string {
     'If actionable authorized work remains, choose NEXT and write ONE precise nextPrompt; do not repeat completed steps.',
     'If a new chat is genuinely needed due to context size, choose HANDOFF and provide a succinct self-contained nextPrompt.',
     'In NEXT/HANDOFF summaries preserve the real remaining verification gate and any actually evidenced Git HEAD SHA or SQLite response receipt; never invent a commit, event ID or CI result.',
-    'At turn 32/32, if authorized work remains, still choose NEXT or HANDOFF. The controller can create one new Mission with the same owner-approved scope, independently verified predecessor SHA-256, and a fresh ChatGPT conversation. Do not choose DONE merely because this Mission budget ended.',
+    'The Mission has no fixed turn ceiling. Continue only while authorized work remains; choose DONE or BLOCKED from substantive evidence, and HANDOFF only when a fresh Chat is necessary.',
     'Owner updates have priority over the assistant and your earlier suggestions; combine all supplied owner updates.',
     'If the owner explicitly instructs that they will manually do the next step, choose BLOCKED and identify that step.',
     'Return exactly ONE JSON object and no Markdown, with keys:',
@@ -244,7 +244,7 @@ export function piDecisionPrompt(input:PiTurnContext):string {
     `Goal: ${input.goal}`,
     `Authorization mode: ${writeScope?'workspace-write':'read-only'}`,
     'Acceptance:',...input.acceptance.map((x,i)=>`${i+1}. ${x}`),
-    `Observed browser turn: ${input.turnCount}/${input.maxTurns}`,
+    `Observed browser turn: ${input.turnCount}${input.maxTurns===0?'':`/${input.maxTurns}`}`,
     `Full visible answer SHA-256: ${input.responseSha256}`,
     `Full visible answer characters: ${input.lastAssistant.length}`,
     ...(input.priorPiSummary?[

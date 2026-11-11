@@ -1,4 +1,5 @@
 import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
+import {missionTurnLimitReached} from './mission-turns.js';
 import {createHash} from 'node:crypto';
 import {withReadOnlyDeadline} from './read-only-deadline.js';
 import type {Page} from 'playwriter';
@@ -472,7 +473,7 @@ export async function driveChatConversation(input:{
     else pendingHandoff=null;
     const latest=input.store.get(input.missionId);
     if(!['NEXT','HANDOFF'].includes(signal)||latest.stopRequested||
-      latest.turnCount>=latest.maxTurns)break;
+      missionTurnLimitReached(latest.maxTurns,latest.turnCount))break;
   }
   return {state:input.store.get(input.missionId).state,turnsObserved:results};
 }

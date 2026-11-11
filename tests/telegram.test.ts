@@ -59,6 +59,27 @@ const fixture=()=>{
     cleanup:()=>{store.close();rmSync(dir,{force:true,recursive:true});}};
 };
 
+test('Telegram /help presents a short human-facing menu; rare commands remain discoverable',async()=>{
+  const f=fixture();
+  try{
+    f.transport.updates=[f.message(51,'/help')];
+    await f.bridge.pollOnce(0);
+    const compact=f.transport.sent.at(-1)!;
+    assert.match(compact,/send a task as a normal message/i);
+    assert.match(compact,/\/build <task>/);
+    assert.match(compact,/\/pause <mission-id>/);
+    assert.match(compact,/\/help advanced/);
+    assert.ok(compact.split('\n').length<=11);
+    assert.doesNotMatch(compact,/\/goal-stage|\/goal-review|\/continue|\/resume/);
+    f.transport.updates=[f.message(52,'/help advanced')];
+    await f.bridge.pollOnce(0);
+    const advanced=f.transport.sent.at(-1)!;
+    assert.match(advanced,/\/goal-stage/);
+    assert.match(advanced,/\/resume/);
+    assert.equal(f.engine.list().length,1,'help must never start a Mission');
+  }finally{f.cleanup();}
+});
+
 test('fenced replacement Worker probes connectivity without accepting, acknowledging or sending',async()=>{
   const f=fixture();try{
     f.store.setMeta('telegram.inbox_cursor','41');

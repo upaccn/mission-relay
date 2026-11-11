@@ -1,4 +1,5 @@
 import {MAX_RELAY_CHAT_TURNS} from '../core/chat-limits.js';
+import {missionTurnsRemaining,missionTurnLimitReached,formatMissionTurns} from '../core/mission-turns.js';
 import type { PluginManifest } from '../core/plugins.js';
 import {createHash} from 'node:crypto';
 import { Engine } from '../core/engine.js';
@@ -229,7 +230,7 @@ export function formatPiNotification(m:Mission,event:MissionEvent):string {
     typeof payload.action==='string'?payload.action:'UNKNOWN';
   const summary=typeof payload.summary==='string'?payload.summary:
     typeof payload.reason==='string'?payload.reason:'No PI decision summary';
-  return [`Mission ${m.id}: PI ${action} — ${m.turnCount}/${m.maxTurns} ChatGPT turns`,
+  return [`Mission ${m.id}: PI ${action} — ${formatMissionTurns(m.turnCount,m.maxTurns)} ChatGPT turns`,
     'Result (PI model-reviewed, not independently verified):',
     compactTelegramText(summary,850),
     action==='INTERRUPTED'?'No new browser Send has been authorized; inspect before resuming.':'',
@@ -239,7 +240,7 @@ export function formatPiNotification(m:Mission,event:MissionEvent):string {
 function formatPiProgress(m:Mission,event:MissionEvent):string {
   const payload=event.payload && typeof event.payload==='object'
     ?event.payload as {action?:unknown;round?:unknown;summary?:unknown}:{};
-  return [`PI Mission ${m.id}: round ${typeof payload.round==='number'?payload.round:m.turnCount}/${m.maxTurns} observed`,
+  return [`PI Mission ${m.id}: round ${formatMissionTurns(typeof payload.round==='number'?payload.round:m.turnCount,m.maxTurns)} observed`,
     `PI decision: ${String(payload.action??'UNKNOWN')}`,
     `Progress (model-reviewed): ${compactTelegramText(typeof payload.summary==='string'?payload.summary:'',520)}`,
     'Owner notes received during the next ChatGPT turn will be queued for the following PI decision.',
@@ -253,7 +254,7 @@ export function formatBrowserResultNotification(m:Mission,event:MissionEvent):st
     ?event.payload as {excerpt?:unknown;round?:unknown;reason?:unknown}:{};
   if(event.type==='chatgpt.browser_uncertain')
     return [`Mission ${m.id}: NEEDS_RECONCILIATION`,
-      `Round: ${typeof data.round==='number'?data.round:m.turnCount}/${m.maxTurns}`,
+      `Round: ${formatMissionTurns(typeof data.round==='number'?data.round:m.turnCount,m.maxTurns)}`,
       'Browser send or reply is ambiguous; no automatic replay.',
       'Inspect the Chrome conversation before manual reconciliation.',
       `Use /status ${m.id} for details.`].join('\n');
@@ -274,7 +275,7 @@ export function formatBrowserResultNotification(m:Mission,event:MissionEvent):st
     .map(x=>x.length>190?'…'+x.slice(-189):x);
   // Redact recognizable credential formats if a model accidentally quotes one.
   const round=typeof data.round==='number'?data.round:m.turnCount;
-  const text=[`Mission ${m.id} — turn ${round}/${m.maxTurns}`,
+  const text=[`Mission ${m.id} — turn ${formatMissionTurns(round,m.maxTurns)}`,
     'ChatGPT result (model-provided; not independently verified):',
     ...lines.map(redactTelegramText),
     ...(finalMarker?[finalMarker]:[]),
@@ -537,11 +538,11 @@ export class TelegramBridge {
         (!!this.store.piChainParent(m.id)||ledger.missionGoalId(m.id)!==null))||
       (m.state==='PAUSED'&&
         (m.turnCount>0||this.store.chatAdoption(m.id)!==null)))&&
-      m.turnCount<=m.maxTurns&&
+      (m.maxTurns===0||m.turnCount<=m.maxTurns)&&
       (correctedPending||this.store.piChainParent(m.id)&&m.turnCount===0||
        m.turnCount===0&&ledger.missionGoalId(m.id)!==null||
        plan?.round!==m.turnCount||
-        (m.turnCount<m.maxTurns&&
+        (missionTurnsRemaining(m.maxTurns,m.turnCount)&&
          ['NEXT','HANDOFF'].includes(plan?.action??'')));
     });
     if(!candidates.length)return;
@@ -672,7 +673,7 @@ export class TelegramBridge {
         }
         if(event.type==='pi.decision' &&
           (!['NEXT','HANDOFF'].includes(String((event.payload as {action?:unknown})?.action))||
-            Number((event.payload as {round?:unknown})?.round)>=this.store.get(event.missionId).maxTurns)){
+            missionTurnLimitReached(this.store.get(event.missionId).maxTurns,Number((event.payload as {round?:unknown})?.round)))){
           cursor=event.id;
           this.store.setMeta('telegram.notifications_cursor',String(cursor));
           continue;
@@ -777,7 +778,7 @@ export class TelegramBridge {
           goal,acceptance:[writeWorkspace?
             'Implement the owner goal inside the approved source repository, verify changed files, tests and Git/CI evidence before claiming completion':
             'Substantively answer the owner request with evidence within read-only permissions'],
-          workspace:writeWorkspace??'',sandbox:writeWorkspace?'workspace-write':'read-only',mode:'supervised',maxTurns:32,
+          workspace:writeWorkspace??'',sandbox:writeWorkspace?'workspace-write':'read-only',mode:'supervised',maxTurns:0,
           requestKey,checks:[],
         });
         const linked=this.store.linkChat(m.id,url,m.version).mission;
@@ -806,7 +807,7 @@ export class TelegramBridge {
         try{await session.close();}catch{console.error('PI Playwriter session cleanup warning');}
         finally{this.activeMission=null;this.activeTask=null;}
       });
-      return `${ownerGoal?`Goal ${ownerGoal.id} created (persistent; not yet independently accepted).\n`:''}PI-coordinated ChatGPT Mission ${m.id} accepted (${writeWorkspace?'workspace-write':'read-only'}, up to 32 turns, max ${MAX_RELAY_CHAT_TURNS} per chat).\n${writeWorkspace?`Approved source: ${writeWorkspace}\n`:''}PI reviews each complete ChatGPT answer and decides the next action.\nAdditional plain-text instructions are queued for PI. Progress: /status ${m.id}.${ownerGoal?` Goal: /goal-status ${ownerGoal.id}.`:''} Do not resend.`;
+      return `${ownerGoal?`Goal ${ownerGoal.id} created (persistent; not yet independently accepted).\n`:''}PI-coordinated ChatGPT Mission ${m.id} accepted (${writeWorkspace?'workspace-write':'read-only'}, unbounded Mission turns, max ${MAX_RELAY_CHAT_TURNS} per chat).\n${writeWorkspace?`Approved source: ${writeWorkspace}\n`:''}PI reviews each complete ChatGPT answer and decides the next action.\nAdditional plain-text instructions are queued for PI. Progress: /status ${m.id}.${ownerGoal?` Goal: /goal-status ${ownerGoal.id}.`:''} Do not resend.`;
     }catch(error){
       try{await session.close();}catch{console.error('PI source preflight cleanup warning');}
       throw error;
@@ -821,7 +822,7 @@ export class TelegramBridge {
     if(!text||text.length>1500)
       throw new Error('PI instruction must contain 1–1500 characters');
     const accepted=this.store.queuePiOwnerDirective(id,commandId,text);
-    // On a verified 32/32 Goal continuation the Store atomically routes
+    // On a verified legacy bounded Goal continuation the Store atomically routes
     // this note to the child, never to the already-exhausted parent.
     let actual=id;
     const visited=new Set<string>();
@@ -920,33 +921,26 @@ export class TelegramBridge {
     const clean=text.trim();
     const [cmd,id,...words]=clean.split(/\s+/);
     if(!cmd) return 'Send /help for available commands.';
-    if(cmd==='/help'||cmd==='/start') return [
-      'Mission Relay (single authorized user)',
-      '/list [page] — tasks requiring attention, unresolved first',
-      '/history [page] — full Mission history (kept for audit)',
-      'Plain text, ChatGPT: and /auto — PI plans up to 32 read-only turns per Mission, max 5 per chat',
-      '/goal <long-term objective> — create one durable read-only Goal; PI manages work packages',
-      '/goal-build <long-term objective> — Goal with locally approved workspace-write scope',
-      '/goal-stage <objective> — atomically stage an independent held zero-turn Goal (no PI or browser Send)',
-      '/goal-stage-build <objective> — stage with the existing locally approved build workspace',
-      '/goal-verify <goal-id> — independently read the staged checkpoint and zero-turn invariants',
-      '/goal-review <goal-id> — issue or renew an expired PI review; separate activation required',
-      '/goal-activate <goal-id> <checkpoint-sha256> — explicit owner activation, subject to fresh safety gates',
-      '/goals [page] — list persistent Goals; /goal-status <goal-id> — plan, active work and evidence status',
-      '/auto <task> — start PI-managed read-only ChatGPT autopilot',
-      '/build <task> — implement in the configured repository',
-      'While PI is working, send plain text to queue owner instructions for its next decision',
-      '/new <task> — same as plain text, one new ChatGPT conversation',
-      '/agent <task> — optional installed native executor (no vendor required)',
-      'Agent: <task> or ChatGPT: <task> — route only when requested',
-      '/status <mission-id> — shows current revision',
-      '/handoff <mission-id> — link and manual prompt for existing ChatGPT chat',
-      '/continue <mission-id> v<revision> — native executor or linked ChatGPT (up to 3 turns)',
-      '/pause <mission-id> — best-effort stop (no revision needed)',
-      '/resume <mission-id> v<revision> — reopens a paused mission without running',
-      '/instruct <mission-id> v<revision> <instruction>',
-      '/cancel <mission-id> v<revision> — only an inactive mission',
-      'Reconciliation, secrets and high-risk approvals are CLI-only.',
+    if(cmd==='/help'||cmd==='/start') return id==='advanced'?[
+      'Mission Relay — advanced commands (rarely needed)',
+      '/history [page] — historical audit; /goals [page] and /goal-status <id> — Goals',
+      '/handoff <id> — open linked ChatGPT context; /new <task> — single-turn chat',
+      '/auto <task> — alias for plain-text task; /agent <task> — installed native executor',
+      '/goal-stage and /goal-stage-build — held Goal creation',
+      '/goal-verify, /goal-review, /goal-activate — staged Goal approval',
+      '/continue, /resume, /cancel, /instruct — legacy/manual revision-gated actions',
+      'Recovery, approvals and secrets remain local CLI operations.',
+    ].join('\n'):[
+      'Mission Relay — send a task as a normal message.',
+      'PI continues until the work is done or blocked; each Chat is limited to 5 Sends.',
+      '/build <task> — implement in your approved repository',
+      '/goal <objective> — track a persistent goal',
+      '/goal-build <objective> — persistent goal with approved code writes',
+      '/list — tasks requiring attention',
+      '/status <mission-id> — progress and next action',
+      '/pause <mission-id> — safely stop further work',
+      'While a task runs, send another message to update its instructions.',
+      '/help advanced — less common commands',
     ].join('\n');
     if(/^agent\s*[:：]/i.test(clean))
       return this.startAgentTask(clean.replace(/^agent\s*[:：]\s*/i,''),commandId);
@@ -1056,7 +1050,7 @@ export class TelegramBridge {
         ['READY','RUNNING','VERIFYING','BLOCKED','NEEDS_RECONCILIATION'].includes(m.state)||
         (this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1'&&m.state==='PAUSED'&&
           !m.stopRequested&&(!!m.lastError||
-          (m.turnCount<m.maxTurns&&
+          (missionTurnsRemaining(m.maxTurns,m.turnCount)&&
             (!this.store.piPlan(m.id)||['NEXT','HANDOFF'].includes(this.store.piPlan(m.id)!.action)))))||
         this.store.chatBrowserTurn(m.id)?.status==='uncertain'));
       // An old ambiguous Send must not disappear below newer, ordinary READY
@@ -1069,7 +1063,7 @@ export class TelegramBridge {
       const {page,pages,start}=missionPage(id,words,all.length);
       return all.length?[`Missions requiring attention: Page ${page}/${pages} (${all.length} total)`,
         ...all.slice(start,start+TELEGRAM_MISSION_PAGE_SIZE).map(m=>
-        `${m.id.slice(0,8)}… — ${m.state} v${m.version}, ${m.turnCount}/${m.maxTurns}\n/status ${m.id}`),
+        `${m.id.slice(0,8)}… — ${m.state} v${m.version}, ${formatMissionTurns(m.turnCount,m.maxTurns)}\n/status ${m.id}`),
         'Full Mission audit history: /history'].join('\n'):
         'No active or unresolved Missions. Historical records: /history';
     }
@@ -1088,7 +1082,7 @@ export class TelegramBridge {
     if(cmd==='/status') {
       const piLive=this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'
         ?this.store.piHealth().missions.find(item=>item.id===id):undefined;
-      return [`${m.id} [${m.state}] v${m.version}`,`Turn ${m.turnCount}/${m.maxTurns}`,
+      return [`${m.id} [${m.state}] v${m.version}`,`Turn ${formatMissionTurns(m.turnCount,m.maxTurns)}`,
       `Mode: ${m.sandbox}${m.sandbox==='workspace-write'&&m.workspace?` (${m.workspace})`:''}`,
       `Goal: ${m.goal.slice(0,400)}`,
       ...(new GoalLedger(this.store).missionGoalId(m.id)

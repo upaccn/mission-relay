@@ -6,6 +6,7 @@ import { hostname } from 'node:os';
 import type { CreateMission, Mission, MissionEvent, MissionState, VerificationCheck } from './types.js';
 import { normalizeChatGPTUrl } from './chatgpt-handoff.js';
 import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
+import {missionTurnsRemaining,missionTurnLimitReached} from './mission-turns.js';
 import type {RuntimeProvenance} from './runtime-provenance.js';
 
 type MissionRow = {
@@ -625,7 +626,7 @@ export class Store {
       if(['READY','RUNNING','VERIFYING','NEEDS_RECONCILIATION'].includes(m.state))return true;
       if(m.state!=='PAUSED'||m.stopRequested)return false;
       const plan=this.piPlan(m.id);
-      return (m.turnCount<m.maxTurns&&(!plan||['NEXT','HANDOFF'].includes(plan.action)))||
+      return (missionTurnsRemaining(m.maxTurns,m.turnCount)&&(!plan||['NEXT','HANDOFF'].includes(plan.action)))||
         !!m.lastError;
     });
     const priority=(m:Mission):number=>m.state==='RUNNING'||m.state==='VERIFYING'?0:
@@ -832,7 +833,7 @@ export class Store {
         throw new Error(`State conflict: expected v${revision}, current v${m.version}`);
       if(this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
         m.state!=='PAUSED'||!m.stopRequested||m.ownerPid!==null||
-        m.turnCount<1||m.turnCount>=m.maxTurns||m.lastError||
+        m.turnCount<1||missionTurnLimitReached(m.maxTurns,m.turnCount)||m.lastError||
         !receipt||!this.hasVerifiedPiBrowserCheckpoint(id)||
         (plan?.round===m.turnCount&&['DONE','BLOCKED'].includes(plan.action)))
         throw new Error('PI resume requires an owner-paused, settled, nonterminal browser checkpoint');
@@ -911,7 +912,7 @@ export class Store {
       const observation=(observed?.payload??{}) as {round?:unknown;assistantSha256?:unknown;
         requestKey?:unknown};
       if(m.version!==revision||m.state!=='PAUSED'||m.stopRequested||
-        m.ownerPid!==null||m.turnCount<1||m.turnCount>=m.maxTurns||
+        m.ownerPid!==null||m.turnCount<1||missionTurnLimitReached(m.maxTurns,m.turnCount)||
         !isHistoricPiCapacityInterruption(m.lastError)||
         this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
         this.channelDrainRequested('telegram')||!this.goalContinuationEligible(id)||
@@ -1093,7 +1094,7 @@ export class Store {
       if(m.version!==revision) throw new Error(`State conflict: expected v${revision}, current v${m.version}`);
       if(!['READY','PAUSED'].includes(m.state)) throw new Error(`Cannot run browser turn in state ${m.state}`);
       if(m.stopRequested) throw new Error('Mission has a pending pause request; resume explicitly before another browser turn');
-      if(m.turnCount>=m.maxTurns) throw new Error('Browser mission turn budget exhausted');
+      if(missionTurnLimitReached(m.maxTurns,m.turnCount)) throw new Error('Browser mission turn budget exhausted');
       if(m.lastError?.startsWith('Corrected answer attribution awaits'))
         throw new Error('PI must re-review corrected browser answer before any new Send');
       const correctionPending=this.events(id).some(e=>
@@ -1153,7 +1154,7 @@ export class Store {
         const parent=this.get(parentId),plan=this.piPlan(parentId);
         const receipt=this.chatBrowserTurn(parentId);
         if(this.piChainSuccessor(parentId)!==id||parent.state!=='PAUSED'||
-          parent.stopRequested||parent.lastError||parent.turnCount!==parent.maxTurns||
+          parent.stopRequested||parent.lastError||(parent.maxTurns===0||parent.turnCount!==parent.maxTurns)||
           plan?.round!==parent.maxTurns||!['NEXT','HANDOFF'].includes(plan?.action??'')||
           !receipt||receipt.assistantSha256!==plan?.responseSha256||
           !this.hasVerifiedPiBrowserCheckpoint(parentId))
@@ -1514,7 +1515,7 @@ export class Store {
         plan=this.piPlan(id),events=this.events(id);
       if(m.version!==revision||m.state!=='NEEDS_RECONCILIATION'||
         m.ownerPid!==null||m.stopRequested||m.turnCount<1||
-        m.turnCount>=m.maxTurns||!r||r.status!=='uncertain'||
+        missionTurnLimitReached(m.maxTurns,m.turnCount)||!r||r.status!=='uncertain'||
         r.newConversation!==true||!url||!this.chatBrowserBinding(id)||
         r.urlHash!==createHash('sha256').update(url).digest('hex')||
         r.promptSha256!==input.originalPromptSha256||
@@ -1589,7 +1590,7 @@ export class Store {
       if(!record||(!uncertain&&!deadReserved)||!oldUrl)
         throw new Error('Only an uncertain or dead-owner reserved new-chat migration may be recovered as observed');
       if(m.ownerPid!==null&&this.isOwnerAlive(m))throw new Error('A browser owner may still be active');
-      if(m.turnCount>=m.maxTurns)throw new Error('Recovery would exceed the authorized Mission turn budget');
+      if(missionTurnLimitReached(m.maxTurns,m.turnCount))throw new Error('Recovery would exceed the authorized Mission turn budget');
       if(record.promptSha256!==input.requestPromptSha256||oldUrl===destination)
         throw new Error('Rollover request hash mismatch or destination is not a new conversation');
       this.requireUnspentBrowserReservation(id,record);
@@ -1643,7 +1644,7 @@ export class Store {
       if(!record||(!uncertain&&!deadReserved)||!url||record.newConversation===true)
         throw new Error('Only an uncertain or independently inspected dead-owner existing-chat request can be recovered');
       if(m.ownerPid!==null&&this.isOwnerAlive(m))throw new Error('Browser owner may still be active');
-      if(m.turnCount>=m.maxTurns)throw new Error('Recovery exceeds the authorized turn budget');
+      if(missionTurnLimitReached(m.maxTurns,m.turnCount))throw new Error('Recovery exceeds the authorized turn budget');
       if(record.promptSha256!==input.requestPromptSha256||
         record.urlHash!==createHash('sha256').update(url).digest('hex'))
         throw new Error('Observed reply cannot be linked to the exact original reserved prompt and chat');
@@ -1700,7 +1701,7 @@ export class Store {
       // belongs to its verified successor, not the historical 32/32 parent.
       // Materialize/reuse ONLY an eligible Goal continuation; never wake an
       // explicitly paused, terminal, or unbound historical Mission.
-      if(m.turnCount===m.maxTurns&&m.state==='PAUSED'&&!m.stopRequested&&
+      if((m.maxTurns>0&&m.turnCount===m.maxTurns)&&m.state==='PAUSED'&&!m.stopRequested&&
         !m.lastError&&plan?.round===m.maxTurns&&
         ['NEXT','HANDOFF'].includes(plan.action)&&
         this.getMeta(`pi.autopilot.enabled.${id}`)==='1'&&
@@ -1709,7 +1710,7 @@ export class Store {
         if(child)return this.queuePiOwnerDirective(child.id,externalId,text);
       }
       if(plan?.round===m.turnCount &&
-        (['DONE','BLOCKED'].includes(plan.action)||m.turnCount>=m.maxTurns))
+        (['DONE','BLOCKED'].includes(plan.action)||missionTurnLimitReached(m.maxTurns,m.turnCount)))
         throw new Error('PI Mission has already reached its terminal decision or turn budget');
       const result=this.db.prepare(`INSERT OR IGNORE INTO pi_owner_directives
         (mission_id,external_id,text,received_at) VALUES(?,?,?,?)`)
@@ -1755,7 +1756,7 @@ export class Store {
       const inherited=round===0&&mission.state==='READY'&&!mission.stopRequested&&
         mission.turnCount===0&&!receipt&&!!parentId&&
         parent?.state==='PAUSED'&&!parent.stopRequested&&!parent.lastError&&
-        parent.turnCount===parent.maxTurns&&
+        (parent.maxTurns>0&&parent.turnCount===parent.maxTurns)&&
         this.piChainSuccessor(parentId)===id&&
         parentPlan?.round===parent.maxTurns&&
         ['NEXT','HANDOFF'].includes(parentPlan.action)&&
@@ -1843,7 +1844,7 @@ export class Store {
     return this.transaction(()=>{
       const parent=this.get(id),plan=this.piPlan(id);
       if(this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
-        parent.turnCount!==parent.maxTurns||parent.state!=='PAUSED'||
+        (parent.maxTurns===0||parent.turnCount!==parent.maxTurns)||parent.state!=='PAUSED'||
         parent.stopRequested||parent.lastError||plan?.round!==parent.maxTurns||
         !['NEXT','HANDOFF'].includes(plan.action))return null;
       if(!this.hasVerifiedPiBrowserCheckpoint(id)||
@@ -1884,7 +1885,7 @@ export class Store {
         !parentId||this.piChainSuccessor(parentId)!==id||this.chatBrowserTurn(id))
         throw new Error('PI chain preflight requires an unsent, active successor');
       const parent=this.get(parentId),parentPlan=this.piPlan(parentId);
-      if(parent.stopRequested||parent.lastError||parent.turnCount!==parent.maxTurns||
+      if(parent.stopRequested||parent.lastError||(parent.maxTurns===0||parent.turnCount!==parent.maxTurns)||
         !parentPlan||!['NEXT','HANDOFF'].includes(parentPlan.action)||
         parentPlan.responseSha256!==parentAnswerSha256||
         !this.hasVerifiedPiBrowserCheckpoint(parentId)||
@@ -1962,8 +1963,8 @@ export class Store {
         directivesReviewed:reviewedDirectiveIds.length,
         ...(correctedReview?{correctionEventId:correction!.id}:{}),
       });
-      if(['DONE','BLOCKED'].includes(plan.action)||m.turnCount>=m.maxTurns){
-        this.event(id,'pi.autopilot_finished',{action:m.turnCount>=m.maxTurns&&['NEXT','HANDOFF'].includes(plan.action)
+      if(['DONE','BLOCKED'].includes(plan.action)||missionTurnLimitReached(m.maxTurns,m.turnCount)){
+        this.event(id,'pi.autopilot_finished',{action:missionTurnLimitReached(m.maxTurns,m.turnCount)&&['NEXT','HANDOFF'].includes(plan.action)
           ?'LIMIT':plan.action,round:m.turnCount,summary:plan.summary,
           responseSha256:expectedSha});
       }
@@ -2097,7 +2098,7 @@ export class Store {
   }
   create(input: CreateMission): Mission {
     if (!input.goal.trim() || input.acceptance.length === 0 || input.acceptance.some(x => !x.trim())) throw new Error('Goal and acceptance criteria are required');
-    if (!Number.isInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 100) throw new Error('maxTurns must be between 1 and 100');
+    if (!Number.isInteger(input.maxTurns) || input.maxTurns < 0 || input.maxTurns > 100) throw new Error('maxTurns must be zero (unbounded) or between 1 and 100');
     if (!['read-only','workspace-write'].includes(input.sandbox)) throw new Error('Invalid sandbox');
     if (!['supervised','autopilot'].includes(input.mode)) throw new Error('Invalid mode');
     if (!input.requestKey.trim()) throw new Error('requestKey is required');

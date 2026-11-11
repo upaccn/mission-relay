@@ -78,7 +78,7 @@ export function inspectGoalChromeFiveToSixHistory(store:Store,goalId:string){
         fail('original_goal_or_mission_ledger_inconsistent');
       if(previous.chatTurn!==5||current.chatTurn!==1||
         current.chatSegment!==previous.chatSegment+1||
-        current.round!==previous.round+1||current.round>32)
+        current.round!==previous.round+1)
         fail('five_to_six_turn_boundary_invalid');
       if(!prior||!next||prior.status!=='observed'||next.status!=='observed'||
         prior.round!==previous.round||next.round!==current.round||

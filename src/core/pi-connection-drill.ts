@@ -1,5 +1,6 @@
 import {createHash} from 'node:crypto';
 import type {Store} from './store.js';
+import {missionTurnLimitReached} from './mission-turns.js';
 
 /** Operator-only, one-shot fault of one PI recovery *client connection*.
  * Never changes Chrome permissions, tabs, host routing or the original Send.
@@ -16,7 +17,7 @@ function eligible(store:Store,id:string,revision:number):ArmedDrill {
   const url=store.chatLink(id),browser=store.chatBrowserBinding(id);
   const plan=store.piPlan(id);
   if(m.version!==revision||m.state!=='PAUSED'||m.stopRequested||m.lastError||
-     m.ownerPid!==null||m.turnCount<1||m.turnCount>=m.maxTurns||
+     m.ownerPid!==null||m.turnCount<1||missionTurnLimitReached(m.maxTurns,m.turnCount)||
      store.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
      !store.hasVerifiedPiBrowserCheckpoint(id)||
      !r||!['observed','reconciled'].includes(r.status)||

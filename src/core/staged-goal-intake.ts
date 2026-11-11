@@ -169,7 +169,7 @@ export class StagedGoalIntake {
           'Implement only the approved Goal scope, with independent tests, CI and review':
           'Provide independent evidence for the approved owner Goal without external writes'],
         workspace:input.workspace,sandbox:input.workspace?'workspace-write':'read-only',
-        mode:'supervised',maxTurns:32,requestKey:`${requestKey}-mission`,checks:[],
+        mode:'supervised',maxTurns:0,requestKey:`${requestKey}-mission`,checks:[],
       });
       // A staged Mission is PAUSED with a durable hold and PI ownership.
       // Generic resume, native run, browser reserve and recovery all fail
@@ -391,7 +391,7 @@ export class StagedGoalIntake {
           other.state==='READY'&&this.store.getMeta(`pi.autopilot.enabled.${other.id}`)==='1')
           throw new Error('Activation blocked by active or PI-ready Mission');
         if(other.state==='PAUSED'&&!other.stopRequested&&!other.lastError&&
-          other.turnCount<other.maxTurns&&
+          (other.maxTurns===0||other.turnCount<other.maxTurns)&&
           this.store.getMeta(`pi.autopilot.enabled.${other.id}`)==='1'&&
           this.store.getMeta(`goal.stage.hold.${other.id}`)!=='1'&&
           !this.store.events(other.id).some(e=>e.type==='pi.autopilot_finished'))
