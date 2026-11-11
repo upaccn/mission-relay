@@ -98,4 +98,6 @@ The TypeScript build rejects unused local imports/parameters; run targeted tests
 - [Trusted release probes](docs/trusted-release-probes.md) — runtime and Goal acceptance evidence, distinct from software CI qualification.
 - [Security](SECURITY.md), [Contributing](CONTRIBUTING.md), [Product decisions](docs/product-ux.md), [manual handoff](docs/chatgpt-handoff.md).
 
-Historical, superseded milestone narratives from the prior README, AGENTS and STATE remain in Git history (for example, inspect the exact pre-cleanup tree with: git show 7c1c03f:STATE.md). Do not treat those historical snapshots as today's production evidence.
+The public repository starts from a reviewed v1.0 baseline. Older operator-specific
+working history is not part of the supported source history; keep any required
+recovery evidence in access-controlled private storage, never in the public tree.
