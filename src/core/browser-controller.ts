@@ -4,7 +4,7 @@ import {createHash} from 'node:crypto';
 import {withReadOnlyDeadline} from './read-only-deadline.js';
 import type {Page} from 'playwriter';
 import type {Store,PiPlan,GoalPromptBinding} from './store.js';
-import {inspectChatPage,lastVisibleUserPromptSha256,chatTabTargetSha256,submitChatTurn,submitNewChatTurn,MAX_BROWSER_TURN_TIMEOUT_MS} from '../plugins/chatgpt-browser.js';
+import {inspectChatPage,lastVisibleUserPromptSha256,matchesSubmittedUserPrompt,chatTabTargetSha256,submitChatTurn,submitNewChatTurn,MAX_BROWSER_TURN_TIMEOUT_MS} from '../plugins/chatgpt-browser.js';
 import {validateRemoteProjectPath} from './pi-planner.js';
 
 // One Telegram message has a 4096-character limit; leave room for "/build ".
@@ -51,7 +51,9 @@ export async function executeBrowserTurn(input:{
     const receipt=await submitChatTurn(page,url,prompt,input.timeoutMs,input.requireFinalMarker,
       input.expectedSource?{assistantSha256:input.expectedSource.assistantSha256,
         assistantTurnId:before.lastAssistantTurnId??null}:undefined,{
-        claim:async()=>store.claimDeliveryRetryIntent(missionId,requestKey,promptSha256),
+        claim:async(reason)=>matchesSubmittedUserPrompt(
+          await lastVisibleUserPromptSha256(page),prompt)
+          &&store.claimDeliveryRetryIntent(missionId,requestKey,promptSha256,reason),
         clicked:()=>store.recordDeliveryRetryClicked(missionId,requestKey,promptSha256),
       });
     const assistantSha256=createHash('sha256').update(receipt.lastAssistant).digest('hex');
@@ -358,7 +360,12 @@ export async function executeBrowserRollover(input:{
   let observedCandidateSha:string|null=null;
   try {
     const page=await input.sourcePage.context().newPage();
-    const {url,receipt}=await submitNewChatTurn(page,prompt,input.timeoutMs);
+    const {url,receipt}=await submitNewChatTurn(page,prompt,input.timeoutMs,false,{
+      claim:async(reason)=>matchesSubmittedUserPrompt(
+        await lastVisibleUserPromptSha256(page),prompt)
+        &&store.claimDeliveryRetryIntent(missionId,requestKey,promptSha256,reason),
+      clicked:()=>store.recordDeliveryRetryClicked(missionId,requestKey,promptSha256),
+    });
     // Optional physical tab proof; failure cannot reclassify an already
     // observed external Send as uncertain or block its SQLite settlement.
     const newChatTargetSha256=await withReadOnlyDeadline(

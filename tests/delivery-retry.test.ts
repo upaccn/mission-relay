@@ -15,7 +15,7 @@ const prompt='Original submitted request';
 const reply='Fresh, completed original answer\n[MISSION_RELAY:NEXT]';
 const timeout='ChatGPT response observation timed out; submission outcome is ambiguous';
 
-function fixture(){
+function fixture(newConversation=false){
   const dir=mkdtempSync(join(tmpdir(),'mr-delivery-retry-'));
   const store=new Store(join(dir,'missions.sqlite'));
   const agent={
@@ -29,7 +29,8 @@ function fixture(){
   const link=store.linkChat(m.id,url,m.version).mission;
   const bound=store.bindChatBrowser(m.id,'install:Chrome:retry',link.version).mission;
   store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
-  store.reserveChatBrowserTurn(m.id,bound.version,'original',hash(prompt));
+  store.reserveChatBrowserTurn(m.id,bound.version,'original',hash(prompt),
+    newConversation?{newConversation:true}:{});
   return {dir,store,engine,id:m.id,cleanup:()=>{
     store.close();rmSync(dir,{recursive:true,force:true});
   }};
@@ -37,12 +38,14 @@ function fixture(){
 
 class RetryPage {
   banner=true;
+  error:'delivery-timeout'|'stream-error'='delivery-timeout';
   clicks=0;
   user=prompt;
   assistant='Previous assistant response\n[MISSION_RELAY:NEXT]';
   url(){return url;}
   getByText(s:string){
-    const shown=()=>this.banner&&s==='Message delivery timed out. Please try again.';
+    const shown=()=>this.banner&&this.error==='delivery-timeout'&&
+      s==='Message delivery timed out. Please try again.';
     const locator={count:async()=>shown()?1:0,isVisible:async()=>shown(),
       nth:(_i:number)=>locator};
     return locator;
@@ -51,6 +54,8 @@ class RetryPage {
     if(role==='button'&&options.name==='Retry'){
       return {count:async()=>this.banner?1:0,
         isVisible:async()=>this.banner,isEnabled:async()=>this.banner,
+        locator:(_xpath:string)=>({innerText:async()=>this.error==='stream-error'
+          ?'Error in message stream\nRetry':'Retry'}),
         click:async()=>{this.clicks++;this.banner=false;this.assistant=reply;}};
     }
     return {count:async()=>0,first:()=>({isVisible:async()=>false})};
@@ -115,6 +120,49 @@ test('timed-out original message gets one UI Retry, then independently recovers 
     await bridge.recoverUncertainDeliveryOnce();
     assert.equal(page.clicks,1);
     assert.equal(f.store.get(f.id).turnCount,1);
+  }finally{f.cleanup();}
+});
+
+test('timed-out stream error retries once and survives a different subsequent Retry banner',async()=>{
+  const f=fixture();try{
+    f.store.finishChatBrowserTurn(f.id,'original',{kind:'uncertain',error:timeout});
+    const page=new RetryPage();page.error='stream-error';
+    const bridge=new TelegramBridge(f.store,f.engine,{
+      getUpdates:async()=>[],sendMessage:async()=>{},
+    },1,2,undefined,async()=>({page:page as unknown as Page,close:async()=>{}}));
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(page.clicks,1);
+    assert.equal(f.store.get(f.id).state,'NEEDS_RECONCILIATION');
+    const intent=f.store.events(f.id).find(e=>e.type==='chatgpt.browser_delivery_retry_intent')!;
+    assert.equal((intent.payload as {reason:string}).reason,'stream-error');
+    // A second kind of Retry control cannot reset the one-request budget.
+    page.error='delivery-timeout';page.banner=true;
+    (bridge as unknown as {lastDeliveryRetryRecoveryAt:number}).lastDeliveryRetryRecoveryAt=0;
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(page.clicks,1);
+    assert.equal(f.store.events(f.id).filter(e=>
+      e.type==='chatgpt.browser_delivery_retry_intent').length,1);
+    page.banner=false;
+    (bridge as unknown as {lastDeliveryRetryRecoveryAt:number}).lastDeliveryRetryRecoveryAt=0;
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(page.clicks,1);
+    assert.equal(f.store.get(f.id).turnCount,1);
+    assert.equal(f.store.get(f.id).state,'PAUSED');
+  }finally{f.cleanup();}
+});
+
+test('in-flight new-chat request may claim exactly one UI Retry but cannot auto-reconcile its unknown tab',()=>{
+  const f=fixture(true);try{
+    const r=f.store.chatBrowserTurn(f.id)!;
+    assert.equal(r.status,'reserved');
+    assert.equal(f.store.claimDeliveryRetryIntent(f.id,'original',hash(prompt),'stream-error'),true);
+    assert.equal(f.store.claimDeliveryRetryIntent(f.id,'original',hash(prompt),'delivery-timeout'),false);
+    f.store.finishChatBrowserTurn(f.id,'original',{kind:'uncertain',error:timeout});
+    assert.equal(f.store.get(f.id).state,'NEEDS_RECONCILIATION');
+    assert.equal(f.store.get(f.id).turnCount,0);
+    assert.throws(()=>f.store.claimDeliveryRetryIntent(f.id,'original',hash(prompt),'stream-error'),
+      /original active or timed-out/);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
   }finally{f.cleanup();}
 });
 

@@ -493,15 +493,16 @@ export class TelegramBridge {
         await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))!==r.promptSha256)return;
       const already=this.store.hasDeliveryRetryIntent(candidate.id,r.requestKey,r.promptSha256);
       const banner=await withReadOnlyDeadline(visibleLongTaskBanner(page,snapshot.lastAssistant));
-      if(!already && !snapshot.generating && banner==='delivery-timeout') {
+      if(!already && !snapshot.generating &&
+        (banner==='delivery-timeout'||banner==='stream-error')) {
         const clicked=await clickDeliveryRetryOnce(page,url,true,false,
-          async()=>{
+          async(reason)=>{
             if(await lastVisibleUserPromptSha256(page)!==r.promptSha256)return false;
-            return this.store.claimDeliveryRetryIntent(candidate.id,r.requestKey,r.promptSha256);
+            return this.store.claimDeliveryRetryIntent(candidate.id,r.requestKey,r.promptSha256,reason);
           });
         if(clicked){
           this.store.recordDeliveryRetryClicked(candidate.id,r.requestKey,r.promptSha256);
-          console.warn('Recovered timed-out ChatGPT delivery by one existing-message UI Retry (no composer Send)');
+          console.warn('Recovered timed-out ChatGPT delivery/stream by one existing-message UI Retry (no composer Send)');
         }
         return;
       }

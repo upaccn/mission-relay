@@ -235,3 +235,5 @@ For an **existing ChatGPT conversation** whose Send succeeded but a previously d
 - Channel credentials are not propagated to Codex or verification subprocesses. Child environments intentionally allowlist only necessary operating-system variables and (for Codex) explicit Codex authentication variables.
 
 Telegram is a control channel: it does not receive browser JavaScript, ChatGPT cookies or raw session data. The optional linked browser executor runs on the GMK3 Chrome host.
+
+**Stream-error recovery (v1.1.2):** ChatGPT's `Error in message stream` followed by `Retry` is recognized as an exact UI error group (optional period). It has the **same one-click budget** as `Message delivery timed out. Please try again.` for the original submitted request. For both existing-chat turns and authorized first new-chat Sends, Retry intent is durably recorded before clicking, preventing duplicate clicks after restarts. Only an independently verified complete original-chat answer can reenter PI review automatically after an ambiguous timeout; an unknown new-chat destination is not adopted or replayed. No owner command, additional model Send, or separate Worker is created.

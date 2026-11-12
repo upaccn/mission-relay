@@ -20,7 +20,7 @@ import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUr
   ACTIVE_REPLY_OBSERVATION_INTERVAL_MS,
   submitChatTurn,submitNewChatTurn,prepareNewChatOrigin,waitForNewChatSendReady,
   DEFAULT_BROWSER_TURN_TIMEOUT_MS,MAX_BROWSER_TURN_TIMEOUT_MS,type BrowserSession} from '../src/plugins/chatgpt-browser.js';
-import {executeBrowserTurn,driveChatConversation,browserDecision,browserFreshTaskPrompt,
+import {executeBrowserTurn,executeBrowserRollover,driveChatConversation,browserDecision,browserFreshTaskPrompt,
   retireSupersededRelayTab,
   MAX_FRESH_CHAT_TASK_CHARS,executorTaskGoal,
   browserNewChatPrompt,browserRolloverRecoveryPrompt,exactReservedRolloverPrompt,
@@ -865,17 +865,20 @@ test('Repeated assistant DOM read timeouts fail closed after three observations 
 });
 
 class TransportBannerPage extends AccessibleChatPage {
-  banner:'interrupted'|'delivery-timeout'|null='delivery-timeout';
+  banner:'interrupted'|'delivery-timeout'|'stream-error'|null='delivery-timeout';
+  retryGroup='Error in message stream\nRetry';
   retryClicks=0;
   override getByRole(role:string,options:{name:string|RegExp}):any {
     if(role==='button'&&options.name==='Retry') {
       const self=this;
       return {
-        count:async()=>self.banner==='delivery-timeout'&&self.sends>0?1:0,
-        isVisible:async()=>self.banner==='delivery-timeout'&&self.sends>0,
-        isEnabled:async()=>self.banner==='delivery-timeout'&&self.sends>0,
+        count:async()=>['delivery-timeout','stream-error'].includes(self.banner??'')&&self.sends>0?1:0,
+        isVisible:async()=>['delivery-timeout','stream-error'].includes(self.banner??'')&&self.sends>0,
+        isEnabled:async()=>['delivery-timeout','stream-error'].includes(self.banner??'')&&self.sends>0,
+        locator:(_xpath:string)=>({innerText:async()=>self.retryGroup}),
         click:async()=>{
-          if(self.banner!=='delivery-timeout'||!self.sends)throw new Error('Retry unavailable');
+          if(!['delivery-timeout','stream-error'].includes(self.banner??'')||!self.sends)
+            throw new Error('Retry unavailable');
           self.retryClicks++;
           self.banner=null;
           self.reply='Completed after transport Retry.\n[MISSION_RELAY:DONE]';
@@ -938,6 +941,43 @@ test('Relay controller commits one Retry intent before the original UI click and
       createHash('sha256').update(prompt).digest('hex')),true);
     const events=f.store.events(f.linked.id);
     assert.equal(events.filter(e=>e.type==='chatgpt.browser_delivery_retry_intent').length,1);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_delivery_retry_clicked').length,1);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_observed').length,1);
+  }finally{f.cleanup();}
+});
+
+test('stream error Retry is scoped to its exact UI control, never model prose or unrelated Retry',async()=>{
+  const page=new TransportBannerPage();page.sends=1;page.banner='stream-error';
+  page.retryGroup='Error in message stream\nRetry';
+  page.reply='The assistant quoted Error in message stream as an example.';
+  assert.equal(await visibleLongTaskBanner(page as unknown as Page,page.reply),'stream-error');
+  page.retryGroup='A different failure\nRetry';
+  assert.equal(await visibleLongTaskBanner(page as unknown as Page,page.reply),null);
+  assert.equal(await clickDeliveryRetryOnce(page as unknown as Page,URL,true,false),false);
+  assert.equal(page.retryClicks,0);
+  page.retryGroup='Error in message stream.\nRetry';
+  assert.equal(await visibleLongTaskBanner(page as unknown as Page,page.reply),'stream-error');
+  assert.equal(await clickDeliveryRetryOnce(page as unknown as Page,URL,false,false),false);
+  assert.equal(page.retryClicks,0);
+  assert.equal(await clickDeliveryRetryOnce(page as unknown as Page,URL,true,false),true);
+  assert.equal(page.retryClicks,1);
+});
+
+test('PI original-chat stream Retry records the same one-shot request before observing reply',async()=>{
+  const f=fixture();try{
+    const page=new TransportBannerPage();page.banner='stream-error';
+    const prompt='Original PI work package after stream failure';
+    const outcome=await executeBrowserTurn({store:f.store,missionId:f.linked.id,
+      revision:f.linked.version,requestKey:'stream-ui-original',
+      page:page as unknown as Page,url:URL,prompt,timeoutMs:12000,
+      requireFinalMarker:true});
+    assert.equal(outcome.turnCount,1);
+    assert.equal(page.sends,1);
+    assert.equal(page.retryClicks,1);
+    const events=f.store.events(f.linked.id);
+    const intent=events.find(e=>e.type==='chatgpt.browser_delivery_retry_intent')!;
+    assert.equal((intent.payload as {reason:string}).reason,'stream-error');
     assert.equal(events.filter(e=>e.type==='chatgpt.browser_delivery_retry_clicked').length,1);
     assert.equal(events.filter(e=>e.type==='chatgpt.browser_reserved').length,1);
     assert.equal(events.filter(e=>e.type==='chatgpt.browser_observed').length,1);
@@ -1169,10 +1209,11 @@ test('New ChatGPT first Send tolerates one assistant DOM text-read timeout witho
 });
 class TransportNewChatPage extends SyntheticNewChatPage {
   banner=true;
+  error:'delivery-timeout'|'stream-error'='delivery-timeout';
   retryClicks=0;
   getByText(text:string,options:{exact?:boolean}):any {
     const self=this;
-    const visible=()=>self.sends>0&&self.banner&&options.exact===true&&
+    const visible=()=>self.error==='delivery-timeout'&&self.sends>0&&self.banner&&options.exact===true&&
       text===MESSAGE_DELIVERY_TIMEOUT_TEXT;
     const locator:any={count:async()=>visible()?1:0,isVisible:async()=>visible(),
       nth:(_index:number)=>locator};
@@ -1184,6 +1225,8 @@ class TransportNewChatPage extends SyntheticNewChatPage {
       return {count:async()=>self.banner&&self.sends>0?1:0,
         isVisible:async()=>self.banner&&self.sends>0,
         isEnabled:async()=>self.banner&&self.sends>0,
+        locator:(_xpath:string)=>({innerText:async()=>self.error==='stream-error'
+          ?'Error in message stream\nRetry':'Retry'}),
         click:async()=>{self.retryClicks++;self.banner=false;
           self.reply='New ChatGPT tab recovered.\n[MISSION_RELAY:DONE]';}};
     }
@@ -1199,6 +1242,20 @@ test('New ChatGPT conversation retries only the delivery UI, never the original 
   assert.equal(page.sends,1);
   assert.equal(page.retryClicks,1);
   assert.match(result.receipt.lastAssistant,/New ChatGPT tab recovered/);
+});
+
+test('New ChatGPT conversation uses one stream-error UI Retry with a one-shot durable claim',async()=>{
+  const page=new TransportNewChatPage();page.error='stream-error';
+  const claims:string[]=[];
+  const result=await submitNewChatTurn(page as unknown as Page,
+    'One original new-chat stream-error prompt',12000,false,{
+      claim:async(reason)=>{claims.push(reason);return claims.length===1;},
+      clicked:()=>{},
+    });
+  assert.equal(result.url,NEXT_CHAT_URL);
+  assert.equal(page.sends,1);
+  assert.equal(page.retryClicks,1);
+  assert.deepEqual(claims,['stream-error']);
 });
 class TransientNewChatPage extends SyntheticNewChatPage {
   transientReads=0;
@@ -1223,6 +1280,33 @@ class SourceWithNewTab extends SyntheticChatPage {
     this.created++;return this.destination;
   }};}
 }
+
+test('PI new-chat rollover persists the single stream Retry before migration, not an extra Send',async()=>{
+  const f=fixture();try{
+    const source=new SourceWithNewTab();
+    const destination=new TransportNewChatPage();
+    destination.error='stream-error';
+    source.destination=destination;
+    const prompt='New-chat PI stream Retry preserving one reserved message';
+    const outcome=await executeBrowserRollover({
+      store:f.store,missionId:f.linked.id,revision:f.linked.version,
+      requestKey:'stream-new-chat',sourcePage:source as unknown as Page,
+      sourceUrl:URL,prompt,timeoutMs:12000,
+    });
+    assert.equal(outcome.turnCount,1);
+    assert.equal(source.created,1);
+    assert.equal(destination.sends,1);
+    assert.equal(destination.retryClicks,1);
+    assert.equal(f.store.chatLink(f.linked.id),NEXT_CHAT_URL);
+    assert.equal(f.store.hasDeliveryRetryIntent(f.linked.id,'stream-new-chat',
+      createHash('sha256').update(prompt).digest('hex')),true);
+    const events=f.store.events(f.linked.id);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_delivery_retry_intent').length,1);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_delivery_retry_clicked').length,1);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_migrated').length,1);
+  }finally{f.cleanup();}
+});
 
 class RelayOwnedIntermediatePage extends SyntheticNewChatPage {
   closeCalls=0;

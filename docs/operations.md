@@ -837,6 +837,8 @@ If execution stops or the process crashes, inspect `show` and `events`. When sta
 
 Do not run multiple `run` commands for one mission. The database lease blocks parallel workers, but only one process should own the executor session.
 
+**ChatGPT stream-error Retry (v1.1.2):** In addition to the existing delivery-timeout Retry, the single Worker recognizes exact visible `Error in message stream` (optional trailing period) **in the same two-level DOM control group** as its unique `Retry` button. A quoted phrase in assistant prose, a generic Retry elsewhere, a changed original user SHA, or a changed conversation URL does not authorize this action. The original existing-chat Send and a first Send in a newly created Chat both consume the same per-request SQLite one-shot Retry intent *before* clicking; after interruption, never click that message again. The Worker may reconcile a stable original same-chat answer after an observation timeout, with the original-request/lock/PI gates. Do not automatically adopt an ambiguous new-chat origin without independent evidence. `Connection interrupted` remains wait-only, not a Retry trigger.
+
 ## Future remote control
 
 Telegram remains an opt-in channel; see [Telegram setup](telegram.md). Without owner enrollment it runs in the foreground, with an optional enrolled Windows interactive task to start at login and recover from a bounded number of crashes. Playwriter remains a separate component. A running CLI **does not hot reload** after build: use a gated restart through the enrolled task, or stop/restart the original private foreground terminal. Do not re-send previously accepted `/continue`; compare `channel-status`, mission `show`/`events` and a read-only `browser-probe` before any new dispatch.

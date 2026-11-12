@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.2 — 2026-11-12
+
+- Recognize ChatGPT's actual `Error in message stream` UI control (including its optional period) only in the exact visible Retry control group, rather than from generated prose.
+- Use the same SQLite one-shot Retry intent for both stream errors and delivery timeouts, including a new ChatGPT conversation's first message. Never retry the composer Send; interrupted or uncertain first-new-chat Sends remain fail-closed.
+- Extend the single enrolled Worker's timed-out original-chat recovery to stream errors, with prompt hash, exact URL, unspent reservation, stable final answer and PI review gates unchanged.
+- Regressions cover successful Retry, cross-error one-shot deduplication, wrong/quoted UI refusals, original-message and new-chat pathways.
+
 ## 1.1.1 — 2026-11-12
 
 - Persist a single original-request delivery Retry intent before clicking ChatGPT's exact visible `Retry` button. Worker crashes, reattachment and ambiguous click completion cannot trigger another Retry or composer Send.

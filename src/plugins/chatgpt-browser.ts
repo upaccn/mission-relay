@@ -446,10 +446,13 @@ async function inspectAfterSend(page:Page,url:string,
  * The banner is checked explicitly; never treat a generic Retry as authorization. */
 export const CONNECTION_INTERRUPTED_TEXT='Connection interrupted. Waiting for the complete answer';
 export const MESSAGE_DELIVERY_TIMEOUT_TEXT='Message delivery timed out. Please try again.';
+export const MESSAGE_STREAM_ERROR_TEXT='Error in message stream';
+export type ChatGPTLongTaskBanner='interrupted'|'delivery-timeout'|'stream-error';
+export type RetryableChatGPTError='delivery-timeout'|'stream-error';
 export const INTERRUPTED_WAIT_GRACE_MS=120*60_000;
 export const MAX_INTERRUPTED_WAIT_MS=4*60*60_000;
 
-export async function visibleLongTaskBanner(page:Page,answer:string):Promise<'interrupted'|'delivery-timeout'|null>{
+export async function visibleLongTaskBanner(page:Page,answer:string):Promise<ChatGPTLongTaskBanner|null>{
   // A model can discuss these strings in ordinary prose. Only an exact
   // trailing status line or a separately visible exact UI banner qualifies.
   const trailingLine=answer.trimEnd().split('\n').at(-1)?.trim()??'';
@@ -464,6 +467,16 @@ export async function visibleLongTaskBanner(page:Page,answer:string):Promise<'in
   };
   if(trailingLine===MESSAGE_DELIVERY_TIMEOUT_TEXT||
      await visible(MESSAGE_DELIVERY_TIMEOUT_TEXT))return 'delivery-timeout';
+  // The current ChatGPT stream failure is a separate error control adjacent
+  // to Retry, NOT part of the assistant's generated answer. Requiring the
+  // complete text of the Retry control group prevents model prose mentioning
+  // 'Error in message stream' from authorizing a click.
+  const retry=page.getByRole('button',{name:'Retry',exact:true});
+  if(await retry.count()===1&&await retry.isVisible()){
+    const group=await retry.locator('xpath=../..').innerText({timeout:5000});
+    if(/^\s*Error in message stream\.?\s+Retry\s*$/.test(group))
+      return 'stream-error';
+  }
   if(trailingLine===CONNECTION_INTERRUPTED_TEXT||
      await visible(CONNECTION_INTERRUPTED_TEXT))return 'interrupted';
   return null;
@@ -476,19 +489,21 @@ export function interruptedDeadline(start:number,deadline:number,now:number,
     Math.min(start+MAX_INTERRUPTED_WAIT_MS,now+INTERRUPTED_WAIT_GRACE_MS)):deadline;
 }
 
-/** Owner-approved UI Retry of the existing delivery, not a second composer Send. */
+/** Owner-approved UI Retry of the original delivery or stream failure, never
+ * a second composer Send. Both errors share the SAME durable Retry allowance. */
 export async function clickDeliveryRetryOnce(page:Page,expectedUrl:string,
   latestUserMatchesReserved:boolean,alreadyClicked:boolean,
-  beforeClick?:()=>Promise<boolean>):Promise<boolean> {
+  beforeClick?:(reason:RetryableChatGPTError)=>Promise<boolean>):Promise<boolean> {
   if(alreadyClicked||!latestUserMatchesReserved)return false;
   if(normalizeChatGPTUrl(page.url())!==normalizeChatGPTUrl(expectedUrl))
     throw new Error('Delivery Retry refused: conversation URL changed');
-  if(await visibleLongTaskBanner(page,'')!=='delivery-timeout')return false;
+  const reason=await visibleLongTaskBanner(page,'');
+  if(reason!=='delivery-timeout'&&reason!=='stream-error')return false;
   const retry=page.getByRole('button',{name:'Retry',exact:true});
   if(await retry.count()!==1||!await retry.isVisible()||!await retry.isEnabled())return false;
   // Persist a one-shot intent before any external click, so a Worker crash
   // cannot cause another Retry of the same immutable ChatGPT request.
-  if(beforeClick && !await beforeClick())return false;
+  if(beforeClick && !await beforeClick(reason))return false;
   await retry.click({timeout:10000});
   return true;
 }
@@ -510,7 +525,7 @@ export function isFreshResponseLoadFailure(before:ChatPageSnapshot,
 export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
   timeoutMs=DEFAULT_BROWSER_TURN_TIMEOUT_MS,requireFinalMarker=false,
   verifiedSource?:{assistantSha256:string;assistantTurnId:string|null},
-  deliveryRetry?:{claim:()=>Promise<boolean>;clicked:()=>void}):Promise<BrowserReceipt> {
+  deliveryRetry?:{claim:(reason:RetryableChatGPTError)=>Promise<boolean>;clicked:()=>void}):Promise<BrowserReceipt> {
   if(typeof prompt!=='string'||!prompt.trim()||prompt.length>12000)
     throw new Error('Prompt must contain 1–12000 characters');
   if(!Number.isInteger(timeoutMs)||timeoutMs<10000||timeoutMs>MAX_BROWSER_TURN_TIMEOUT_MS)
@@ -549,7 +564,8 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
       }
       console.warn('ChatGPT connection interrupted; waiting for the same response without another Send');
     }
-    if(banner==='delivery-timeout'&&!deliveryRetryClicked&&newestUserMatchesPrompt) {
+    if((banner==='delivery-timeout'||banner==='stream-error')&&
+      !deliveryRetryClicked&&newestUserMatchesPrompt) {
       const clicked=await clickDeliveryRetryOnce(page,targetUrl,true,false,
         deliveryRetry?.claim);
       if(clicked) {
@@ -560,7 +576,7 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
             timeoutMs===DEFAULT_BROWSER_TURN_TIMEOUT_MS);
           transportExtensionUsed=true;
         }
-        console.warn('ChatGPT delivery timed out; clicked its existing-message Retry button once');
+        console.warn('ChatGPT delivery/stream failure; clicked its existing-message Retry button once');
         await delay(Math.min(3000,Math.max(0,deadline-Date.now())));
         continue;
       }
@@ -637,7 +653,8 @@ export async function waitForNewChatSendReady(page:Page,
  * read-only origin preflight; no second navigation or Send is implied. */
 export async function submitNewChatTurn(page:Page,prompt:string,
   timeoutMs=DEFAULT_BROWSER_TURN_TIMEOUT_MS,
-  preparedOrigin=false):Promise<{url:string;receipt:BrowserReceipt}> {
+  preparedOrigin=false,
+  deliveryRetry?:{claim:(reason:RetryableChatGPTError)=>Promise<boolean>;clicked:()=>void}):Promise<{url:string;receipt:BrowserReceipt}> {
   if(!prompt.trim()||prompt.length>12000)throw new Error('Invalid new-chat handoff prompt');
   if(!Number.isInteger(timeoutMs)||timeoutMs<10000||timeoutMs>MAX_BROWSER_TURN_TIMEOUT_MS)
     throw new Error('Invalid new-chat timeout');
@@ -692,16 +709,19 @@ export async function submitNewChatTurn(page:Page,prompt:string,
         }
         console.warn('New ChatGPT connection interrupted; waiting without a second Send');
       }
-      if(banner==='delivery-timeout'&&!deliveryRetryClicked&&newestUserMatchesPrompt) {
-        const clicked=await clickDeliveryRetryOnce(page,destination,true,false);
+      if((banner==='delivery-timeout'||banner==='stream-error')&&
+        !deliveryRetryClicked&&newestUserMatchesPrompt) {
+        const clicked=await clickDeliveryRetryOnce(page,destination,true,false,
+          deliveryRetry?.claim);
         if(clicked) {
+          deliveryRetry?.clicked();
           deliveryRetryClicked=true;
           if(!transportExtensionUsed){
             deadline=interruptedDeadline(start,deadline,Date.now(),
               timeoutMs===DEFAULT_BROWSER_TURN_TIMEOUT_MS);
             transportExtensionUsed=true;
           }
-          console.warn('New ChatGPT delivery timed out; clicked Retry once on the existing message');
+          console.warn('New ChatGPT delivery/stream failure; clicked Retry once on the existing message');
           await delay(Math.min(3000,Math.max(0,deadline-Date.now())));
           continue;
         }

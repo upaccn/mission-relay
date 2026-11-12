@@ -795,23 +795,24 @@ export class Store {
       throw new Error('Delivery Retry intent does not match original request');
     return true;
   }
-  claimDeliveryRetryIntent(id:string,requestKey:string,promptSha256:string):boolean {
+  claimDeliveryRetryIntent(id:string,requestKey:string,promptSha256:string,
+    reason:'delivery-timeout'|'stream-error'='delivery-timeout'):boolean {
     return this.transaction(()=>{
       const m=this.get(id),record=this.chatBrowserTurn(id);
       if(this.channelDrainRequested('telegram')||m.stopRequested||
         !record||record.requestKey!==requestKey||record.promptSha256!==promptSha256||
-        record.newConversation===true||
         !((m.state==='RUNNING'&&record.status==='reserved')||
           (m.state==='NEEDS_RECONCILIATION'&&record.status==='uncertain'&&
+            record.newConversation!==true&&
             m.lastError==='ChatGPT response observation timed out; submission outcome is ambiguous')))
         throw new Error('Delivery Retry requires the original active or timed-out request');
       this.requireUnspentBrowserReservation(id,record);
       if(this.hasDeliveryRetryIntent(id,requestKey,promptSha256))return false;
       this.setMeta(`chatgpt.browser.delivery_retry.${id}.${requestKey}`,
-        JSON.stringify({requestKey,promptSha256,at:new Date().toISOString()}));
+        JSON.stringify({requestKey,promptSha256,reason,at:new Date().toISOString()}));
       this.event(id,'chatgpt.browser_delivery_retry_intent',{
         requestKey,promptSha256,round:m.turnCount+1,
-        mode:'same-message-ui-retry',sendAgain:false});
+        reason,mode:'same-message-ui-retry',sendAgain:false});
       return true;
     });
   }
