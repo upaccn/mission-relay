@@ -6,7 +6,8 @@ import { Engine } from '../core/engine.js';
 import { Store,PI_SUCCESSOR_CHECKPOINT_MISMATCH } from '../core/store.js';
 import type {PreflightResult} from '../core/executor-plugins.js';
 import { renderChatGPTHandoff } from '../core/chatgpt-handoff.js';
-import {connectChatPage,inspectChatPage,lastVisibleUserPromptSha256,listConnectedChatCandidates,type BrowserSession} from './chatgpt-browser.js';
+import {connectChatPage,inspectChatPage,lastVisibleUserPromptSha256,listConnectedChatCandidates,
+  clickDeliveryRetryOnce,visibleLongTaskBanner,type BrowserSession} from './chatgpt-browser.js';
 import {adoptConnectedConversation} from '../core/chat-adoption.js';
 import {watchedBrowser,nextBrowserWatchCandidate,acknowledgeBrowserWatchCandidate,
   orderedBrowserWatchCandidates,recordBrowserWatchAttempt,
@@ -291,6 +292,7 @@ export class TelegramBridge {
    * A connector/read-only DOM outage must not poison its durable NEXT plan;
    * retry only after bounded quiet time, never by replaying a browser Send. */
   private lastTransientPiRecoveryAt=0;
+  private lastDeliveryRetryRecoveryAt=0;
   private readonly source='telegram';
   constructor(
     readonly store:Store, readonly engine:Engine, readonly transport:TelegramTransport,
@@ -386,6 +388,8 @@ export class TelegramBridge {
       // Recover ONLY a PI decision whose previous browser response and
       // next-step plan were durably observed. Never reconstruct an uncertain Send.
       if(!this.store.channelDrainRequested(this.source))
+        await this.recoverUncertainDeliveryOnce();
+      if(!this.store.channelDrainRequested(this.source))
         await this.recoverObservedPiCheckpoint();
       while(!signal?.aborted) {
         if(this.store.channelDrainRequested(this.source)) {
@@ -422,6 +426,8 @@ export class TelegramBridge {
           // Adopted ChatGPT missions may be queued by an independent local
           // CLI. Only this leased foreground controller drives PI/browser.
           if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
+            await this.recoverUncertainDeliveryOnce();
+          if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
             await this.recoverObservedPiCheckpoint();
           if(!this.activeTask&&!this.store.channelDrainRequested(this.source)&&
             watchedBrowser(this.store)&&
@@ -454,6 +460,73 @@ export class TelegramBridge {
       // A transport exit must not silently kill an in-flight external action.
       if(this.activeTask) await this.activeTask;
       this.store.releaseChannelLease(this.source,lease);
+    }
+  }
+
+  /** One leased Worker may inspect a timed-out ORIGINAL Send. The only
+   * permitted external action is one already-submitted-message UI Retry.
+   * A durable intent, recorded BEFORE the click, prevents replay after crash.
+   * The old request remains uncertain until the same exact tab yields a
+   * stable, final-marked reply; then the usual PI checkpoint path resumes. */
+  async recoverUncertainDeliveryOnce():Promise<void> {
+    if(this.activeMission||this.activeTask||this.store.channelDrainRequested(this.source))return;
+    if(Date.now()-this.lastDeliveryRetryRecoveryAt<60_000)return;
+    this.lastDeliveryRetryRecoveryAt=Date.now();
+    const candidate=this.engine.list().find(m=>{
+      const r=this.store.chatBrowserTurn(m.id);
+      return m.state==='NEEDS_RECONCILIATION'&&!m.stopRequested&&
+        m.lastError==='ChatGPT response observation timed out; submission outcome is ambiguous'&&
+        r?.status==='uncertain'&&r.newConversation!==true&&
+        this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1';
+    });
+    if(!candidate)return;
+    const r=this.store.chatBrowserTurn(candidate.id)!;
+    const url=this.store.chatLink(candidate.id),browserId=this.store.chatBrowserBinding(candidate.id);
+    if(!url||!browserId)return;
+    let session:BrowserSession|undefined;
+    try {
+      session=await withReadOnlyDeadline(this.browserConnector(url,{browserId}),30_000,
+        late=>late.close());
+      const page=session.page;
+      const snapshot=await withReadOnlyDeadline(inspectChatPage(page,url));
+      if(!snapshot.composerReady||
+        await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))!==r.promptSha256)return;
+      const already=this.store.hasDeliveryRetryIntent(candidate.id,r.requestKey,r.promptSha256);
+      const banner=await withReadOnlyDeadline(visibleLongTaskBanner(page,snapshot.lastAssistant));
+      if(!already && !snapshot.generating && banner==='delivery-timeout') {
+        const clicked=await clickDeliveryRetryOnce(page,url,true,false,
+          async()=>{
+            if(await lastVisibleUserPromptSha256(page)!==r.promptSha256)return false;
+            return this.store.claimDeliveryRetryIntent(candidate.id,r.requestKey,r.promptSha256);
+          });
+        if(clicked){
+          this.store.recordDeliveryRetryClicked(candidate.id,r.requestKey,r.promptSha256);
+          console.warn('Recovered timed-out ChatGPT delivery by one existing-message UI Retry (no composer Send)');
+        }
+        return;
+      }
+      if(!already||snapshot.generating||banner!==null||
+        !/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]\s*$/.test(snapshot.lastAssistant.trim()))
+        return;
+      // Never credit a stale earlier answer, a mid-stream UI refresh, or a
+      // different owner's message. The Store also checks the original lock,
+      // unique request, assistant SHA, and previous observed answer.
+      await new Promise(resolve=>setTimeout(resolve,3000));
+      const stable=await withReadOnlyDeadline(inspectChatPage(page,url));
+      if(stable.generating||!stable.composerReady||
+        stable.lastAssistant!==snapshot.lastAssistant||
+        await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))!==r.promptSha256||
+        await withReadOnlyDeadline(visibleLongTaskBanner(page,stable.lastAssistant))!==null)return;
+      const assistantSha256=createHash('sha256').update(stable.lastAssistant).digest('hex');
+      this.store.recoverObservedBrowserTurn(candidate.id,candidate.version,{
+        requestPromptSha256:r.promptSha256,assistantSha256,summary:stable.lastAssistant});
+      console.warn('Independently recovered the original timed-out ChatGPT answer; PI must review before next Send');
+    }catch(error) {
+      // No change to original uncertainty on a missing tab/DOM/reconnect.
+      // A consumed click intent is never erased or blindly repeated.
+      console.error(`Delivery Retry recovery ${candidate.id}: ${error instanceof Error?error.message:'read failed'}`);
+    }finally{
+      if(session)try{await session.close();}catch{/* Preserve original state. */}
     }
   }
 

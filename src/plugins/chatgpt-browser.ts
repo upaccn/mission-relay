@@ -478,13 +478,17 @@ export function interruptedDeadline(start:number,deadline:number,now:number,
 
 /** Owner-approved UI Retry of the existing delivery, not a second composer Send. */
 export async function clickDeliveryRetryOnce(page:Page,expectedUrl:string,
-  latestUserMatchesReserved:boolean,alreadyClicked:boolean):Promise<boolean> {
+  latestUserMatchesReserved:boolean,alreadyClicked:boolean,
+  beforeClick?:()=>Promise<boolean>):Promise<boolean> {
   if(alreadyClicked||!latestUserMatchesReserved)return false;
   if(normalizeChatGPTUrl(page.url())!==normalizeChatGPTUrl(expectedUrl))
     throw new Error('Delivery Retry refused: conversation URL changed');
   if(await visibleLongTaskBanner(page,'')!=='delivery-timeout')return false;
   const retry=page.getByRole('button',{name:'Retry',exact:true});
   if(await retry.count()!==1||!await retry.isVisible()||!await retry.isEnabled())return false;
+  // Persist a one-shot intent before any external click, so a Worker crash
+  // cannot cause another Retry of the same immutable ChatGPT request.
+  if(beforeClick && !await beforeClick())return false;
   await retry.click({timeout:10000});
   return true;
 }
@@ -505,7 +509,8 @@ export function isFreshResponseLoadFailure(before:ChatPageSnapshot,
 /** Never retry the send click after an ambiguous exception. Caller owns durable reservation. */
 export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
   timeoutMs=DEFAULT_BROWSER_TURN_TIMEOUT_MS,requireFinalMarker=false,
-  verifiedSource?:{assistantSha256:string;assistantTurnId:string|null}):Promise<BrowserReceipt> {
+  verifiedSource?:{assistantSha256:string;assistantTurnId:string|null},
+  deliveryRetry?:{claim:()=>Promise<boolean>;clicked:()=>void}):Promise<BrowserReceipt> {
   if(typeof prompt!=='string'||!prompt.trim()||prompt.length>12000)
     throw new Error('Prompt must contain 1–12000 characters');
   if(!Number.isInteger(timeoutMs)||timeoutMs<10000||timeoutMs>MAX_BROWSER_TURN_TIMEOUT_MS)
@@ -545,8 +550,10 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
       console.warn('ChatGPT connection interrupted; waiting for the same response without another Send');
     }
     if(banner==='delivery-timeout'&&!deliveryRetryClicked&&newestUserMatchesPrompt) {
-      const clicked=await clickDeliveryRetryOnce(page,targetUrl,true,false);
+      const clicked=await clickDeliveryRetryOnce(page,targetUrl,true,false,
+        deliveryRetry?.claim);
       if(clicked) {
+        deliveryRetry?.clicked();
         deliveryRetryClicked=true;
         if(!transportExtensionUsed){
           deadline=interruptedDeadline(startedAt,deadline,Date.now(),

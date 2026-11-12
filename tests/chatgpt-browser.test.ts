@@ -923,6 +923,27 @@ test('Existing ChatGPT continuation clicks the delivery Retry once and observes 
   assert.equal(result.submitted,true);
 });
 
+test('Relay controller commits one Retry intent before the original UI click and one observed turn',async()=>{
+  const f=fixture();try{
+    const page=new TransportBannerPage();
+    const prompt='Retried original Relay message only';
+    const observed=await executeBrowserTurn({store:f.store,missionId:f.linked.id,
+      revision:f.linked.version,requestKey:'delivery-ui-original',
+      page:page as unknown as Page,url:URL,prompt,timeoutMs:12000,
+      requireFinalMarker:true});
+    assert.equal(observed.turnCount,1);
+    assert.equal(page.sends,1,'Retry does not consume another composer Send');
+    assert.equal(page.retryClicks,1);
+    assert.equal(f.store.hasDeliveryRetryIntent(f.linked.id,'delivery-ui-original',
+      createHash('sha256').update(prompt).digest('hex')),true);
+    const events=f.store.events(f.linked.id);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_delivery_retry_intent').length,1);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_delivery_retry_clicked').length,1);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(events.filter(e=>e.type==='chatgpt.browser_observed').length,1);
+  }finally{f.cleanup();}
+});
+
 test('Connection interrupted is a waiting state, not a final reply or Retry trigger',async()=>{
   const page=new TransportBannerPage();page.banner='interrupted';
   page.reply='Response is not yet complete.\n[MISSION_RELAY:DONE]';

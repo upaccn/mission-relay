@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.1 — 2026-11-12
+
+- Persist a single original-request delivery Retry intent before clicking ChatGPT's exact visible `Retry` button. Worker crashes, reattachment and ambiguous click completion cannot trigger another Retry or composer Send.
+- For a timed-out original same-chat Send, the enrolled Telegram Worker can read the original pinned tab, retry that submitted message once if eligible, and independently recover its twice-stable final-marked answer before PI continues. Wrong tabs, changed prompts, unrelated failures and maintenance drains remain blocked.
+- Add deterministic positive and negative regression tests for retry intent deduplication, original-answer recovery and changed-prompt refusal. Software release still requires exact-SHA CI; GMK promotion remains subject to its independent maintenance gates.
+
 ## 1.1.0 — 2026-11-11
 
 ### Product and workflow

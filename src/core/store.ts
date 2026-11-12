@@ -781,6 +781,50 @@ export class Store {
     const value=this.getMeta(this.browserTurnKey(id));
     return value?JSON.parse(value) as ChatBrowserTurn:null;
   }
+  /** Exactly one UI Retry intent per immutable browser request, including
+   * across Worker death. The intent is committed BEFORE the external click:
+   * an interrupted click may never be repeated blindly. This does not reserve
+   * another Send, clear the original lock, or credit an answer. */
+  hasDeliveryRetryIntent(id:string,requestKey:string,promptSha256:string):boolean {
+    const saved=this.getMeta(`chatgpt.browser.delivery_retry.${id}.${requestKey}`);
+    if(saved===null)return false;
+    let intent:unknown;
+    try{intent=JSON.parse(saved);}catch{throw new Error('Corrupted delivery Retry intent');}
+    const value=intent as {requestKey?:string;promptSha256?:string}|null;
+    if(!value||value.requestKey!==requestKey||value.promptSha256!==promptSha256)
+      throw new Error('Delivery Retry intent does not match original request');
+    return true;
+  }
+  claimDeliveryRetryIntent(id:string,requestKey:string,promptSha256:string):boolean {
+    return this.transaction(()=>{
+      const m=this.get(id),record=this.chatBrowserTurn(id);
+      if(this.channelDrainRequested('telegram')||m.stopRequested||
+        !record||record.requestKey!==requestKey||record.promptSha256!==promptSha256||
+        record.newConversation===true||
+        !((m.state==='RUNNING'&&record.status==='reserved')||
+          (m.state==='NEEDS_RECONCILIATION'&&record.status==='uncertain'&&
+            m.lastError==='ChatGPT response observation timed out; submission outcome is ambiguous')))
+        throw new Error('Delivery Retry requires the original active or timed-out request');
+      this.requireUnspentBrowserReservation(id,record);
+      if(this.hasDeliveryRetryIntent(id,requestKey,promptSha256))return false;
+      this.setMeta(`chatgpt.browser.delivery_retry.${id}.${requestKey}`,
+        JSON.stringify({requestKey,promptSha256,at:new Date().toISOString()}));
+      this.event(id,'chatgpt.browser_delivery_retry_intent',{
+        requestKey,promptSha256,round:m.turnCount+1,
+        mode:'same-message-ui-retry',sendAgain:false});
+      return true;
+    });
+  }
+  recordDeliveryRetryClicked(id:string,requestKey:string,promptSha256:string):void {
+    this.transaction(()=>{
+      if(!this.hasDeliveryRetryIntent(id,requestKey,promptSha256))
+        throw new Error('Delivery Retry click lacks its durable intent');
+      if(this.events(id).some(e=>e.type==='chatgpt.browser_delivery_retry_clicked'&&
+        (e.payload as {requestKey?:string}).requestKey===requestKey))return;
+      this.event(id,'chatgpt.browser_delivery_retry_clicked',{
+        requestKey,mode:'same-message-ui-retry',sendAgain:false});
+    });
+  }
   /** A dead local Send owner may have submitted its reserved request before
    * exiting. This predicate authorizes only independent inspection, NEVER a
    * retry, lock removal or automatic credit. A foreign/unknown or live owner
