@@ -2,7 +2,7 @@
 
 ## Release boundaries
 
-- Current package version: `1.1.2` (source candidate). This is the software version, not proof that a GMK Worker is running it or that every operator Goal has finished.
+- Current package version: `1.1.3` (source candidate). This is the software version, not proof that a GMK Worker is running it or that every operator Goal has finished.
 - GitHub `main` is the published software source boundary. Run `software-release-status --sha <exact-main-SHA> --run-id <CI-run>` to independently qualify the three-platform Node.js CI **without a Goal, PI or local SQLite database**.
 - A successful CI qualification alone does not deploy software. Runtime promotion separately requires a clean target checkout, zero in-flight requests, an atomic maintenance drain, independently restored database backup, previous compiled rollback image, verified single Worker and source SHA, and drain release.
 - Goal work is an independent business acceptance process. PI automatically reviews each answer and validates plans and work items; the user does not approve staged Goal checkpoints. Separate `goal-release-*` probes remain operator-only for independent business evidence, not a software-build prerequisite.
@@ -11,6 +11,7 @@
 ## Operational invariants
 
 - One Windows interactive-user Worker with Playwriter/Chrome access and a user-scoped, optionally hidden Telegram Scheduled Task. A session-0 service cannot substitute for an interactive Chrome Worker.
+- The two-minute daily Windows recovery trigger MUST set `Repetition.StopAtDurationEnd=false`; the default `true` killed the running Worker at the repetition boundary even when execution time was unlimited. `UpgradeSchedule` must correct legacy existing triggers without restarting the active Worker.
 - New PI Missions have no turn ceiling (stored `max_turns=0`); the five-observed-Send limit per Chat is unchanged. Never resend an uncertain original request. Owner pauses survive restart.
 - Original existing-chat delivery timeouts allow one SQLite-audited UI Retry of the **same already submitted message**, with intent durably committed before the click. A timed-out, uncertain original same-chat request may be automatically inspected by the single Worker; a complete, twice-verified reply can be reconciled and PI-reviewed without a new Send. Unrelated uncertainty, changed prompt/tab or revoked scope remains blocked.
 - The same one-shot Retry budget now also covers the actual ChatGPT `Error in message stream` control adjacent to its unique Retry button. New-chat first Sends gain the same durable intent protection while still owned; unbound new-chat uncertainty is not automatically adopted or replayed.

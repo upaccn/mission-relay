@@ -122,6 +122,13 @@ function New-RecoveryTriggers {
         -RepetitionInterval (New-TimeSpan -Minutes 2) `
         -RepetitionDuration (New-TimeSpan -Days 1)
     $daily.Repetition=$template.Repetition
+    # Critical: Windows defaults this field to TRUE. A day-long repeating
+    # trigger then TERMINATES the long-running Worker at the repetition
+    # boundary despite Settings.ExecutionTimeLimit=PT0S. On the owner host
+    # this happened at 00:04 on consecutive days, stranding a new-chat Send.
+    # The daily trigger should only offer restarts while idle, never terminate
+    # an already-running Mission.
+    $daily.Repetition.StopAtDurationEnd=$false
     return @($logon,$daily)
 }
 
@@ -912,18 +919,33 @@ switch ($Action) {
             workerParentStartedAt=if($workerProcess){$workerProcess.parentStartedAt}else{$null};
             pendingReplies=$channel.pendingReplies; credentialsEnrolled=((Test-Path $tokenFile) -and (Test-Path $settingsFile));
             transportHealth=$channel.transportHealth; lastPollSuccessAt=$channel.lastPollSuccessAt;
-            recoverySchedule=if($task){ [bool](@($task.Triggers | Where-Object { $_.Repetition.Interval -eq 'PT2M' }).Count) }else{$false};
+            recoverySchedule=if($task){ [bool](@($task.Triggers | Where-Object {
+                $_.Repetition.Interval -eq 'PT2M' -and
+                $_.Repetition.StopAtDurationEnd -eq $false
+            }).Count -eq 1) }else{$false};
             proxyUrl=if(Test-Path $settingsFile){ [string]((Get-Content $settingsFile -Raw -Encoding utf8 | ConvertFrom-Json).PSObject.Properties['proxyUrl']?.Value) }else{''} }
     }
     'UpgradeSchedule' {
         Assert-Prerequisites
         $task=Assert-OurTask
+        if ((Get-ChannelStatus).drainRequested) {
+            throw 'Cannot change recovery triggers during an active maintenance drain'
+        }
         $before=Get-ChannelStatus
-        if (@($task.Triggers | Where-Object {$_.Repetition.Interval -eq 'PT2M'}).Count -eq 0) {
+        $healthy=@($task.Triggers | Where-Object {
+            $_.Repetition.Interval -eq 'PT2M' -and
+            $_.Repetition.StopAtDurationEnd -eq $false
+        })
+        if ($healthy.Count -ne 1 -or
+            @($task.Triggers | Where-Object {$_.Repetition.Interval -eq 'PT2M'}).Count -ne 1) {
             Set-ScheduledTask -TaskName $taskName -Trigger @(New-RecoveryTriggers) | Out-Null
         }
         $updated=Assert-OurTask
-        if (@($updated.Triggers | Where-Object {$_.Repetition.Interval -eq 'PT2M'}).Count -ne 1 -or
+        if (@($updated.Triggers | Where-Object {
+                $_.Repetition.Interval -eq 'PT2M' -and
+                $_.Repetition.StopAtDurationEnd -eq $false
+            }).Count -ne 1 -or
+            @($updated.Triggers | Where-Object {$_.Repetition.Interval -eq 'PT2M'}).Count -ne 1 -or
             $updated.Settings.MultipleInstances.ToString() -ne 'IgnoreNew') {
             throw 'Recovery schedule readback failed'
         }
@@ -932,7 +954,7 @@ switch ($Action) {
             ((-not $after.pollerPresent) -or $after.pollerPid -ne $before.pollerPid)) {
             throw 'Task schedule update unexpectedly changed the live poller'
         }
-        Write-Output 'Daily repeating retry trigger is active; enrolled Telegram poller unchanged.'
+        Write-Output 'Daily repeating retry trigger is active without termination at duration end; enrolled Telegram poller unchanged.'
     }
     'HideWorker' {
         # Changing the registered action does not stop a running Worker.

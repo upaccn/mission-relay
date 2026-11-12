@@ -10,6 +10,30 @@ import {DatabaseSync} from 'node:sqlite';
 const path=resolve('scripts/windows/telegram-task.ps1');
 const script=readFileSync(path,'utf8');
 
+test('two-minute Windows recovery schedule never stops a live Mission at the daily repetition boundary',()=>{
+  const triggers=script.slice(script.indexOf('function New-RecoveryTriggers {'),
+    script.indexOf('function Assert-OurTask {'));
+  assert.match(triggers,/-RepetitionInterval \(New-TimeSpan -Minutes 2\)/);
+  assert.match(triggers,/-RepetitionDuration \(New-TimeSpan -Days 1\)/);
+  assert.match(triggers,/\$daily\.Repetition\.StopAtDurationEnd=\$false/,
+    'Windows defaults to true, which killed the enrolled Worker at 00:04 on consecutive days');
+  const migrate=script.slice(script.indexOf("    'UpgradeSchedule' {"),
+    script.indexOf("    'HideWorker' {"));
+  assert.match(migrate,/Assert-OurTask/);
+  assert.match(migrate,/\$task\.Triggers[\s\S]*?StopAtDurationEnd -eq \$false/,
+    'A legacy task with the two-minute trigger but StopAtDurationEnd=true MUST be updated');
+  assert.match(migrate,/Set-ScheduledTask -TaskName \$taskName -Trigger @\(New-RecoveryTriggers\)/);
+  assert.match(migrate,/\$updated\.Triggers[\s\S]*?StopAtDurationEnd -eq \$false/,
+    'Do not claim schedule migration without reading back the corrected stop policy');
+  assert.match(migrate,/\$after\.pollerPid -ne \$before\.pollerPid/,
+    'Changing the trigger must not claim success if the active Worker was interrupted');
+  assert.doesNotMatch(migrate,/Stop-ScheduledTask|Start-ScheduledTask|Remove-ScheduledTask|git\s|npm\s/);
+  const status=script.slice(script.indexOf("    'Status' {"),
+    script.indexOf("    'UpgradeSchedule' {"));
+  assert.match(status,/StopAtDurationEnd -eq \$false/,
+    'Status must report a dangerous legacy schedule as unhealthy');
+});
+
 test('Windows lifecycle PowerShell parses without errors before production enrollment',
   {skip:process.platform!=='win32'},()=>{
     const quote=(s:string)=>`'${s.replaceAll("'","''")}'`;

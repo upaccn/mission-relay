@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.3 — 2026-11-13
+
+- Fix a long-running Windows Task Scheduler defect discovered from repeated 00:04 Event 111 task terminations: a daily two-minute recovery trigger inherited `StopAtDurationEnd=true` despite `ExecutionTimeLimit=PT0S`. Explicitly set `StopAtDurationEnd=false` to keep the enrolled Worker running through midnight.
+- Make `UpgradeSchedule` migrate existing tasks with an unsafe stop-at-duration-end flag even if their two-minute trigger already exists; validate the updated trigger, unchanged Worker PID, and recovery schedule in read-only Status output.
+- Protect already-submitted Mission turns: repairing the scheduled task never sends, retries, deletes, or modifies the original browser reservation. Use the existing guarded Chrome recovery route to inspect any previously stranded new-chat request.
+
 ## 1.1.2 — 2026-11-12
 
 - Recognize ChatGPT's actual `Error in message stream` UI control (including its optional period) only in the exact visible Retry control group, rather than from generated prose.
