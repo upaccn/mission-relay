@@ -265,7 +265,7 @@ function formatPiProgress(m:Mission,event:MissionEvent):string {
  * browser response, never complete tool logs, screenshots or browser secrets. */
 export function formatBrowserResultNotification(m:Mission,event:MissionEvent):string {
   const data=(event.payload && typeof event.payload==='object')
-    ?event.payload as {excerpt?:unknown;round?:unknown;reason?:unknown}:{};
+    ?event.payload as {excerpt?:unknown;round?:unknown;reason?:unknown;flowSignal?:unknown}:{};
   if(event.type==='chatgpt.browser_uncertain')
     return ['Needs attention — ChatGPT response unconfirmed',
       `Round: ${typeof data.round==='number'?data.round:m.turnCount}`,
@@ -289,7 +289,7 @@ export function formatBrowserResultNotification(m:Mission,event:MissionEvent):st
   // Redact recognizable credential formats if a model accidentally quotes one.
   const round=typeof data.round==='number'?data.round:m.turnCount;
   const finished=event.type==='chatgpt.browser_run_finished'&&
-    finalMarker==='[MISSION_RELAY:DONE]';
+    (data.flowSignal==='DONE'||finalMarker==='[MISSION_RELAY:DONE]');
   const text=[finished?'All Done — ChatGPT task finished (model-reported)':
     `ChatGPT update — Round ${round}`,
     'Summary (not independently verified):',

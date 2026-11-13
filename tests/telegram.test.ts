@@ -1480,7 +1480,7 @@ test('Telegram /continue end-to-end delivers one result after two synthetic brow
     assert.equal(f.store.events(f.m.id).filter(x=>x.type==='chatgpt.browser_observed').length,2);
     assert.equal(f.store.events(f.m.id).filter(x=>x.type==='chatgpt.browser_run_finished').length,1);
     await bridge.pollOnce(0);
-    assert.equal(f.transport.sent.filter(x=>/ChatGPT update — Round/.test(x)).length,1);
+    assert.equal(f.transport.sent.filter(x=>/All Done — ChatGPT task finished/.test(x)).length,1);
   }finally{f.cleanup();}
 });
 
