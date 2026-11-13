@@ -136,7 +136,8 @@ test('WP4 /goal creates durable Goal plus one PI Mission; PI persists a reviewed
     assert.ok(task);
     assert.equal(task.sandbox,'read-only');
     assert.equal(ledger.missionGoalId(task.id),goals[0]!.id);
-    assert.ok(f.sent.some(x=>x.includes(`Long-term Goal: ${goals[0]!.id}`)));
+    assert.ok(f.sent.some(x=>x.includes('Long-term goal tracking is enabled.')));
+    assert.ok(f.sent.every(x=>!x.includes(goals[0]!.id)));
     for(let i=0;i<160&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
     assert.equal(f.state().closed,true);
     const graph=ledger.graph(goals[0]!.id);
@@ -156,9 +157,9 @@ test('WP4 /goal creates durable Goal plus one PI Mission; PI persists a reviewed
       f.message(3103,'/goals'),f.message(3104,`/status ${task.id}`)]);
     await f.bridge.pollOnce(0);
     assert.equal(ledger.listGoals().length,1);
-    assert.ok(f.sent.some(x=>x.includes('Independent verification: pending')));
-    assert.ok(f.sent.some(x=>x.includes('Persistent Goals: Page 1/1')));
-    assert.ok(f.sent.some(x=>x.includes(`Persistent Goal: /goal-status ${graph.goal.id}`)));
+    assert.ok(f.sent.some(x=>x.includes('Independent release checks: pending')));
+    assert.ok(f.sent.some(x=>x.includes('Goals: Page 1/1')));
+    assert.ok(f.sent.some(x=>x.includes('Work packages reviewed as passed')));
     assert.equal(f.store.events(task.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2);
   }finally{f.cleanup();}
 });
@@ -228,7 +229,7 @@ test('WP4 /goal-build requires existing explicit local repository approval; fail
     const mission=f.engine.list().find(x=>x.goal===objective)!;
     assert.equal(mission.sandbox,'workspace-write');
     assert.equal(mission.workspace,APPROVED_PROJECT);
-    assert.ok(f.sent.some(x=>x.includes(`Long-term Goal: ${goal.id}`)));
+    assert.ok(f.sent.some(x=>x.includes('Long-term goal tracking is enabled.')));
     for(let i=0;i<150&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
     assert.equal(f.state().closed,true);
     assert.ok(f.state().sentPrompts[0]?.includes(APPROVED_PROJECT));
@@ -360,7 +361,7 @@ test('owner can amend an unsent READY PI successor after restart without startin
     f.setUpdates([f.message(981,'Add a Windows deployment gate to the next step')]);
     await f.bridge.pollOnce(0);
     assert.equal(f.store.pendingPiOwnerDirectives(child.id).length,1);
-    assert.match(f.sent.join('\n'),/Owner instruction queued/);
+    assert.match(f.sent.join('\n'),/Instruction saved/);
     f.setUpdates([f.message(982,`/instruct ${child.id} v${child.version} Verify failed CI recovery`)]);
     await f.bridge.pollOnce(0);
     assert.equal(f.store.pendingPiOwnerDirectives(child.id).length,2);
@@ -422,7 +423,8 @@ test('Telegram restart poll materializes one missing PI successor and reports co
     assert.equal(f.store.get(childId).state,'READY');
     assert.equal(f.state().sends,0);
     assert.equal(f.store.events(m.id).filter(e=>e.type==='pi.chain_successor').length,1);
-    assert.match(f.sent.join('\n'),new RegExp(`Automatically continued as Mission ${childId}`));
+    assert.match(f.sent.join('\n'),/Continuing — Next stage/);
+    assert.doesNotMatch(f.sent.join('\n'),new RegExp(childId));
     await f.bridge.pollOnce(0);
     assert.equal(f.store.piChainSuccessor(m.id),childId);
     assert.equal(f.store.events(m.id).filter(e=>e.type==='pi.chain_successor').length,1);
@@ -568,7 +570,7 @@ test('Telegram default text starts PI autopilot and later owner text is queued u
     assert.equal(mission.maxTurns,0,'new PI Missions have no turn ceiling');
     f.setUpdates([f.message(971,'后续我要手动测试 Android，请在当前轮结束后停下来')]);
     await f.bridge.pollOnce(0);
-    assert.ok(f.sent.some(x=>/Owner instruction queued/.test(x)));
+    assert.ok(f.sent.some(x=>/Instruction saved/.test(x)));
     assert.equal(f.store.pendingPiOwnerDirectives(mission.id).length,1);
     for(let i=0;i<100&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
     assert.equal(f.state().closed,true);
@@ -578,9 +580,9 @@ test('Telegram default text starts PI autopilot and later owner text is queued u
     assert.ok(seen && seen.ownerDirectives[0]?.text.includes('手动测试 Android'));
     assert.equal(f.store.piPlan(mission.id)?.action,'BLOCKED');
     await f.bridge.pollOnce(0);
-    assert.equal(f.sent.filter(x=>/PI BLOCKED/.test(x)).length,1);
+    assert.equal(f.sent.filter(x=>/Needs attention — Task paused/.test(x)).length,1);
     await f.bridge.pollOnce(0);
-    assert.equal(f.sent.filter(x=>/PI BLOCKED/.test(x)).length,1);
+    assert.equal(f.sent.filter(x=>/Needs attention — Task paused/.test(x)).length,1);
     assert.equal(f.store.events(mission.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
   }finally{f.cleanup();}
 });
@@ -601,12 +603,12 @@ test('Telegram receives bounded PI progress after NEXT and only one PI final sum
     assert.equal(f.state().closed,true);
     assert.equal(f.state().sends,2);
     await f.bridge.pollOnce(0);
-    assert.equal(f.sent.filter(x=>/PI decision: NEXT/.test(x)).length,1);
-    assert.equal(f.sent.filter(x=>/PI DONE/.test(x)).length,1);
-    assert.equal(f.sent.filter(x=>/ChatGPT result \(model-provided/.test(x)).length,0);
+    assert.equal(f.sent.filter(x=>/Progress — 1 rounds completed/.test(x)).length,1);
+    assert.equal(f.sent.filter(x=>/All Done — Task finished/.test(x)).length,1);
+    assert.equal(f.sent.filter(x=>/ChatGPT update/.test(x)).length,0);
     await f.bridge.pollOnce(0);
-    assert.equal(f.sent.filter(x=>/PI decision: NEXT/.test(x)).length,1);
-    assert.equal(f.sent.filter(x=>/PI DONE/.test(x)).length,1);
+    assert.equal(f.sent.filter(x=>/Progress — 1 rounds completed/.test(x)).length,1);
+    assert.equal(f.sent.filter(x=>/All Done — Task finished/.test(x)).length,1);
   }finally{f.cleanup();}
 });
 
@@ -1318,7 +1320,7 @@ test('A durably interrupted old PI task does not block unrelated new owner work 
     assert.match(f.store.get(old.id).lastError??'',/PI inference unavailable/);
     f.setUpdates([f.message(992,`/status ${old.id}`)]);
     await f.bridge.pollOnce(0);
-    assert.ok(f.sent.some(text=>text.includes('Last controller error: PI inference unavailable')));
+    assert.ok(f.sent.some(text=>text.includes('Issue: PI inference unavailable')));
   }finally{f.cleanup();}
 });
 

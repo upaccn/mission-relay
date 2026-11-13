@@ -43,6 +43,16 @@ can pause at any time; in-flight work is observed/reconciled before its lock
 is released. Network and model inference retries are local to the existing
 observed checkpoint, not permission to duplicate a browser request.
 
+Telegram's default interface is task-first, not an operator console: `/status`
+shows the current task and its readable waiting/reviewing/blocked state, round
+count, and current Chat budget without identifiers. `/list` uses numbered
+task names, read-only pagination and buttons; `/goal-status` defaults to the
+latest Goal. Progress is reported after the first and every fifth PI-reviewed
+round. A genuinely finished PI task receives one **All Done** message with a
+bounded summary; a blocked/paused/unfinished Goal never does. Business release
+verification remains explicitly separate. UUIDs, revisions, hashes and raw
+errors remain in operator CLI diagnostics and private SQLite audit only.
+
 ## Status and notification design
 
 The default view should answer: **What is running? What has been achieved?

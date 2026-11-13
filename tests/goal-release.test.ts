@@ -235,17 +235,16 @@ test('every registered ReleaseProbe has an exact source binding, with no cross-s
     test:'local-command',build:'local-command',
     'ci-ubuntu':'github-actions','ci-macos':'github-actions','ci-windows':'github-actions',
     'chrome-10-to-11':'chrome-readback',
-    'chrome-5-to-6':'chrome-readback',
     'mission-32-successor':'chrome-readback',
     'maintenance-resume':'maintenance-readback',
     'relay-tab-retirement':'chrome-readback',
     'gmk-production-readback':'gmk-readback',
     'criterion:123e4567-e89b-42d3-a456-426614174001':'independent-work',
   };
-  // Historical 5→6 and 32-to-successor probes remain supported read-only
-  // evidence sources, but are not new-release gates.
+  // The bounded 32-to-successor probe is still retained for saved Missions;
+  // the obsolete 5→6 special-case probe is no longer part of the API.
   assert.deepEqual(Object.keys(bound).filter(x=>!x.startsWith('criterion:')).sort(),
-    [...RELEASE_GATES,'mission-32-successor','chrome-5-to-6'].sort());
+    [...RELEASE_GATES,'mission-32-successor'].sort());
   const allSources=['local-command','github-actions','chrome-readback',
     'maintenance-readback','gmk-readback','independent-work','model-answer',null];
   for(const [requirement,source] of Object.entries(bound)){

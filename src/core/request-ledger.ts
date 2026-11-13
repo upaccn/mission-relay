@@ -52,7 +52,7 @@ export function inspectGoalRequestLedger(store:Store,goalId:string){
       const reservations=events.filter(e=>e.type==='chatgpt.browser_reserved');
       const observations=events.filter(e=>observedTypes.has(e.type));
       // Reconstruct conversation identity AT EACH original reservation, not
-      // from the current mutable chat link. A later owner rebind, 5→6
+      // from the current mutable chat link. A later owner rebind, Chat
       // migration or 32→child must not rewrite historical source identity.
       const sources=new Map<number,string|null>();
       let chatHash:string|null=null;

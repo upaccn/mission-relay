@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.5 — 2026-11-13
+
+- Redesign owner-facing Telegram: task titles, readable progress, pagination and status without UUIDs, a concise **All Done** completion summary and actionable paused/blocked messages.
+- Report PI progress on the first and every fifth reviewed turn, rather than dumping internal events and hashes each round. Do not equate a PI task's DONE with independent business release verification.
+- Remove the obsolete 5→6-only Chrome ReleaseProbe, CLI history reader and special pre-Send recovery exception. Ten observed Sends per Chat remains the runtime boundary. Immutable SQLite requests, audit history, no-replay and general recovery protections remain intact.
+- Preserve the existing cooperative maintenance, isolated SQLite restore, verified rollback and exact-SHA single-Worker GMK promotion path.
+
 ## 1.1.4 — 2026-11-13
 
 - Increase per-ChatGPT-conversation capacity from five to ten durably observed Relay Sends; the eleventh must open a distinct observed Chat URL, retaining no-replay and PI review protections.

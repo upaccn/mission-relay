@@ -12,6 +12,7 @@ import {GoalLedger} from './goal-store.js';
 import {reviewGoalPiRound} from './goal-pi.js';
 import {goalWorkPrompt} from './goal-prompts.js';
 import {captureGoalChromeBoundary,retireGoalOwnedTab} from './goal-release-chrome-probes.js';
+import {inspectPiEvidence} from './pi-evidence.js';
 import {verifiedRuntimeProvenance} from './runtime-provenance.js';
 import {captureGoalSuccessorBoundary} from './goal-release-successor-probe.js';
 
@@ -393,9 +394,11 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
       page=rollover.page;url=rollover.url;
       const goalId=new GoalLedger(store).missionGoalId(missionId);
       let boundaryWitnessMissing=false;
-      if(goalId&&ownedPage&&received.turnCount>5&&received.turnCount%5===1){
+      const priorChatTurns=goalId&&ownedPage
+        ?inspectPiEvidence(store,missionId).rounds.at(-2)?.chatTurn:undefined;
+      if(goalId&&ownedPage&&priorChatTurns===MAX_PI_CHAT_TURNS){
         // Independent physical observation must precede best-effort cleanup.
-        // Sixth-turn PI review is still pending; only the later ReleaseProbe
+        // The new Chat's first-turn PI review is pending; only a later ReleaseProbe
         // can correlate this witness with the final committed PI decision.
         try {
           const sourceSha=verifiedRuntimeProvenance().sourceSha;

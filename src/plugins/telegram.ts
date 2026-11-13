@@ -1,5 +1,5 @@
 import {MAX_RELAY_CHAT_TURNS} from '../core/chat-limits.js';
-import {missionTurnsRemaining,missionTurnLimitReached,formatMissionTurns} from '../core/mission-turns.js';
+import {missionTurnsRemaining,missionTurnLimitReached} from '../core/mission-turns.js';
 import type { PluginManifest } from '../core/plugins.js';
 import {createHash} from 'node:crypto';
 import { Engine } from '../core/engine.js';
@@ -129,22 +129,26 @@ export class TelegramHttpTransport implements TelegramTransport {
 /** Read-only buttons; the authoritative reply remains persisted as text and
  * the keyboard can be deterministically re-created after a network failure. */
 export function telegramKeyboardForReply(reply:string):TelegramKeyboard|undefined {
-  if(reply.startsWith('Missions requiring attention:')||reply.startsWith('Recent Mission history')){
-    const uuids=[...reply.matchAll(/\/status ([0-9a-f-]{36})/gi)].slice(0,3).map(m=>m[1]!);
-    const section=reply.startsWith('Recent Mission history')?'history':'list';
+  if(reply.startsWith('Tasks: Page ')||reply.startsWith('History: Page ')){
+    const section=reply.startsWith('History:')?'history':'list';
     const paging=reply.match(/: Page (\d+)\/(\d+)\b/);
     const page=paging?Number(paging[1]):1,pages=paging?Number(paging[2]):1;
     return {inline_keyboard:[
-      ...uuids.map((id,i)=>[{text:`View ${i+1}`,callback_data:`mr:status:${id}`}]),
+      ...(section==='list'?[...reply.matchAll(/^([1-9]\d*)\. /gm)].slice(0,3)
+        .map(m=>[{text:`View task ${m[1]}`,callback_data:`mr:status-index:${m[1]}`}]) : []),
       ...(page>1?[[{text:'Previous page',callback_data:`mr:${section}:${page-1}`}]]:[]),
       ...(page<pages?[[{text:'Next page',callback_data:`mr:${section}:${page+1}`}]]:[]),
       [{text:'Refresh tasks',callback_data:'mr:list'},{text:'History',callback_data:'mr:history'}],
     ]};
   }
+  if(reply.startsWith('Task status:'))return {inline_keyboard:[
+    [{text:'Refresh status',callback_data:'mr:status'}],
+    [{text:'Tasks',callback_data:'mr:list'},{text:'History',callback_data:'mr:history'}],
+  ]};
   const detail=reply.match(/^([0-9a-f-]{36}) \[/i);
   if(detail)return {inline_keyboard:[
     [{text:'Refresh status',callback_data:`mr:status:${detail[1]}`}],
-    [{text:'Tasks',callback_data:'mr:list'},{text:'History',callback_data:'mr:history'}],
+    [{text:'Tasks',callback_data:'mr:list'}],
   ]};
   const status=reply.match(/\/status ([0-9a-f-]{36})/i);
   if(status)return {inline_keyboard:[
@@ -157,6 +161,9 @@ export function telegramKeyboardForReply(reply:string):TelegramKeyboard|undefine
 export function telegramCallbackCommand(data:string):string {
   if(data==='mr:list')return '/list';
   if(data==='mr:history')return '/history';
+  if(data==='mr:status')return '/status';
+  const index=data.match(/^mr:status-index:([1-9]\d*)$/);
+  if(index&&Number.isSafeInteger(Number(index[1])))return `/status ${index[1]}`;
   const page=data.match(/^mr:(list|history):([1-9]\d*)$/);
   if(page&&Number.isSafeInteger(Number(page[2])))return `/${page[1]} ${page[2]}`;
   const match=data.match(/^mr:status:([0-9a-f-]{36})$/i);
@@ -173,21 +180,6 @@ const TERMINAL_EVENTS=new Set([
   'chatgpt.browser_run_finished',
   'pi.decision','pi.autopilot_finished','pi.autopilot_interrupted',
 ]);
-const STATUS_BY_EVENT:Record<string,string>={
-  'mission.ambiguous_failure':'NEEDS_RECONCILIATION',
-  'mission.blocked':'BLOCKED',
-  'mission.paused':'PAUSED',
-  'verification.accepted':'COMPLETED',
-  'verification.checks_required':'PAUSED (verification checks required)',
-  'chatgpt.browser_observed':'PAUSED (ChatGPT browser response observed)',
-  'chatgpt.browser_uncertain':'NEEDS_RECONCILIATION (browser side effect ambiguous)',
-  'chatgpt.browser_rollover_recovered':'PAUSED (operator-confirmed new ChatGPT conversation)',
-  'chatgpt.browser_turn_recovered':'PAUSED (original ChatGPT reply independently re-observed)',
-  'chatgpt.browser_run_finished':'PAUSED (final ChatGPT browser batch result observed)',
-  'pi.autopilot_finished':'PAUSED (PI autopilot ended)',
-  'pi.autopilot_interrupted':'PAUSED (PI coordinator failed; no next Send)',
-};
-
 /** Telegram is not end-to-end encrypted. Treat all model summaries and
  * verifier evidence as untrusted, potentially secret-bearing display text. */
 function redactTelegramText(value:string):string {
@@ -197,16 +189,31 @@ function redactTelegramText(value:string):string {
     .replace(/https?:\/\/[^\s]*[#?][^\s]*/gi,'[PRIVATE LINK]');
 }
 function compactTelegramText(value:string,maxLength:number):string {
-  const cleaned=redactTelegramText(value.replace(/\s+/g,' ').trim());
+  const cleaned=redactTelegramText(value.replace(/\s+/g,' ').trim())
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,'[internal reference]');
   return cleaned.length<=maxLength?cleaned:`${cleaned.slice(0,maxLength-1)}…`;
+}
+function taskTitle(m:Mission,max=85):string{
+  return compactTelegramText(m.goal,max);
+}
+function taskState(m:Mission):string {
+  if(m.stopRequested)return 'Paused';
+  if(m.state==='COMPLETED')return 'Completed';
+  if(m.state==='NEEDS_RECONCILIATION')return 'Needs attention';
+  if(m.state==='BLOCKED')return 'Blocked — action required';
+  if(m.state==='RUNNING'||m.state==='VERIFYING')return 'Working';
+  if(m.state==='READY')return 'Queued';
+  const plan=m.state==='PAUSED'?m.lastError:null;
+  return plan?'Needs attention':'Paused / reviewing';
 }
 
 /** A native executor Mission must surface the verified outcome, not just an
  * opaque status code. Verifier conclusions are separate model judgment, not
  * independently proven real-world facts or deterministic checks. */
 export function formatNativeMissionNotification(m:Mission,event:MissionEvent):string {
-  const base=[`Mission ${m.id}: ${STATUS_BY_EVENT[event.type]??m.state}`,
-    `Event #${event.id}: ${event.type}`];
+  const base=[event.type==='verification.accepted'?'All Done — Task completed':
+    `Task update — ${taskState(m)}`,
+    taskTitle(m)];
   if(event.type==='verification.accepted') {
     const payload=event.payload && typeof event.payload==='object'
       ? event.payload as {reason?:unknown;evidence?:unknown}: {};
@@ -214,13 +221,13 @@ export function formatNativeMissionNotification(m:Mission,event:MissionEvent):st
       .filter((x):x is string=>typeof x==='string').slice(0,3):[];
     return [
       ...base,
-      'Native agent result (model + independent model verifier; not deterministic proof):',
       `Summary: ${compactTelegramText(m.lastSummary??'No summary available',450)}`,
-      ...evidence.map((x,i)=>`Evidence ${i+1}: ${compactTelegramText(x,235)}`),
-      `Details: /status ${m.id}`,
+      ...evidence.map((x,i)=>`Check ${i+1}: ${compactTelegramText(x,235)}`),
+      'Review: model verifier accepted; external outcomes may need separate checks.',
+      'Details: /status',
     ].join('\n').slice(0,2900);
   }
-  return [...base,`Use /status ${m.id} for details.`].join('\n');
+  return [...base,'Details: /status'].join('\n');
 }
 
 export function formatPiNotification(m:Mission,event:MissionEvent):string {
@@ -230,21 +237,28 @@ export function formatPiNotification(m:Mission,event:MissionEvent):string {
     typeof payload.action==='string'?payload.action:'UNKNOWN';
   const summary=typeof payload.summary==='string'?payload.summary:
     typeof payload.reason==='string'?payload.reason:'No PI decision summary';
-  return [`Mission ${m.id}: PI ${action} — ${formatMissionTurns(m.turnCount,m.maxTurns)} ChatGPT turns`,
-    'Result (PI model-reviewed, not independently verified):',
-    compactTelegramText(summary,850),
-    action==='INTERRUPTED'?'No new browser Send has been authorized; inspect before resuming.':'',
-    `Status: /status ${m.id}`,
-    `ChatGPT link: /handoff ${m.id}`].filter(Boolean).join('\n').slice(0,1600);
+  const complete=action==='DONE';
+  const label=complete?'All Done — Task finished':
+    action==='LIMIT'?'Continuing — Moving to the next stage':
+    action==='BLOCKED'||action==='INTERRUPTED'?'Needs attention — Task paused':
+    'Task update';
+  return [label,
+    taskTitle(m),
+    `Rounds completed: ${m.turnCount}`,
+    `Summary: ${compactTelegramText(summary,850)}`,
+    complete?'PI review finished. Independent release or external acceptance is separate.':
+      action==='BLOCKED'||action==='INTERRUPTED'?
+        'No new ChatGPT message will be sent until the issue is resolved.':'',
+    'Details: /status'].filter(Boolean).join('\n').slice(0,1600);
 }
 function formatPiProgress(m:Mission,event:MissionEvent):string {
   const payload=event.payload && typeof event.payload==='object'
     ?event.payload as {action?:unknown;round?:unknown;summary?:unknown}:{};
-  return [`PI Mission ${m.id}: round ${formatMissionTurns(typeof payload.round==='number'?payload.round:m.turnCount,m.maxTurns)} observed`,
-    `PI decision: ${String(payload.action??'UNKNOWN')}`,
-    `Progress (model-reviewed): ${compactTelegramText(typeof payload.summary==='string'?payload.summary:'',520)}`,
-    'Owner notes received during the next ChatGPT turn will be queued for the following PI decision.',
-    `Status: /status ${m.id}`].join('\n').slice(0,1250);
+  return [`Progress — ${typeof payload.round==='number'?payload.round:m.turnCount} rounds completed`,
+    taskTitle(m),
+    compactTelegramText(typeof payload.summary==='string'?payload.summary:'',520),
+    'Still working. No action needed; send /status for the latest update.'
+  ].join('\n').slice(0,1250);
 }
 
 /** Telegram is not end-to-end encrypted: only send a bounded tail of the
@@ -253,11 +267,10 @@ export function formatBrowserResultNotification(m:Mission,event:MissionEvent):st
   const data=(event.payload && typeof event.payload==='object')
     ?event.payload as {excerpt?:unknown;round?:unknown;reason?:unknown}:{};
   if(event.type==='chatgpt.browser_uncertain')
-    return [`Mission ${m.id}: NEEDS_RECONCILIATION`,
-      `Round: ${formatMissionTurns(typeof data.round==='number'?data.round:m.turnCount,m.maxTurns)}`,
-      'Browser send or reply is ambiguous; no automatic replay.',
-      'Inspect the Chrome conversation before manual reconciliation.',
-      `Use /status ${m.id} for details.`].join('\n');
+    return ['Needs attention — ChatGPT response unconfirmed',
+      `Round: ${typeof data.round==='number'?data.round:m.turnCount}`,
+      'The original request is protected; it will not be sent again automatically.',
+      'Details: /status'].join('\n');
   const excerpt=typeof data.excerpt==='string'?data.excerpt:(m.lastSummary??'');
   const allLines=excerpt.replace(/\r/g,'').split('\n').map(x=>x.trim()).filter(Boolean);
   // Prefer the deliberate compact handoff to the arbitrary tail of a 5–30min
@@ -272,14 +285,17 @@ export function formatBrowserResultNotification(m:Mission,event:MissionEvent):st
   }
   const selected=headerIndex>=0?allLines.slice(headerIndex+1):allLines.slice(-6);
   const lines=selected.filter(x=>!/^[-=]{3,}$/.test(x)).slice(0,6)
-    .map(x=>x.length>190?'…'+x.slice(-189):x);
+    .map(x=>compactTelegramText(x,190));
   // Redact recognizable credential formats if a model accidentally quotes one.
   const round=typeof data.round==='number'?data.round:m.turnCount;
-  const text=[`Mission ${m.id} — turn ${formatMissionTurns(round,m.maxTurns)}`,
-    'ChatGPT result (model-provided; not independently verified):',
+  const finished=event.type==='chatgpt.browser_run_finished'&&
+    finalMarker==='[MISSION_RELAY:DONE]';
+  const text=[finished?'All Done — ChatGPT task finished (model-reported)':
+    `ChatGPT update — Round ${round}`,
+    'Summary (not independently verified):',
     ...lines.map(redactTelegramText),
-    ...(finalMarker?[finalMarker]:[]),
-    `Status: /status ${m.id}`];
+    ...(finalMarker?[`Next step: ${finalMarker.includes('BLOCKED')?'Needs attention':finalMarker.includes('DONE')?'Review complete':'Continuing'}`]:[]),
+    'Details: /status'];
   return text.join('\n').slice(0,2900);
 }
 
@@ -744,7 +760,9 @@ export class TelegramBridge {
         }
         if(event.type==='pi.decision' &&
           (!['NEXT','HANDOFF'].includes(String((event.payload as {action?:unknown})?.action))||
-            missionTurnLimitReached(this.store.get(event.missionId).maxTurns,Number((event.payload as {round?:unknown})?.round)))){
+            missionTurnLimitReached(this.store.get(event.missionId).maxTurns,Number((event.payload as {round?:unknown})?.round))||
+            (Number((event.payload as {round?:unknown})?.round)!==1&&
+              Number((event.payload as {round?:unknown})?.round)%5!==0))){
           cursor=event.id;
           this.store.setMeta('telegram.notifications_cursor',String(cursor));
           continue;
@@ -753,7 +771,7 @@ export class TelegramBridge {
           ?this.store.piChainSuccessor(event.missionId):null;
         const body=successor&&
           (event.payload as {action?:unknown})?.action==='LIMIT'
-          ?`PI Mission ${event.missionId} reached ${this.store.get(event.missionId).maxTurns} turns; the owner goal remains open.\nAutomatically continued as Mission ${successor}.\nStatus: /status ${successor}`
+          ?`Continuing — Next stage\n${taskTitle(this.store.get(event.missionId))}\nPrevious stage finished; the overall task is still running.\nDetails: /status`
           :event.type==='pi.decision'
           ?formatPiProgress(this.store.get(event.missionId),event)
           :event.type==='pi.autopilot_finished'||event.type==='pi.autopilot_interrupted'
@@ -879,12 +897,10 @@ export class TelegramBridge {
       });
       return [
         `Task started — ${writeWorkspace?'approved repository work':'research and analysis'}.`,
-        `Mission: ${m.id}`,
-        ...(ownerGoal?[`Long-term Goal: ${ownerGoal.id}`]:[]),
-        'The controller will plan and review each step automatically.',
-        `Each Chat is limited to ${MAX_RELAY_CHAT_TURNS} Sends; the Mission has no fixed turn limit.`,
-        'Send another message to adjust the task. Use /status to check or /pause to stop.',
-        'Please do not resend the original task.',
+        taskTitle(m),
+        ownerGoal?'Long-term goal tracking is enabled.':'Planning and review are automatic.',
+        'Progress will arrive here. Use /status for an update or /pause to stop.',
+        'Send a new message to refine this task. Do not repeat the original request.',
       ].join('\n');
     }catch(error){
       try{await session.close();}catch{console.error('PI source preflight cleanup warning');}
@@ -910,8 +926,8 @@ export class TelegramBridge {
       visited.add(actual);
       actual=this.store.piChainSuccessor(actual)!;
     }
-    return accepted?`Owner instruction queued for PI Mission ${actual}.\nPI will integrate it before the next ChatGPT Send (a paused Mission requires an active foreground controller).\nProgress: /status ${actual}`
-      :`Instruction already queued for PI Mission ${actual}; no duplicate.\nProgress: /status ${actual}`;
+    return accepted?'Instruction saved. It will be considered before the next step.\nProgress: /status'
+      :'This instruction was already saved; it was not added again.\nProgress: /status';
   }
 
   /** One fresh, read-only ChatGPT task per owner message, in the Chrome profile
@@ -951,7 +967,7 @@ export class TelegramBridge {
         catch{console.error('Playwriter fresh-chat session cleanup warning');}
         finally{this.activeMission=null;this.activeTask=null;}
       });
-      return `New ChatGPT Mission ${m.id} accepted (one read-only turn). The controller will open an authorized fresh Chrome tab and return a final notification. Do not resend.`;
+      return 'New ChatGPT task started. A result will appear here when finished.\nProgress: /status';
     }catch(error){
       try{await session.close();}catch{console.error('Playwriter fresh-chat preflight cleanup warning');}
       throw error;
@@ -977,20 +993,35 @@ export class TelegramBridge {
     this.activeTask=execution.then(()=>{}).catch(error=>{
       console.error(`Native agent Mission ${m.id}: ${error instanceof Error?error.message:'unknown error'}`);
     }).finally(()=>{this.activeMission=null;this.activeTask=null;});
-    return `Native Agent Mission ${m.id} accepted (one supervised read-only turn).\n`+
-      `Executor plugin is locally configured. Final evidence follows separately.\nStatus: /status ${m.id}`;
+    return 'Task started. The final result will appear here when verified.\nProgress: /status';
   }
 
   private alreadyRunning(goal:string):string {
     const current=this.engine.get(this.activeMission!);
     const same=current.goal===goal;
     return [
-      same?`This task is already active as Mission ${current.id}.`
-        :`Another Mission ${current.id} is active; your new task was not started.`,
+      same?'This task is already running.':'A task is already running; your new task was not started.',
       'No new execution was submitted. Do not resend.',
-      `Progress: /status ${current.id}`,
+      'Progress: /status',
       'The terminal result will be delivered automatically.',
     ].join('\n');
+  }
+
+  /** An actionable inbox, independent of the bounded diagnostic preview.
+   * User-visible numbers are only view selectors, never persistent IDs. */
+  private inboxMissions():Mission[] {
+    const all=this.engine.list().filter(m=>!this.store.isMissionArchived(m.id)&&(
+      ['READY','RUNNING','VERIFYING','BLOCKED','NEEDS_RECONCILIATION'].includes(m.state)||
+      (this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1'&&m.state==='PAUSED'&&
+        !m.stopRequested&&(!!m.lastError||
+        (missionTurnsRemaining(m.maxTurns,m.turnCount)&&
+          (!this.store.piPlan(m.id)||['NEXT','HANDOFF'].includes(this.store.piPlan(m.id)!.action)))))||
+      this.store.chatBrowserTurn(m.id)?.status==='uncertain'));
+    const priority=(m:Mission)=>m.state==='NEEDS_RECONCILIATION'||
+      this.store.chatBrowserTurn(m.id)?.status==='uncertain'?0:
+      m.state==='RUNNING'||m.state==='VERIFYING'?1:
+      m.state==='BLOCKED'?2:m.state==='READY'?3:4;
+    return all.sort((a,b)=>priority(a)-priority(b));
   }
 
   private async handle(text:string,commandId='local-test'):Promise<string> {
@@ -1007,13 +1038,13 @@ export class TelegramBridge {
       'Recovery, approvals and secrets remain local CLI operations.',
     ].join('\n'):[
       'Mission Relay — send a task as a normal message.',
-      'PI continues until the work is done or blocked; each Chat is limited to 5 Sends.',
+      'The assistant continues until finished or blocked; each Chat allows 10 messages.',
       '/build <task> — implement in your approved repository',
       '/goal <objective> — track a persistent goal',
       '/goal-build <objective> — persistent goal with approved code writes',
       '/list — tasks requiring attention',
-      '/status — latest task (or /status <mission-id>)',
-      '/pause — stop current task (or /pause <mission-id>)',
+      '/status — current task (or /status 2 after /list)',
+      '/pause — stop the current task',
       'While a task runs, send another message to update its instructions.',
       '/help advanced — less common commands',
     ].join('\n');
@@ -1027,34 +1058,32 @@ export class TelegramBridge {
       const goals=new GoalLedger(this.store).listGoals();
       const {page,pages,start}=missionPage(id,words,goals.length);
       return goals.length?[
-        `Persistent Goals: Page ${page}/${pages} (${goals.length} total; not independent acceptance)`,
-        ...goals.slice(start,start+TELEGRAM_MISSION_PAGE_SIZE).map(g=>
-          `${g.id.slice(0,8)}… — ${g.status} v${g.version}: ${compactTelegramText(g.objective,100)}\n/goal-status ${g.id}`),
-      ].join('\n'):'No Goal records. Existing /auto and /build Missions are not automatically converted.';
+        `Goals: Page ${page}/${pages} (${goals.length} total)`,
+        ...goals.slice(start,start+TELEGRAM_MISSION_PAGE_SIZE).map((g,i)=>
+          `${start+i+1}. ${compactTelegramText(g.objective,100)} — ${g.status}`),
+        'Use /goal-status for the latest goal.'
+      ].join('\n'):'No tracked goals. Send /goal <objective> to begin.';
     }
     if(cmd==='/goal-status'){
-      if(!id||!/^[0-9a-f-]{36}$/i.test(id)||words.length)
-        throw new Error('Use /goal-status <complete Goal UUID>');
+      if(words.length)throw new Error('Use /goal-status (or /goal-status <id> in advanced mode)');
+      id=id??new GoalLedger(this.store).listGoals()[0]?.id;
+      if(!id)return 'No tracked goals yet.';
+      if(!/^[0-9a-f-]{36}$/i.test(id))
+        throw new Error('Use /goal-status or a complete internal Goal reference');
       const graph=new GoalLedger(this.store).graph(id);
       const approved=graph.plans.find(p=>p.status==='APPROVED');
       const items=approved?graph.items.filter(x=>x.planId===approved.id):[];
       const active=items.find(x=>['IN_PROGRESS','REVIEW'].includes(x.status));
       const verified=items.filter(x=>x.status==='PASSED').length;
-      const owner=graph.events.find(e=>e.type==='goal.pi_mission_bound');
-      const missionId=typeof owner?.payload.missionId==='string'?owner.payload.missionId:null;
-      const lineage=missionId?[missionId,...this.engine.list()
-        .filter(m=>m.id!==missionId&&new GoalLedger(this.store).missionGoalId(m.id)===id)
-        .map(m=>m.id)]:[];
       const release=new GoalReleaseGate(this.store).report(id);
       return [
-        `Goal ${graph.goal.id} [${graph.goal.status}] v${graph.goal.version}`,
-        `Objective: ${compactTelegramText(graph.goal.objective,420)}`,
-        `Plan: ${approved?`${approved.ordinal} [${approved.status}] v${approved.version}`:'awaiting PI review'}`,
-        `Work: ${verified}/${items.length} reported PASSED; ${active?`current ${active.key} [${active.status}] v${active.version}`:'none active'}`,
-        `Acceptance: ${graph.acceptance.filter(a=>a.status==='PASS').length}/${graph.acceptance.length} reported PASS (model-reviewed only)`,
-        release.complete?'Independent verification: complete':
-          'Independent verification: pending; reported work results are not final acceptance',
-        ...lineage.slice(-3).map(mid=>`PI Mission: /status ${mid}`),
+        `Goal status: ${graph.goal.status==='DONE'&&release.complete?'All Done':graph.goal.status==='BLOCKED'?'Needs attention':'In progress'}`,
+        compactTelegramText(graph.goal.objective,210),
+        `Work packages: ${verified} of ${items.length} reviewed as passed`,
+        ...(active?[`Current: ${compactTelegramText(active.title,100)}`]:[]),
+        release.complete?'Independent release checks: complete':
+          'Independent release checks: pending (a model review is not final acceptance)',
+        'Task details: /status',
       ].join('\n');
     }
     if(cmd==='/auto')return this.startPiChat(clean.slice(5),commandId);
@@ -1063,41 +1092,28 @@ export class TelegramBridge {
     if(!cmd.startsWith('/'))return this.startPiChat(clean,commandId);
     if(cmd==='/agent')return this.startAgentTask(clean.slice(6),commandId);
     if(cmd==='/list') {
-      // piHealth is deliberately a bounded diagnostics preview (20 rows),
-      // not the authoritative inventory for a paginated Mission inbox.
-      const all=this.engine.list().filter(m=>!this.store.isMissionArchived(m.id)&&(
-        ['READY','RUNNING','VERIFYING','BLOCKED','NEEDS_RECONCILIATION'].includes(m.state)||
-        (this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1'&&m.state==='PAUSED'&&
-          !m.stopRequested&&(!!m.lastError||
-          (missionTurnsRemaining(m.maxTurns,m.turnCount)&&
-            (!this.store.piPlan(m.id)||['NEXT','HANDOFF'].includes(this.store.piPlan(m.id)!.action)))))||
-        this.store.chatBrowserTurn(m.id)?.status==='uncertain'));
-      // An old ambiguous Send must not disappear below newer, ordinary READY
-      // tasks. All entries remain accessible through bounded, read-only pages.
-      const priority=(m:Mission)=>m.state==='NEEDS_RECONCILIATION'||
-        this.store.chatBrowserTurn(m.id)?.status==='uncertain'?0:
-        m.state==='RUNNING'||m.state==='VERIFYING'?1:
-        m.state==='BLOCKED'?2:m.state==='READY'?3:4;
-      all.sort((a,b)=>priority(a)-priority(b));
+      const all=this.inboxMissions();
       const {page,pages,start}=missionPage(id,words,all.length);
-      return all.length?[`Missions requiring attention: Page ${page}/${pages} (${all.length} total)`,
-        ...all.slice(start,start+TELEGRAM_MISSION_PAGE_SIZE).map(m=>
-        `${compactTelegramText(m.goal,74)}\n${m.state} · turn ${formatMissionTurns(m.turnCount,m.maxTurns)} · /status ${m.id}`),
-        'Full Mission audit history: /history'].join('\n'):
-        'No active or unresolved Missions. Historical records: /history';
+      return all.length?[`Tasks: Page ${page}/${pages} (${all.length} active or requiring attention)`,
+        ...all.slice(start,start+TELEGRAM_MISSION_PAGE_SIZE).map((m,i)=>
+        `${start+i+1}. ${taskTitle(m,82)} — ${taskState(m)} (round ${m.turnCount})`),
+        'Use /status or the View task buttons for details. History: /history'].join('\n'):
+        'No active tasks or unresolved requests. History: /history';
     }
     if(cmd==='/history'){
       const all=this.engine.list();
       const {page,pages,start}=missionPage(id,words,all.length);
-      return all.length?[`Recent Mission history: Page ${page}/${pages} (${all.length} total; not evidence of business completion)`,
-        ...all.slice(start,start+TELEGRAM_MISSION_PAGE_SIZE).map(m=>
-          `${m.id.slice(0,8)}… — ${m.state} v${m.version}${this.store.isMissionArchived(m.id)?' (archived)':''}\n/status ${m.id}`)
-      ].join('\n'):'No history yet.';
+      return all.length?[`History: Page ${page}/${pages} (${all.length} tasks)`,
+        ...all.slice(start,start+TELEGRAM_MISSION_PAGE_SIZE).map((m,i)=>
+          `${start+i+1}. ${taskTitle(m,84)} — ${taskState(m)} (round ${m.turnCount})`)
+      ].join('\n'):'No task history yet.';
     }
     if(!['/status','/handoff','/pause','/resume','/cancel','/instruct','/continue'].includes(cmd))
       throw new Error('Unknown command. Send /help. Native agents use /agent, not a vendor-specific command.');
     if(!id&&cmd==='/status'){
-      id=this.activeMission??this.engine.list().find(m=>!this.store.isMissionArchived(m.id))?.id;
+    id=this.activeMission??this.engine.list().find(m=>m.state==='RUNNING'&&
+      !this.store.isMissionArchived(m.id))?.id??this.inboxMissions()[0]?.id??
+        this.engine.list().find(m=>!this.store.isMissionArchived(m.id))?.id;
       if(!id)return 'No tasks yet. Send a normal message or /build <task> to begin.';
     }
     if(!id&&cmd==='/pause'){
@@ -1107,33 +1123,45 @@ export class TelegramBridge {
         const eligible=this.engine.list().filter(m=>!m.stopRequested&&
           ['RUNNING','READY','VERIFYING'].includes(m.state));
         if(eligible.length!==1)
-          throw new Error('No single active task to pause. Use /list, then /pause <mission-id>.');
+          throw new Error('Cannot identify one active task. Use /list; advanced mode supports explicit references.');
         id=eligible[0]!.id;
       }
+    }
+    // Numbers shown in /list are read-only selectors; UUIDs remain supported
+    // for operator recovery but are never needed in routine Telegram output.
+    if(cmd==='/status'&&id&&/^[1-9]\d*$/.test(id)){
+      const index=Number(id),all=this.inboxMissions();
+      if(!Number.isSafeInteger(index)||index>all.length)
+        throw new Error('That task is no longer in the active list. Send /list to refresh.');
+      id=all[index-1]!.id;
     }
     if(!id || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Provide a complete mission UUID');
     const m=this.engine.get(id);
     if(cmd==='/status') {
       const piLive=this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'
         ?this.store.piHealth().missions.find(item=>item.id===id):undefined;
-      return [`${m.id} [${m.state}] v${m.version}`,`Turn ${formatMissionTurns(m.turnCount,m.maxTurns)}`,
-      `Mode: ${m.sandbox}${m.sandbox==='workspace-write'&&m.workspace?` (${m.workspace})`:''}`,
-      `Goal: ${m.goal.slice(0,400)}`,
-      ...(new GoalLedger(this.store).missionGoalId(m.id)
-        ?[`Persistent Goal: /goal-status ${new GoalLedger(this.store).missionGoalId(m.id)} (not automatically DONE)`]:[]),
-      ...(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'
-        ?[`PI coordinator: ${this.store.piPlan(id)?.action??'analyzing / awaiting the first answer'}`,
-          `Pending owner instructions: ${this.store.pendingPiOwnerDirectives(id).length}`]:[]),
-      ...(piLive?[`Current Chat observed sends: ${piLive.currentChatObservedTurns}/${MAX_RELAY_CHAT_TURNS}`,
-        `Controller phase: ${piLive.phase}`,
-        ...(piLive.browserNewChatReserved
-          ?['New Chat: reserved only (Send, new URL and answer not yet verified)']:[]),
-        ...(piLive.browserReservationAgeSeconds!==null
-          ?[`Current browser request age: ${piLive.browserReservationAgeSeconds}s (not proof of a stall; do not resend)`]:[])]:[]),
-      ...(this.store.piChainParent(id)?[`Previous Mission: ${this.store.piChainParent(id)}`]:[]),
-      ...(this.store.piChainSuccessor(id)?[`Continued as: ${this.store.piChainSuccessor(id)}`]:[]),
-      ...(m.lastError?[`Last controller error: ${compactTelegramText(m.lastError,250)}`]:[]),
-      `Last summary: ${(m.lastSummary ?? 'none').slice(0,1000)}`].join('\n');
+      const completed=this.store.events(id).some(e=>e.type==='pi.autopilot_finished'&&
+        (e.payload as {action?:unknown}).action==='DONE');
+      const phase=piLive?.phase==='browser_answer_pending_do_not_resend'?
+        'Waiting for the current ChatGPT reply — please do not resend':
+        piLive?.phase==='awaiting_pi_review'?'Reviewing the completed reply':
+        piLive?.phase==='reconciliation_required_do_not_resend'?
+          'Reply needs verification — will not resend automatically':
+        m.state==='RUNNING'?'Working on the next step':null;
+      const goalId=new GoalLedger(this.store).missionGoalId(id);
+      const goal=goalId?new GoalLedger(this.store).graph(goalId):null;
+      const approved=goal?.plans.find(p=>p.status==='APPROVED');
+      const items=approved?goal!.items.filter(x=>x.planId===approved.id):[];
+      return [`Task status: ${completed?'All Done':taskState(m)}`,
+        taskTitle(m,160),
+        `Rounds completed: ${m.turnCount}`,
+        ...(piLive?[`Current Chat: ${piLive.currentChatObservedTurns} of ${MAX_RELAY_CHAT_TURNS} messages`]:[]),
+        ...(phase?[phase]:[]),
+        ...(goal?[`Work packages reviewed as passed: ${items.filter(x=>x.status==='PASSED').length}/${items.length}`,
+          'Final independent acceptance is separate from model progress.']:[]),
+        ...(m.lastError?[`Issue: ${compactTelegramText(m.lastError,170)}`]:[]),
+        ...(m.lastSummary?[`Latest result: ${compactTelegramText(m.lastSummary,460)}`]:[]),
+        'Commands: /list · /pause · /help'].join('\n');
     }
     if(cmd==='/handoff') {
       if(words.length) throw new Error('Use /handoff <mission-id>');
@@ -1148,7 +1176,8 @@ export class TelegramBridge {
         this.store.pausePiChain(id);
         return 'PI chain pause recorded. No further browser Send will be submitted after any in-flight response is reconciled.';
       }
-      return `Pause recorded: ${this.engine.pause(id).state}`;
+      this.engine.pause(id);
+      return 'Paused — no further work will start. Any request already sent must finish or be verified first.';
     }
     const revision=words.shift();
     if(!revision || !/^v(0|[1-9]\d*)$/.test(revision) || !Number.isSafeInteger(Number(revision.slice(1))))

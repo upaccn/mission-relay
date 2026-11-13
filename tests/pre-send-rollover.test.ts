@@ -17,7 +17,8 @@ const prompt='One original new-chat prompt that was NOT sent';
 const originalAnswer='Previous verified answer\n[MISSION_RELAY:NEXT]';
 const newAnswer='First actual new-chat response\n[MISSION_RELAY:NEXT]';
 
-function fixture(observedSends:5|10=5){
+function fixture(){
+  const observedSends=10;
   const dir=mkdtempSync(join(tmpdir(),'relay-pre-send-'));
   const store=new Store(join(dir,'missions.sqlite'));
   const m=store.create({goal:'Continue goal after original navigation failure',
@@ -50,8 +51,8 @@ function fixture(observedSends:5|10=5){
   }};
 }
 
-test('v1.1.4 tenth→eleventh one-shot recovery retains the original request without replay',()=>{
-  const f=fixture(10);try{
+test('tenth→eleventh one-shot recovery retains the original request without replay',()=>{
+  const f=fixture();try{
     const original=f.store.events(f.id);
     const token=f.store.authorizePreSendRolloverOnce(f.id,f.revision,f.input);
     assert.ok(token.intentEventId>0);
@@ -85,14 +86,14 @@ test('one-shot authorization preserves uncertain original and permits exactly on
     const before=f.store.events(f.id);
     const m=f.store.get(f.id);
     assert.equal(m.state,'NEEDS_RECONCILIATION');
-    assert.equal(m.turnCount,5);
+    assert.equal(m.turnCount,10);
     const result=f.store.authorizePreSendRolloverOnce(f.id,f.revision,f.input);
     assert.equal(result.revision,f.revision);
     assert.equal(f.store.get(f.id).state,'NEEDS_RECONCILIATION');
-    assert.equal(f.store.get(f.id).turnCount,5);
+    assert.equal(f.store.get(f.id).turnCount,10);
     assert.equal(f.store.chatBrowserTurn(f.id)?.status,'uncertain');
     assert.deepEqual(f.store.events(f.id).slice(0,before.length),before);
-    assert.equal(f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_reserved').length,6);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_reserved').length,11);
     assert.equal(f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_uncertain').length,1);
     assert.equal(f.store.events(f.id).filter(e=>
       e.type==='chatgpt.browser_pre_send_retry_intent').length,1);
@@ -102,17 +103,17 @@ test('one-shot authorization preserves uncertain original and permits exactly on
       requestPromptSha256:f.input.originalPromptSha256,newChatUrl:NEXT,
       assistantSha256:sha(newAnswer),summary:newAnswer,
     });
-    assert.equal(recovered.turnCount,6);
+    assert.equal(recovered.turnCount,11);
     assert.equal(recovered.state,'PAUSED');
     assert.equal(f.store.chatLink(f.id),NEXT);
     assert.equal(f.store.chatBrowserTurn(f.id)?.status,'reconciled');
     const proof=inspectPiEvidence(f.store,f.id);
     assert.equal(proof.ledgerConsistent,true,proof.violations.join(','));
-    assert.deepEqual(proof.pendingPiReviewRounds,[6]);
-    assert.equal(proof.observedTurns,6);
-    assert.equal(proof.maxObservedTurnsInOneChat,5);
+    assert.deepEqual(proof.pendingPiReviewRounds,[11]);
+    assert.equal(proof.observedTurns,11);
+    assert.equal(proof.maxObservedTurnsInOneChat,10);
     assert.equal(f.store.events(f.id).filter(e=>
-      e.type==='chatgpt.browser_reserved').length,6,'Original reserved key is reused, never reserved twice');
+      e.type==='chatgpt.browser_reserved').length,11,'Original reserved key is reused, never reserved twice');
     assert.equal(f.store.events(f.id).filter(e=>
       e.type==='chatgpt.browser_rollover_recovered').length,1);
     assert.throws(()=>f.store.authorizePreSendRolloverOnce(f.id,recovered.version,f.input));
@@ -172,6 +173,6 @@ test('one-shot operator CLI refuses missing acknowledgement and stale revisions 
     assert.match(stale.stderr,/No eligible original, uncertain new-chat request/);
     assert.deepEqual(f.store.events(f.id),original);
     assert.equal(f.store.chatBrowserTurn(f.id)?.status,'uncertain');
-    assert.equal(f.store.get(f.id).turnCount,5);
+    assert.equal(f.store.get(f.id).turnCount,10);
   }finally{f.cleanup();}
 });

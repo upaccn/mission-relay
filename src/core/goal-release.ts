@@ -97,7 +97,7 @@ const sourceFor=(requirement:string):string|null=>
   ['ci-ubuntu','ci-macos','ci-windows'].includes(requirement)?'github-actions':
   requirement==='gmk-production-readback'?'gmk-readback':
   requirement==='maintenance-resume'?'maintenance-readback':
-  ['chrome-5-to-6','chrome-10-to-11','mission-32-successor','relay-tab-retirement'].includes(requirement)
+  ['chrome-10-to-11','mission-32-successor','relay-tab-retirement'].includes(requirement)
     ?'chrome-readback':null;
 /** Shared requirement-to-probe binding for release admission and the
  * read-only coverage index. GitHub CI may additionally attest source

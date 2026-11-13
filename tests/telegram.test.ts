@@ -8,11 +8,12 @@ import {createHash} from 'node:crypto';
 import { Store } from '../src/core/store.js';
 import { Engine } from '../src/core/engine.js';
 import { TelegramBridge, formatBrowserResultNotification, formatNativeMissionNotification,
+  formatPiNotification,
   telegramKeyboardForReply,telegramCallbackCommand,
   probeFencedTelegramTransport,
   stalledPollerMayExit,TELEGRAM_IDLE_STALL_EXIT_MS,
   type TelegramUpdate, type TelegramTransport } from '../src/plugins/telegram.js';
-import type { AgentAdapter, Decision, Mission, TurnInput, Verification } from '../src/core/types.js';
+import type { AgentAdapter, Decision, Mission, MissionEvent, TurnInput, Verification } from '../src/core/types.js';
 import type { Page } from 'playwriter';
 
 class FakeAgent implements AgentAdapter {
@@ -67,7 +68,7 @@ test('Telegram /help presents a short human-facing menu; rare commands remain di
     const compact=f.transport.sent.at(-1)!;
     assert.match(compact,/send a task as a normal message/i);
     assert.match(compact,/\/build <task>/);
-    assert.match(compact,/\/pause <mission-id>/);
+    assert.match(compact,/\/pause — stop the current task/);
     assert.match(compact,/\/help advanced/);
     assert.ok(compact.split('\n').length<=11);
     assert.doesNotMatch(compact,/\/goal-stage|\/goal-review|\/continue|\/resume/);
@@ -80,13 +81,39 @@ test('Telegram /help presents a short human-facing menu; rare commands remain di
   }finally{f.cleanup();}
 });
 
+test('Telegram completion UX says All Done only for verified terminal task decisions; never exposes IDs',()=>{
+  const f=fixture();try{
+    const m=f.m;
+    const fake=(action:string)=>({
+      id:123,missionId:m.id,type:'pi.autopilot_finished',
+      createdAt:'2026-11-13T00:00:00.000Z',
+      payload:{action,summary:'Delivered final synthetic report'},
+    }) as unknown as MissionEvent;
+    const done=formatPiNotification(m,fake('DONE'));
+    assert.match(done,/^All Done — Task finished/);
+    assert.match(done,/Summary: Delivered final synthetic report/);
+    assert.match(done,/Independent release or external acceptance is separate/);
+    assert.doesNotMatch(done,new RegExp(m.id));
+    assert.doesNotMatch(done,/\bUUID\b|Event #|PI DONE/);
+    for(const action of ['BLOCKED','LIMIT','INTERRUPTED']){
+      const text=formatPiNotification(m,fake(action));
+      assert.doesNotMatch(text,/All Done/);
+      assert.doesNotMatch(text,new RegExp(m.id));
+    }
+    assert.equal(telegramCallbackCommand('mr:status'),'/status');
+    assert.equal(telegramCallbackCommand('mr:status-index:2'),'/status 2');
+    assert.throws(()=>telegramCallbackCommand('mr:status-index:0'),/Unknown/);
+  }finally{f.cleanup();}
+});
+
 test('status and pause work without UUID when a single task exists',async()=>{
   const f=fixture();
   try{
     f.transport.updates=[f.message(61,'/status'),f.message(62,'/pause')];
     await f.bridge.pollOnce(0);
-    assert.ok(f.transport.sent.some(x=>x.includes(f.m.id)&&x.includes('Turn')));
-    assert.ok(f.transport.sent.some(x=>x.includes('Pause recorded')));
+    assert.ok(f.transport.sent.some(x=>x.includes('Task status:')&&x.includes('Rounds completed: 0')));
+    assert.ok(f.transport.sent.every(x=>!x.includes(f.m.id)));
+    assert.ok(f.transport.sent.some(x=>x.includes('Paused — no further work')));
     assert.equal(f.store.get(f.m.id).state,'PAUSED');
     assert.equal(f.agent.calls,0);
   }finally{f.cleanup();}
@@ -100,7 +127,7 @@ test('pause without UUID refuses to guess among multiple active tasks',async()=>
       requestKey:'another-pending-task'});
     f.transport.updates=[f.message(63,'/pause')];
     await f.bridge.pollOnce(0);
-    assert.ok(f.transport.sent.some(x=>x.includes('No single active task')));
+    assert.ok(f.transport.sent.some(x=>x.includes('Cannot identify one active task')));
     assert.equal(f.engine.get(f.m.id).state,'READY');
     assert.equal(f.engine.get(other.id).state,'READY');
   }finally{f.cleanup();}
@@ -364,12 +391,13 @@ test('Telegram /list shows actionable Missions and /history shows archived ones'
     f.transport.updates=[f.message(1,'/list'),f.message(2,'/history')];
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,2);
-    assert.match(f.transport.sent[0]!,/Missions requiring attention/);
-    assert.ok(f.transport.sent[0]!.includes(f.m.id));
+    assert.match(f.transport.sent[0]!,/Tasks: Page/);
+    assert.ok(f.transport.sent[0]!.includes('Telegram test'));
+    assert.ok(!f.transport.sent[0]!.includes(f.m.id));
     assert.ok(!f.transport.sent[0]!.includes(old.id));
-    assert.match(f.transport.sent[1]!,/Recent Mission history/);
-    assert.ok(f.transport.sent[1]!.includes(old.id));
-    assert.match(f.transport.sent[1]!,/archived/);
+    assert.match(f.transport.sent[1]!,/History: Page/);
+    assert.ok(f.transport.sent[1]!.includes('Old settled study'));
+    assert.ok(!f.transport.sent[1]!.includes(old.id));
   }finally{f.cleanup();}
 });
 
@@ -393,14 +421,14 @@ test('Telegram list prioritizes old reconciliation and pages all tasks and audit
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,4);
     const [first,second,historyFirst,historyLast]=f.transport.sent;
-    assert.match(first!,/Missions requiring attention: Page 1\/2 \(14 total\)/);
-    assert.ok(first!.includes(uncertain.id),'Old uncertain Mission must outrank newer READY tasks');
-    assert.match(first!,/NEEDS_RECONCILIATION · turn 0\/32/);
-    assert.match(second!,/Missions requiring attention: Page 2\/2/);
-    assert.ok(second!.includes(f.m.id),'Oldest READY task must be accessible on the second page');
-    assert.match(historyFirst!,/Recent Mission history: Page 1\/3 \(23 total/);
-    assert.match(historyLast!,/Recent Mission history: Page 3\/3/);
-    assert.ok(historyLast!.includes(f.m.id),'History includes the full ledger, not just settled records');
+    assert.match(first!,/Tasks: Page 1\/2 \(14 active or requiring attention\)/);
+    assert.match(first!,/^1\. Old uncertain browser Send — Needs attention/m);
+    assert.ok(!first!.includes(uncertain.id));
+    assert.match(second!,/Tasks: Page 2\/2/);
+    assert.ok(second!.includes('Telegram test'),'Oldest READY task must be accessible on the second page');
+    assert.match(historyFirst!,/History: Page 1\/3 \(23 tasks\)/);
+    assert.match(historyLast!,/History: Page 3\/3/);
+    assert.ok(historyLast!.includes('Telegram test'));
     const next=(f.transport.keyboards[0] as {inline_keyboard:Array<Array<{callback_data:string}>>})
       .inline_keyboard.flat().find(button=>button.callback_data==='mr:list:2');
     assert.ok(next,'First page has an authenticated read-only next-page button');
@@ -415,7 +443,7 @@ test('Telegram list prioritizes old reconciliation and pages all tasks and audit
       from:{id:1001},message:{chat:{id:2001,type:'private'}}}};
     f.transport.updates=[pageCallback];
     await f.bridge.pollOnce(0);
-    assert.match(f.transport.sent[6]!,/Missions requiring attention: Page 2\/2/);
+    assert.match(f.transport.sent[6]!,/Tasks: Page 2\/2/);
     assert.deepEqual(f.transport.acknowledged,['page-next']);
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,7,'Callback retry cannot append a second reply');
@@ -442,8 +470,9 @@ test('Telegram list does not inherit the 20-row pi-health diagnostic cap',async(
     assert.equal(f.store.piHealth().missions.length,20);
     f.transport.updates=[f.message(1,'/list 4')];
     await f.bridge.pollOnce(0);
-    assert.match(f.transport.sent[0]!,/Missions requiring attention: Page 4\/4 \(25 total\)/);
-    assert.ok(f.transport.sent[0]!.includes(checkpoints[0]!.id));
+    assert.match(f.transport.sent[0]!,/Tasks: Page 4\/4 \(25 active or requiring attention\)/);
+    assert.ok(f.transport.sent[0]!.includes('PI checkpoint 0'));
+    assert.ok(!f.transport.sent[0]!.includes(checkpoints[0]!.id));
     assert.equal(f.store.get(checkpoints[0]!.id).state,'PAUSED');
     assert.equal(f.store.getMeta(`pi.autopilot.enabled.${checkpoints[0]!.id}`),'1');
   }finally{f.cleanup();}
@@ -454,16 +483,17 @@ test('Telegram task cards offer authenticated read-only inline navigation, witho
     f.transport.updates=[f.message(10,'/list')];
     await f.bridge.pollOnce(0);
     const markup=f.transport.keyboards[0] as {inline_keyboard:Array<Array<{text:string;callback_data:string}>>};
-    assert.ok(markup.inline_keyboard.some(row=>row.some(btn=>btn.callback_data===`mr:status:${f.m.id}`)));
+    assert.ok(markup.inline_keyboard.some(row=>row.some(btn=>btn.callback_data==='mr:status-index:1')));
     assert.ok(markup.inline_keyboard.some(row=>row.some(btn=>btn.callback_data==='mr:history')));
-    const view:TelegramUpdate={update_id:11,callback_query:{id:'cb-read-11',data:`mr:status:${f.m.id}`,
+    const view:TelegramUpdate={update_id:11,callback_query:{id:'cb-read-11',data:'mr:status-index:1',
       from:{id:1001},message:{chat:{id:2001,type:'private'}}}};
     const spoofed:TelegramUpdate={update_id:12,callback_query:{...view.callback_query!,id:'cb-other',
       from:{id:999}}};
     f.transport.updates=[view,spoofed];
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,2);
-    assert.match(f.transport.sent[1]!,/Turn 0\/3/);
+    assert.match(f.transport.sent[1]!,/Rounds completed: 0/);
+    assert.doesNotMatch(f.transport.sent[1]!,new RegExp(f.m.id));
     assert.deepEqual(f.transport.acknowledged,['cb-read-11']);
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,2,'Duplicate callback must not generate another message');
@@ -534,7 +564,7 @@ test('read-only diagnostics distinguish new-chat reservation from an observed mi
     assert.equal(evidence.chatSegments,0);
     f.transport.updates=[f.message(740,`/status ${f.m.id}`)];
     await f.bridge.pollOnce(0);
-    assert.match(f.transport.sent.join('\n'),/New Chat: reserved only/);
+    assert.match(f.transport.sent.join('\n'),/Waiting for the current ChatGPT reply/);
     assert.equal(f.store.maxEventId(),afterReservation,
       'Read-only diagnostics must not create new events or credit an answer');
     for(const secret of ['sensitive prompt','new-chat-reserved','chatgpt.com'])
@@ -570,10 +600,10 @@ test('authenticated Telegram status exposes bounded in-flight PI phase without s
     f.transport.updates=[f.message(739,`/status ${f.m.id}`)];
     await f.bridge.pollOnce(0);
     const output=f.transport.sent.join('\n');
-    assert.match(output,/Current Chat observed sends: 0\/10/);
-    assert.match(output,/Controller phase: browser_answer_pending_do_not_resend/);
-    assert.match(output,/Current browser request age: \d+s/);
-    assert.match(output,/not proof of a stall; do not resend/);
+    assert.match(output,/Current Chat: 0 of 10 messages/);
+    assert.match(output,/Waiting for the current ChatGPT reply/);
+    assert.match(output,/do not resend/);
+    assert.doesNotMatch(output,/browser_answer_pending|UUID|private-reservation/);
     assert.ok(!output.includes('very private browser prompt'));
     assert.ok(!output.includes('private-reservation'));
     assert.equal(f.store.chatBrowserTurn(f.m.id)?.status,'reserved');
@@ -587,7 +617,7 @@ test('Telegram accepts only allowlisted numeric user and private chat',async()=>
     await f.bridge.pollOnce(0);
     assert.equal(f.engine.get(f.m.id).state,'READY');
     assert.equal(f.transport.sent.length,1);
-    assert.match(f.transport.sent[0]!,/READY/);
+    assert.match(f.transport.sent[0]!,/Task status: Queued/);
     assert.equal(f.store.getMeta('telegram.inbox_cursor'),'4');
   }finally{f.cleanup();}
 });
@@ -612,7 +642,7 @@ test('Telegram retries failed replies but not commands',async()=>{
     assert.equal(f.engine.get(f.m.id).state,'PAUSED');
     await f.bridge.pollOnce(0);
     assert.equal(f.store.events(f.m.id).filter(x=>x.type==='mission.paused').length,1);
-    assert.match(f.transport.sent[0]!,/PAUSED/);
+    assert.match(f.transport.sent[0]!,/Paused — no further work/);
   }finally{f.cleanup();}
 });
 
@@ -633,7 +663,7 @@ test('Mission notification is emitted only for new terminal events',async()=>{
     f.engine.pause(f.m.id);
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,1);
-    assert.match(f.transport.sent[0]!,/mission.paused/);
+    assert.match(f.transport.sent[0]!,/Task update — Paused/);
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,1);
   }finally{f.cleanup();}
@@ -653,9 +683,10 @@ test('Telegram reports a compact browser reply tail and real turn count without 
     const events=f.store.events(linked.id);
     const event=events.find(e=>e.type==='chatgpt.browser_observed')!;
     const message=formatBrowserResultNotification(f.store.get(linked.id),event);
-    assert.ok(message.includes('turn 1/3'));
+    assert.ok(message.includes('Round 1'));
     assert.ok(message.includes('Final action item 12'));
-    assert.ok(message.includes('[MISSION_RELAY:NEXT]'));
+    assert.ok(message.includes('Next step: Continuing'));
+    assert.ok(!message.includes(linked.id));
     assert.ok(!message.includes('Top of a longer model response'));
     assert.ok(!message.includes('Final action item 1\n'));
     assert.ok(message.split('\n').length<=10);
@@ -698,7 +729,8 @@ test('Telegram multi-turn ChatGPT continuation delivers one final compact summar
     assert.equal(f.transport.sent.length,1);
     assert.match(f.transport.sent[0]!,/Progress: done/);
     assert.match(f.transport.sent[0]!,/Evidence: final receipt/);
-    assert.match(f.transport.sent[0]!,/\[MISSION_RELAY:DONE\]/);
+    assert.match(f.transport.sent[0]!,/Next step: Review complete/);
+    assert.doesNotMatch(f.transport.sent[0]!,/\[MISSION_RELAY:/);
     assert.doesNotMatch(f.transport.sent[0]!,/First interim status/);
     assert.ok(f.transport.sent[0]!.split('\n').length<=10);
     await f.bridge.pollOnce(0);
@@ -719,7 +751,7 @@ test('Telegram single-turn capped NEXT still has one durable final notification'
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,1);
     assert.match(f.transport.sent[0]!,/Need operator to continue later/);
-    assert.match(f.transport.sent[0]!,/\[MISSION_RELAY:NEXT\]/);
+    assert.match(f.transport.sent[0]!,/Next step: Continuing/);
   }finally{f.cleanup();}
 });
 
@@ -765,7 +797,7 @@ test('An ambiguous Telegram continuation reports only its uncertainty, not a fal
     });
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,1);
-    assert.match(f.transport.sent[0]!,/NEEDS_RECONCILIATION/);
+    assert.match(f.transport.sent[0]!,/Needs attention — ChatGPT response unconfirmed/);
     assert.doesNotMatch(f.transport.sent[0]!,/Intermediate work|Relay disconnected/);
     assert.equal(f.store.events(m.id).filter(x=>x.type==='chatgpt.browser_run_finished').length,0);
   }finally{f.cleanup();}
@@ -808,12 +840,12 @@ test('Telegram preferentially extracts the explicit decision summary, redacts pr
     const ev={id:999,missionId:linked.id,type:'chatgpt.browser_observed',
       createdAt:'2026-11-04',payload:{round:2,excerpt:verbose}};
     const message=formatBrowserResultNotification(linked,ev);
-    assert.match(message,/turn 2\/3/);
+    assert.match(message,/Round 2/);
     assert.match(message,/Progress: reviewed/);
     assert.match(message,/Evidence: local SQLite/);
     assert.match(message,/Blocker: waiting/);
     assert.match(message,/Next: check status/);
-    assert.match(message,/\[MISSION_RELAY:BLOCKED\]/);
+    assert.match(message,/Next step: Needs attention/);
     assert.doesNotMatch(message,/Earlier background|Technical detail|secret-tunnel-token/);
     assert.match(message,/\[PRIVATE LINK\]/);
     assert.ok(message.split('\n').length<=10);
@@ -832,7 +864,7 @@ test('Telegram browser notification redacts recognizable tokens and refuses unce
     assert.ok(!msg.includes(secret));
     const bad=formatBrowserResultNotification(linked,{...ev,type:'chatgpt.browser_uncertain',
       payload:{round:1,reason:'sensitive internal exception text'}});
-    assert.ok(bad.includes('NEEDS_RECONCILIATION'));
+    assert.ok(bad.includes('Needs attention'));
     assert.ok(!bad.includes('sensitive internal exception'));
   }finally{f.cleanup();}
 });
@@ -848,7 +880,7 @@ test('Recovered complete reply produces a bounded correction notification while 
     });
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,1);
-    assert.match(f.transport.sent[0]!,/NEEDS_RECONCILIATION/);
+    assert.match(f.transport.sent[0]!,/Needs attention/);
     f.store.recoverObservedBrowserTurn(m.id,uncertain.version,{
       requestPromptSha256:'a'.repeat(64),assistantSha256:'b'.repeat(64),
       summary:'Telegram-ready summary\nProgress: original request completed\nEvidence: final reply verified\n[MISSION_RELAY:DONE]',
@@ -856,7 +888,7 @@ test('Recovered complete reply produces a bounded correction notification while 
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,2);
     assert.match(f.transport.sent[1]!,/original request completed/);
-    assert.match(f.transport.sent[1]!,/\[MISSION_RELAY:DONE\]/);
+    assert.match(f.transport.sent[1]!,/Next step: Review complete/);
     assert.equal(f.store.events(m.id).filter(x=>x.type==='chatgpt.browser_reserved').length,1);
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,2);
@@ -1105,10 +1137,10 @@ test('Authorized Telegram continue starts a single eligible mission and reports 
     assert.equal(f.agent.calls,1);
     assert.ok(f.transport.sent.some(x=>/accepted for execution/.test(x)));
     await f.bridge.pollOnce(0);
-    assert.equal(f.transport.sent.filter(x=>/COMPLETED/.test(x)).length,1);
-    assert.ok(f.transport.sent.some(x=>/verification.accepted/.test(x)));
+    assert.equal(f.transport.sent.filter(x=>/All Done — Task completed/.test(x)).length,1);
+    assert.ok(f.transport.sent.some(x=>/Review: model verifier accepted/.test(x)));
     await f.bridge.pollOnce(0);
-    assert.equal(f.transport.sent.filter(x=>/COMPLETED/.test(x)).length,1);
+    assert.equal(f.transport.sent.filter(x=>/All Done — Task completed/.test(x)).length,1);
     assert.equal(f.agent.calls,1);
   }finally{f.cleanup();}
 });
@@ -1130,8 +1162,8 @@ test('Native Codex final Telegram notification includes concise independently re
     assert.equal(m.state,'COMPLETED');
     const event=f.store.events(m.id).find(e=>e.type==='verification.accepted')!;
     const formatted=formatNativeMissionNotification(m,event);
-    assert.match(formatted,/COMPLETED/);
-    assert.match(formatted,/verification.accepted/);
+    assert.match(formatted,/All Done — Task completed/);
+    assert.doesNotMatch(formatted,/verification.accepted|Event #/);
     assert.match(formatted,/Summary: Reviewed README\/STATE/);
     assert.match(formatted,/README lacks browser-bind/);
     assert.match(formatted,/STATE contains historical CI/);
@@ -1141,7 +1173,7 @@ test('Native Codex final Telegram notification includes concise independently re
     assert.doesNotMatch(formatted,/token=sensitive/);
     assert.ok(formatted.split('\n').length<=9);
     await f.bridge.pollOnce(0);
-    assert.equal(f.transport.sent.filter(x=>x.includes('verification.accepted')).length,1);
+    assert.equal(f.transport.sent.filter(x=>x.includes('All Done')).length,1);
     assert.equal(f.transport.sent[0],formatted);
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,1);
@@ -1161,20 +1193,20 @@ test('Repeated vendor-neutral Agent message while the first is running reports t
     assert.equal(missions.length,1);
     assert.equal(f.agent.calls,1);
     assert.equal(f.engine.get(missions[0]!.id).state,'RUNNING');
-    const accepted=f.transport.sent.filter(x=>/Native Agent Mission .* accepted/.test(x));
+    const accepted=f.transport.sent.filter(x=>/Task started. The final result/.test(x));
     assert.equal(accepted.length,1);
-    assert.match(accepted[0]!,/Status: \/status/);
-    const duplicate=f.transport.sent.find(x=>/This task is already active/.test(x));
+    assert.match(accepted[0]!,/Progress: \/status/);
+    const duplicate=f.transport.sent.find(x=>/This task is already running/.test(x));
     assert.ok(duplicate);
     assert.match(duplicate,/No new execution was submitted/);
-    assert.match(duplicate,new RegExp(missions[0]!.id));
+    assert.doesNotMatch(duplicate,new RegExp(missions[0]!.id));
     assert.doesNotMatch(duplicate,/Command rejected/);
     finish({status:'candidate_complete',summary:'Documents reviewed',next_instruction:'',evidence:['README']});
     for(let i=0;i<50&&f.engine.get(missions[0]!.id).state!=='COMPLETED';i++)
       await new Promise(resolve=>setTimeout(resolve,10));
     assert.equal(f.engine.get(missions[0]!.id).state,'COMPLETED');
     await f.bridge.pollOnce(0);
-    assert.equal(f.transport.sent.filter(x=>/verification.accepted/.test(x)).length,1);
+    assert.equal(f.transport.sent.filter(x=>/All Done — Task completed/.test(x)).length,1);
     assert.equal(f.agent.calls,1);
     assert.equal(f.engine.list().filter(x=>x.goal.includes('README.md 和 STATE.md')).length,1);
   }finally{f.cleanup();}
@@ -1261,7 +1293,7 @@ test('Emergency pause works on an active mission after executor events advance t
     const m=f.engine.get(f.m.id);
     assert.equal(m.state,'RUNNING');
     assert.equal(m.stopRequested,true);
-    assert.ok(f.transport.sent.some(x=>/Pause recorded/.test(x)));
+    assert.ok(f.transport.sent.some(x=>/Paused — no further work/.test(x)));
   }finally{f.cleanup();}
 });
 
@@ -1273,7 +1305,7 @@ test('Malformed Telegram update does not block valid later messages',async()=>{
     ];
     await f.bridge.pollOnce(0);
     assert.equal(f.engine.get(f.m.id).state,'READY');
-    assert.ok(f.transport.sent.some(x=>/READY/.test(x)));
+    assert.ok(f.transport.sent.some(x=>/Task status: Queued/.test(x)));
     assert.equal(f.store.getMeta('telegram.inbox_cursor'),'93');
   }finally{f.cleanup();}
 });
@@ -1439,7 +1471,7 @@ test('Telegram /continue end-to-end delivers one result after two synthetic brow
     assert.equal(closed,true);
     assert.equal(submitted,2);
     await bridge.pollOnce(0);
-    const notifications=f.transport.sent.filter(x=>/ChatGPT result \(model-provided/.test(x));
+    const notifications=f.transport.sent.filter(x=>/ChatGPT update — Round/.test(x));
     assert.equal(notifications.length,1);
     assert.match(notifications[0]!,/final verified/);
     assert.doesNotMatch(notifications[0]!,/Progress: interim/);
@@ -1448,7 +1480,7 @@ test('Telegram /continue end-to-end delivers one result after two synthetic brow
     assert.equal(f.store.events(f.m.id).filter(x=>x.type==='chatgpt.browser_observed').length,2);
     assert.equal(f.store.events(f.m.id).filter(x=>x.type==='chatgpt.browser_run_finished').length,1);
     await bridge.pollOnce(0);
-    assert.equal(f.transport.sent.filter(x=>/ChatGPT result \(model-provided/.test(x)).length,1);
+    assert.equal(f.transport.sent.filter(x=>/ChatGPT update — Round/.test(x)).length,1);
   }finally{f.cleanup();}
 });
 
@@ -1503,7 +1535,7 @@ test('Explicit /new creates one isolated ChatGPT tab, commits URL and final SHA,
     const task='Find three real NetBox field workflow user problems';
     f.transport.updates=[f.message(501,`/new ${task}`)];
     await bridge.pollOnce(0);
-    assert.ok(f.transport.sent.some(x=>/New ChatGPT Mission/.test(x)));
+    assert.ok(f.transport.sent.some(x=>/New ChatGPT task started/.test(x)));
     for(let i=0;i<90&&!closed;i++)await new Promise(resolve=>setTimeout(resolve,50));
     assert.equal(closed,true);
     const mission=f.engine.list().find(x=>x.goal===task);
@@ -1520,7 +1552,7 @@ test('Explicit /new creates one isolated ChatGPT tab, commits URL and final SHA,
     assert.match(entered,/Complete the following task:\nFind three real NetBox field workflow user problems/);
     assert.doesNotMatch(entered,/Prior conversation handoff/);
     await bridge.pollOnce(0);
-    assert.equal(f.transport.sent.filter(x=>/ChatGPT result \(model-provided/.test(x)).length,1);
+    assert.equal(f.transport.sent.filter(x=>/All Done — ChatGPT task finished/.test(x)).length,1);
     assert.ok(f.transport.sent.some(x=>/synthetic read-only report/.test(x)));
     const stateBefore=f.engine.list().length;
     await bridge.pollOnce(0);
@@ -1571,7 +1603,7 @@ test('Telegram /agent requires an approved workspace and runs one read-only nati
     assert.equal(m.maxTurns,1);
     assert.equal(f.agent.calls,1);
     await f.bridge.pollOnce(0);
-    assert.equal(f.transport.sent.filter(x=>/Native Agent Mission/.test(x)).length,1);
+    assert.equal(f.transport.sent.filter(x=>/Task started. The final result/.test(x)).length,1);
   }finally{f.cleanup();}
 });
 
@@ -1616,7 +1648,8 @@ test('Telegram owner notes attach to a CLI-adopted PI Mission without launching 
     assert.equal(f.engine.list().length,count);
     assert.equal(f.agent.calls,0);
     assert.equal(f.store.pendingPiOwnerDirectives(adopted.id).length,1);
-    assert.ok(f.transport.sent.some(message=>message.includes(adopted.id)&&/queued/.test(message)));
+    assert.ok(f.transport.sent.some(message=>message.includes('Instruction saved')));
+    assert.ok(f.transport.sent.every(message=>!message.includes(adopted.id)));
     assert.equal(f.store.get(adopted.id).turnCount,0);
   }finally{f.cleanup();}
 });

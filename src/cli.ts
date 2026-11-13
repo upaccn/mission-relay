@@ -22,7 +22,6 @@ import {inspectPiEvidence,inspectPiChainEvidence} from './core/pi-evidence.js';
 import {inspectGoalRequestLedger} from './core/request-ledger.js';
 import {inspectGoalReleaseMatrix} from './core/goal-release-matrix.js';
 import {inspectGoalReleaseCoverage} from './core/goal-release-coverage.js';
-import {inspectGoalChromeFiveToSixHistory} from './core/goal-release-chrome-history.js';
 import {inspectBrowserBinding} from './core/browser-binding-diagnostic.js';
 import {assessPendingBrowserAnswer} from './core/browser-pending-evidence.js';
 import {LazyExecutor,registerExecutorPlugin,registeredExecutorPlugins,defaultExecutorId,
@@ -95,14 +94,13 @@ Commands:
   pi-drill-connection <mission-id> --revision <n> [--ttl-seconds 90]
                        --acknowledge-side-effects  One-shot, single-session PI recovery disconnect;
                        only at a settled idle checkpoint, automatically expires within 120s
-  pi-evidence <mission-id>  Audit real event/PI SHA correlation and 5-send chat segmentation (no content, no Send)
+  pi-evidence <mission-id>  Audit real event/PI SHA correlation and 10-send chat segmentation (no content, no Send)
   pi-chain-evidence <mission-id>  Verify durable 32-turn successor lineage and inherited scope (no Send)
   goal-request-ledger <goal-id>  Read-only Goal→Mission→Chat→request→browser evidence custody audit
   goal-release-status <goal-id>  Read-only independent Goal release gates, evidence and blockers
   goal-release-matrix <goal-id>  Read-only claim-to-receipt and independent-probe coverage matrix
   goal-release-coverage <goal-id> --sha <candidate SHA>
                        Read-only 39-gate evidence gap index (never grants PASS)
-  goal-chrome-5-to-6-history <goal-id>  Read-only original 5->6 custody; no Chrome or PASS
   goal-release-target <goal-id> --sha <reviewed main SHA>
                        Begin independent verification after all PI work reports PASS
   goal-release-verify <goal-id> --requirement <check|privacy-check|test|build|ci-OS|gmk-production-readback>
@@ -193,7 +191,7 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
     'pi-health','pi-evidence','pi-chain-evidence','pi-drill-status','browser-binding-health',
     'browser-pending-evidence','goal-release-status','goal-request-ledger',
     'goal-release-matrix','goal-release-coverage','goal-release-probe-diagnose',
-    'goal-chrome-5-to-6-history'].includes(command);
+    ].includes(command);
   const store = new Store(join(home,'missions.sqlite'),{readOnly:diagnostic});
   const engine = new Engine(store,new LazyExecutor(store));
   try {
@@ -421,10 +419,6 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       if(!id||!/^[0-9a-f-]{36}$/i.test(id)||rest.length)
         throw new Error('Provide exactly one Goal UUID');
       result=inspectGoalReleaseMatrix(store,id);
-    } else if (command === 'goal-chrome-5-to-6-history') {
-      if(!id||!/^[0-9a-f-]{36}$/i.test(id)||rest.length)
-        throw new Error('Provide exactly one Goal UUID');
-      result=inspectGoalChromeFiveToSixHistory(store,id);
     } else if (command === 'goal-release-coverage') {
       if(!id||!/^[0-9a-f-]{36}$/i.test(id))
         throw new Error('Provide exactly one Goal UUID');
@@ -457,13 +451,13 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       }else if(command==='goal-release-verify'||command==='goal-release-probe-diagnose'){
         const f=flags(rest),requirement=option(f,'requirement');
         const runId=f['--run-id']?option(f,'run-id'):null;
-        if(runId&&(['gmk-production-readback','chrome-5-to-6','chrome-10-to-11',
+        if(runId&&(['gmk-production-readback','chrome-10-to-11',
           'relay-tab-retirement','mission-32-successor','maintenance-resume'].includes(requirement)||
           requirement.startsWith('criterion:')))
           throw new Error('Independent production or work verification cannot use a CI run as evidence');
         const probe=requirement==='gmk-production-readback'
           ?gmkProductionReleaseProbe(store,id,join(home,'goal-release-evidence'))
-          :['chrome-5-to-6','chrome-10-to-11','relay-tab-retirement'].includes(requirement)
+          :['chrome-10-to-11','relay-tab-retirement'].includes(requirement)
           ?trustedChromeReleaseProbe(store,id)
           :requirement==='mission-32-successor'
           ?trustedSuccessorReleaseProbe(store,id)
