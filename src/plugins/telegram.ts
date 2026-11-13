@@ -492,8 +492,10 @@ export class TelegramBridge {
     const candidate=this.engine.list().find(m=>{
       const r=this.store.chatBrowserTurn(m.id);
       return m.state==='NEEDS_RECONCILIATION'&&!m.stopRequested&&
-        m.lastError==='ChatGPT response observation timed out; submission outcome is ambiguous'&&
-        r?.status==='uncertain'&&r.newConversation!==true&&
+        ((m.lastError==='ChatGPT response observation timed out; submission outcome is ambiguous'&&
+          r?.status==='uncertain'&&r.newConversation!==true)||
+         (m.lastError==='New ChatGPT reply observation timed out; creation outcome is ambiguous'&&
+          r?.status==='uncertain'&&r.newConversation===true))&&
         this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1';
     });
     if(!candidate)return;
@@ -502,17 +504,40 @@ export class TelegramBridge {
     if(!url||!browserId)return;
     let session:BrowserSession|undefined;
     try {
-      session=await withReadOnlyDeadline(this.browserConnector(url,{browserId}),30_000,
+      let destination=url;
+      if(r.newConversation===true){
+        // The original Chat URL is still the SOURCE. Find the unique newly
+        // created destination from its exact reserved user-prompt digest.
+        // Neither a guessed tab URL nor a generic Retry button is sufficient.
+        const matches=(await withReadOnlyDeadline(this.watchCandidates(browserId),30_000))
+          .filter(c=>c.url!==url&&c.lastUserSha256===r.promptSha256);
+        if(matches.length!==1||matches[0]!.duplicate)return;
+        destination=matches[0]!.url;
+        // A legitimate rollover follows a fully observed source and PI NEXT.
+        // Re-check that physical source before touching the new tab.
+        if(candidate.turnCount>0){
+          const plan=this.store.piPlan(candidate.id);
+          if(!plan||plan.round!==candidate.turnCount||!['NEXT','HANDOFF'].includes(plan.action))return;
+          const source=await withReadOnlyDeadline(this.browserConnector(url,{browserId}),30_000,
+            late=>late.close());
+          try{
+            const snapshot=await withReadOnlyDeadline(inspectChatPage(source.page,url));
+            if(snapshot.generating||!snapshot.composerReady||
+              createHash('sha256').update(snapshot.lastAssistant).digest('hex')!==plan.responseSha256)return;
+          }finally{await source.close().catch(()=>{});}
+        }
+      }
+      session=await withReadOnlyDeadline(this.browserConnector(destination,{browserId}),30_000,
         late=>late.close());
       const page=session.page;
-      const snapshot=await withReadOnlyDeadline(inspectChatPage(page,url));
+      const snapshot=await withReadOnlyDeadline(inspectChatPage(page,destination));
       if(!snapshot.composerReady||
         await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))!==r.promptSha256)return;
       const already=this.store.hasDeliveryRetryIntent(candidate.id,r.requestKey,r.promptSha256);
       const banner=await withReadOnlyDeadline(visibleLongTaskBanner(page,snapshot.lastAssistant));
       if(!already && !snapshot.generating &&
         (banner==='delivery-timeout'||banner==='stream-error')) {
-        const clicked=await clickDeliveryRetryOnce(page,url,true,false,
+        const clicked=await clickDeliveryRetryOnce(page,destination,true,false,
           async(reason)=>{
             if(await lastVisibleUserPromptSha256(page)!==r.promptSha256)return false;
             return this.store.claimDeliveryRetryIntent(candidate.id,r.requestKey,r.promptSha256,reason);
@@ -530,14 +555,20 @@ export class TelegramBridge {
       // different owner's message. The Store also checks the original lock,
       // unique request, assistant SHA, and previous observed answer.
       await new Promise(resolve=>setTimeout(resolve,3000));
-      const stable=await withReadOnlyDeadline(inspectChatPage(page,url));
+      const stable=await withReadOnlyDeadline(inspectChatPage(page,destination));
       if(stable.generating||!stable.composerReady||
         stable.lastAssistant!==snapshot.lastAssistant||
         await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))!==r.promptSha256||
         await withReadOnlyDeadline(visibleLongTaskBanner(page,stable.lastAssistant))!==null)return;
       const assistantSha256=createHash('sha256').update(stable.lastAssistant).digest('hex');
-      this.store.recoverObservedBrowserTurn(candidate.id,candidate.version,{
-        requestPromptSha256:r.promptSha256,assistantSha256,summary:stable.lastAssistant});
+      if(r.newConversation===true){
+        this.store.recoverObservedBrowserRollover(candidate.id,candidate.version,{
+          requestPromptSha256:r.promptSha256,newChatUrl:destination,
+          assistantSha256,summary:stable.lastAssistant});
+      }else{
+        this.store.recoverObservedBrowserTurn(candidate.id,candidate.version,{
+          requestPromptSha256:r.promptSha256,assistantSha256,summary:stable.lastAssistant});
+      }
       console.warn('Independently recovered the original timed-out ChatGPT answer; PI must review before next Send');
     }catch(error) {
       // No change to original uncertainty on a missing tab/DOM/reconnect.

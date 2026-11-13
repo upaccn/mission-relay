@@ -1,5 +1,35 @@
 # Operations
 
+## Timed-out new-chat recovery after a software upgrade
+
+The new-chat origin can already contain the one original Send even when the
+observer exits without recording its destination. An error banner in that
+new Chat is **not** permission to replay the composer Send. The single enrolled
+Worker may discover a unique Playwriter-enabled Chat in its pinned Chrome
+profile whose latest user-message SHA matches the reserved original prompt.
+It also checks the prior Chat's PI decision before using the existing one-shot
+SQLite Retry intent and the exact visible same-message Retry control. A wrong,
+duplicated, missing, generating or changed conversation fails closed.
+
+When the owner had paused the Mission, leave it paused through GitHub release,
+independent three-platform CI and GMK audited `Upgrade` under the idle
+maintenance drain. Never use `-ResumeMissionId` for an uncertain Send. Only
+**after** confirming the new Worker SHA, SQLite continuity, single PID,
+transport health and released drain, the owner may authorize the original
+already-submitted new-chat Retry with:
+
+```text
+node dist/cli.js browser-resume-pending-retry <mission-id> --revision <current-revision> --acknowledge-side-effects
+```
+
+The CLI records the owner release and changes neither browser nor pending
+request; the running Worker subsequently attempts at most one eligible UI
+Retry for the original request, and independently verifies a stable final
+answer before recording the recovered rollover. Never reset this durable
+intent or manually send the prompt again. PI review and subsequent dispatch
+remain normal, separately verified steps.
+
+
 ## Multiple-Goal production gate
 
 This release adds no daemon, queue service or destructive SQLite migration.

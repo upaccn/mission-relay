@@ -800,12 +800,17 @@ export class Store {
     reason:'delivery-timeout'|'stream-error'='delivery-timeout'):boolean {
     return this.transaction(()=>{
       const m=this.get(id),record=this.chatBrowserTurn(id);
+      const uncertain=record?.status==='uncertain'&&m.state==='NEEDS_RECONCILIATION'&&
+        m.ownerPid===null&&m.lastError===record.error;
+      const oldChatTimeout=uncertain&&record?.newConversation!==true&&
+        m.lastError==='ChatGPT response observation timed out; submission outcome is ambiguous';
+      const newChatTimeout=uncertain&&record?.newConversation===true&&
+        m.lastError==='New ChatGPT reply observation timed out; creation outcome is ambiguous'&&
+        this.chatBrowserBinding(id)!==null&&this.chatLink(id)!==null&&
+        record.urlHash===createHash('sha256').update(this.chatLink(id)!).digest('hex');
       if(this.channelDrainRequested('telegram')||m.stopRequested||
         !record||record.requestKey!==requestKey||record.promptSha256!==promptSha256||
-        !((m.state==='RUNNING'&&record.status==='reserved')||
-          (m.state==='NEEDS_RECONCILIATION'&&record.status==='uncertain'&&
-            record.newConversation!==true&&
-            m.lastError==='ChatGPT response observation timed out; submission outcome is ambiguous')))
+        !((m.state==='RUNNING'&&record.status==='reserved')||oldChatTimeout||newChatTimeout))
         throw new Error('Delivery Retry requires the original active or timed-out request');
       this.requireUnspentBrowserReservation(id,record);
       if(this.hasDeliveryRetryIntent(id,requestKey,promptSha256))return false;
@@ -898,6 +903,37 @@ export class Store {
       this.event(id,'pi.pause_released',{
         round:m.turnCount,assistantSha256:receipt.assistantSha256,
         requiresIndependentBrowserReadback:true,
+      });
+      return this.get(id);
+    });
+  }
+  /** Explicit owner release of a PAUSED, unresolved new-chat request. This
+   * authorizes the enrolled Worker to inspect ONE already-submitted message
+   * and its Retry control; it never sends or clicks from this CLI process. */
+  resumeUncertainNewChatRetry(id:string,revision:number):Mission {
+    return this.transaction(()=>{
+      const m=this.get(id),r=this.chatBrowserTurn(id),plan=this.piPlan(id);
+      if(m.version!==revision||m.state!=='NEEDS_RECONCILIATION'||
+        !m.stopRequested||m.ownerPid!==null||
+        m.lastError!=='New ChatGPT reply observation timed out; creation outcome is ambiguous'||
+        !r||r.status!=='uncertain'||r.newConversation!==true||r.error!==m.lastError||
+        !this.chatLink(id)||!this.chatBrowserBinding(id)||
+        r.urlHash!==createHash('sha256').update(this.chatLink(id)!).digest('hex')||
+        this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
+        (m.turnCount>0&&(!plan||plan.round!==m.turnCount||
+          !['NEXT','HANDOFF'].includes(plan.action)))||
+        this.pendingPiOwnerDirectives(id).length>0||
+        this.channelDrainRequested('telegram')||!this.goalContinuationEligible(id)||
+        (m.sandbox==='workspace-write'&&!isApprovedBuildRepository(this,m.workspace)))
+        throw new Error('Owner release requires one stopped, unchanged, originally submitted new-chat request');
+      this.requireUnspentBrowserReservation(id,r);
+      const now=new Date().toISOString();
+      const updated=this.db.prepare(`UPDATE missions SET stop_requested=0,
+        version=version+1,updated_at=? WHERE id=? AND version=?`).run(now,id,revision);
+      if(updated.changes!==1)throw new Error('New-chat recovery revision conflict');
+      this.event(id,'chatgpt.browser_new_chat_retry_authorized',{
+        requestKey:r.requestKey,promptSha256:r.promptSha256,
+        existingMessageOnly:true,noComposerSend:true,ownerAuthorized:true,
       });
       return this.get(id);
     });

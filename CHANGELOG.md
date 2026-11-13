@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.2 — 2026-11-13
+
+- Repair recovery for an original **new-chat** browser Send that completed navigation but timed out before its final reply was observed. A unique Playwriter-enabled destination must match the original immutable user-message SHA; the predecessor Chat and PI decision remain independently checked. No second composer Send is ever authorized.
+- Reuse the existing per-request, SQLite-persisted single UI Retry budget for eligible `Message delivery timed out` / `Error in message stream` controls even after the new-chat observer has stopped. Verify unchanged request and original destination before retrying; a missing, duplicate or wrong tab remains unresolved.
+- Preserve owner pause during source release and GMK maintenance. The narrowly scoped `browser-resume-pending-retry` command explicitly releases only the exact stopped, uncertain new-chat request **after** deployment; the command itself does not touch Chrome. Only the existing enrolled Worker may subsequently click the already-submitted message's Retry and reconcile a twice-verified complete reply before PI continues.
+- Add isolated regression tests for owner pause, wrong/duplicate destination, one-shot click, original request custody and automatic new-chat reconciliation. Real production Retry and Goal acceptance remain separately verifiable runtime steps.
+
+
 ## 1.2.1 — 2026-11-13
 
 - Fix queued Goal bootstrap when the original approved ChatGPT launcher tab is absent; only zero-Send Goal intake can use the approved-profile fallback, while all existing conversation recovery still requires the exact original tab.

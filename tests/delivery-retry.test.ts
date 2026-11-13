@@ -14,6 +14,8 @@ const url='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
 const prompt='Original submitted request';
 const reply='Fresh, completed original answer\n[MISSION_RELAY:NEXT]';
 const timeout='ChatGPT response observation timed out; submission outcome is ambiguous';
+const newChatTimeout='New ChatGPT reply observation timed out; creation outcome is ambiguous';
+const destination='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174001';
 
 function fixture(newConversation=false){
   const dir=mkdtempSync(join(tmpdir(),'mr-delivery-retry-'));
@@ -37,12 +39,13 @@ function fixture(newConversation=false){
 }
 
 class RetryPage {
+  targetUrl=url;
   banner=true;
   error:'delivery-timeout'|'stream-error'='delivery-timeout';
   clicks=0;
   user=prompt;
   assistant='Previous assistant response\n[MISSION_RELAY:NEXT]';
-  url(){return url;}
+  url(){return this.targetUrl;}
   getByText(s:string){
     const shown=()=>this.banner&&this.error==='delivery-timeout'&&
       s==='Message delivery timed out. Please try again.';
@@ -75,6 +78,72 @@ class RetryPage {
     return {count:async()=>0,first:()=>({isVisible:async()=>false})};
   }
 }
+
+test('uncertain new-chat Retry requires owner release; recovers its one original request only',async()=>{
+  const f=fixture(true);try{
+    f.store.finishChatBrowserTurn(f.id,'original',{kind:'uncertain',error:newChatTimeout});
+    let m=f.store.get(f.id);
+    f.store.update(f.id,m.version,{stopRequested:true},'mission.pause_requested');
+    const page=new RetryPage();page.targetUrl=destination;
+    const connect=async(target:string)=>{
+      assert.equal(target,destination);
+      return {page:page as unknown as Page,close:async()=>{}};
+    };
+    const candidates=async()=>[{url:destination,urlSha256:hash(destination),
+      lastUserSha256:hash(prompt),duplicate:false}];
+    const bridge=new TelegramBridge(f.store,f.engine,{
+      getUpdates:async()=>[],sendMessage:async()=>{},
+    },1,2,undefined,connect,undefined,candidates);
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(page.clicks,0);
+    m=f.store.get(f.id);
+    assert.throws(()=>f.store.claimDeliveryRetryIntent(f.id,'original',hash(prompt)),
+      /original active or timed-out/);
+    const released=f.store.resumeUncertainNewChatRetry(f.id,m.version);
+    assert.equal(released.stopRequested,false);
+    assert.equal(released.state,'NEEDS_RECONCILIATION');
+    (bridge as unknown as {lastDeliveryRetryRecoveryAt:number}).lastDeliveryRetryRecoveryAt=0;
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(page.clicks,1);
+    assert.equal(f.store.get(f.id).turnCount,0);
+    (bridge as unknown as {lastDeliveryRetryRecoveryAt:number}).lastDeliveryRetryRecoveryAt=0;
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(f.store.get(f.id).turnCount,1);
+    assert.equal(f.store.get(f.id).state,'PAUSED');
+    assert.equal(f.store.chatLink(f.id),destination);
+    assert.equal(f.store.events(f.id).filter(e=>
+      e.type==='chatgpt.browser_delivery_retry_intent').length,1);
+    assert.equal(f.store.events(f.id).filter(e=>
+      e.type==='chatgpt.browser_delivery_retry_clicked').length,1);
+    assert.equal(f.store.events(f.id).filter(e=>
+      e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(f.store.events(f.id).filter(e=>
+      e.type==='chatgpt.browser_rollover_recovered').length,1);
+    (bridge as unknown as {lastDeliveryRetryRecoveryAt:number}).lastDeliveryRetryRecoveryAt=0;
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(page.clicks,1);
+  }finally{f.cleanup();}
+});
+
+test('uncertain new-chat recovery refuses wrong, duplicate or missing destination without consuming Retry',async()=>{
+  for(const [seenSha,duplicate] of [[hash('unrelated human prompt'),false],
+    [hash(prompt),true]] as const){
+    const f=fixture(true);try{
+      f.store.finishChatBrowserTurn(f.id,'original',{kind:'uncertain',error:newChatTimeout});
+      const page=new RetryPage();page.targetUrl=destination;
+      const candidates=async()=>[{url:destination,urlSha256:hash(destination),
+        lastUserSha256:seenSha,duplicate}];
+      const bridge=new TelegramBridge(f.store,f.engine,{
+        getUpdates:async()=>[],sendMessage:async()=>{},
+      },1,2,undefined,async()=>({page:page as unknown as Page,close:async()=>{}}),
+      undefined,candidates);
+      await bridge.recoverUncertainDeliveryOnce();
+      assert.equal(page.clicks,0);
+      assert.equal(f.store.get(f.id).turnCount,0);
+      assert.equal(f.store.hasDeliveryRetryIntent(f.id,'original',hash(prompt)),false);
+    }finally{f.cleanup();}
+  }
+});
 
 test('one durable Retry intent survives reopening and never submits a second request',()=>{
   const f=fixture();try{

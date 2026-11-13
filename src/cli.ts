@@ -163,6 +163,9 @@ Commands:
          clear just the false recovery interruption; no Send or PI decision
   browser-recover-rollover <id> --revision <n> --new-url <exact new chat URL>
          --acknowledge-side-effects  Read-only inspect old/new chats, then atomic observed recovery
+  browser-resume-pending-retry <id> --revision <n> --acknowledge-side-effects
+         Release an owner-paused, uncertain new-chat message for ONE enrolled-Worker
+         existing-message UI Retry; never perform Retry or composer Send here
   browser-retry-pre-send-rollover <id> --revision <n> --acknowledge-side-effects
          ONE original-reservation first Send only after the exact old page.goto
          origin timeout proved no Send click occurred; audit intent before
@@ -870,6 +873,18 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
           recoveredAnswerSha256:createHash('sha256').update(answer).digest('hex'),
           note:'One first real Send after proven pre-Send navigation failure, credited to the ORIGINAL reserved request. No duplicate reservation, no second Send. Worker must independently PI-review this reply.'};
       });
+    }
+    else if(command==='browser-resume-pending-retry'&&id){
+      const f=flags(rest);
+      if(f['--acknowledge-side-effects']?.[0]!=='true')
+        throw new Error('Explicit --acknowledge-side-effects required');
+      const revision=Number(option(f,'revision'));
+      if(!Number.isSafeInteger(revision)||revision<0)
+        throw new Error('Valid Mission revision required');
+      const m=store.resumeUncertainNewChatRetry(id,revision);
+      result={missionId:id,revision:m.version,state:m.state,
+        stopRequested:m.stopRequested,
+        note:'Original new-chat request is preserved; only the enrolled Worker may inspect and perform one same-message UI Retry. No Send or Retry was executed by this command.'};
     }
     else if (command === 'browser-recover-rollover' && id) {
       const f=flags(rest);

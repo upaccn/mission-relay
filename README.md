@@ -2,7 +2,7 @@
 
 Mission Relay is a local-first, Node.js 24+ Mission controller for long-running AI work. It persists goals, plans, unbounded PI Missions, browser requests, independent review decisions and audit evidence in SQLite. Each Chat is limited to ten durably observed Relay Sends; new PI Missions have no fixed turn ceiling. The default path is **Telegram → tool-free PI planning → a user-approved ChatGPT Chrome tab**. An optional, separately installed native executor plugin provides a different execution route; Codex is not bundled with Core.
 
-**Version: v1.2.1.** Local-first production operation requires an exact-SHA GitHub CI qualification, a maintenance-gated Windows promotion and independent runtime readback. Package version and CI do not establish that an individual Goal has independently passed its release gate; inspect the current deployed source and [current state](STATE.md) before declaring any Goal DONE.
+**Version: v1.2.2.** Local-first production operation requires an exact-SHA GitHub CI qualification, a maintenance-gated Windows promotion and independent runtime readback. Package version and CI do not establish that an individual Goal has independently passed its release gate; inspect the current deployed source and [current state](STATE.md) before declaring any Goal DONE.
 
 ## Installation and read-only inspection
 
