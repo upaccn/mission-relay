@@ -163,6 +163,34 @@ All state-changing operations use `Store.atomic()` and durable idempotency keys.
 
 **Evidence boundary:** `PASS` and `PASSED` are persisted *PI-reported statuses*, not independent business completion. Goal creation and status are now available through authenticated Telegram owner commands, but only the separate SHA-bound `GoalReleaseGate` can certify immutable DONE, after all independent requirements pass. Neither a Goal API nor synthetic tests prove a software release or business completion. Never migrate an active GMK database outside the original SQLite idle/drain, backup and pull-only upgrade gates.
 
+### Multiple independent Goals, one browser Worker (v1.2.0)
+
+An authenticated `/goal-build` creates a **new** Goal, request-keyed
+Mission, approved per-repository write scope and Chrome-profile binding in
+the original SQLite, even while another Goal is running or an original Send
+is unsettled. Intake never sends to Chrome and never turns Goal B into
+Goal A's owner note. The legacy `/build` path remains single-task.
+
+The original leased Telegram Worker selects eligible Goals with a durable
+round-robin cursor. It yields only **after** an entire browser Send has been
+observed and its matching PI decision committed, and only if another Goal
+is runnable. On resume it independently verifies the precise linked Chat
+URL, original prompt SHA, complete assistant SHA and PI decision. Reserved
+or uncertain Sends globally prohibit switching, though independent Goal
+intake remains available. Request keys, conversation locks, one-shot Retry,
+ten-Send Chat rollover and durable original prompt snapshots are unchanged.
+Only one browser Worker, one SQLite and one inbox/queue are used.
+
+Per-path operator permissions use
+`telegram.build.allow.<SHA256(absolute path)>` in private SQLite.
+Legacy single-project approval is compatible, but PI's separate tool-free
+inference project no longer determines the repository of every Goal. Each
+Mission's original `workspace` and `sandbox` are checked again before
+every Send, including after revocation and restart. This controls the
+controller's authorization and work-package prompt scope, **not** the OS
+permissions of ChatGPT's independently connected tools. PI results and
+synthetic A→B→A→B tests do not establish real deployed Goal DONE.
+
 ### Goal work Prompt isolation (WP3)
 
 The first new owner-requested, Goal-bound Chat retains the full Goal **only as read-only discovery context**. `browserGoalPlanningPrompt` removes any write/deploy authorization from the first Send even when the Goal's eventual workspace is writable, and asks for bounded work packages, evidence gaps and recovery checks. Its answer is planning evidence, never an executed work item or independent PASS. PI must approve a durable Goal Plan and select one Work Item before the second, executable Send. For a **bound, active Goal** with an approved plan and exactly one dependency-ready `IN_PROGRESS`/`REVIEW` Work Item, `goalWorkPrompt` projects just the work title/key, description, numbered acceptance criteria, current PI-selected instruction, minimal approved workspace/read-only scope and the output marker contract. It excludes owner-wide Goal text, original overall acceptance, PI planning summary/decision policy, browser Send limits, previous model answers and handoff excerpts. This applies to ordinary same-Chat work, 10→11 new Chat, and an inherited 32→successor Mission first Send; unbound legacy PI Missions continue using their **unchanged** older prompt builders.

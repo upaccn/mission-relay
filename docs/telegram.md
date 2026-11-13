@@ -82,10 +82,31 @@ The existing Node controller checks ordinary control-loop progress every 30 seco
 
 ### Goal-driven owner commands (WP4)
 
-The private, authenticated Owner may send `/goal <long-term objective>` for
-**read-only** PI-managed Goal development, or `/goal-build <long-term objective>`
-for development **only inside** the repository already approved through the
-existing local `telegram-pi-config` and `telegram-build-project` workflow.
+The authenticated Owner can send `/goal <objective>` for read-only work,
+`/goal-build <objective>` for the legacy default approved write repository,
+or `/goal-build --repo /approved/absolute/path <objective>` for another
+independently approved repository. Locally approve and inspect these exact
+paths with:
+
+```sh
+node dist/cli.js telegram-build-project --allow /srv/projects/product-a
+node dist/cli.js telegram-build-project --allow /srv/projects/product-b
+node dist/cli.js telegram-build-project --list
+node dist/cli.js telegram-build-project --revoke /srv/projects/product-b
+```
+
+PI inference's configured SSH project is a tool-free route, not an
+automatic code-write permission for every Goal. Approved repository
+paths are rechecked at the final browser reservation. This controls
+prompts and Relay authorization, not the OS sandbox for ChatGPT tools.
+Independent Goal B intake is persisted while Goal A is running or an
+original Send is unresolved; B is not an instruction to A. The existing
+single Worker rotates at *observed Send plus committed PI decision*
+checkpoints. Reserved/uncertain Sends prohibit switching, never intake.
+Use `/list`, `/goals`, `/status 2`, `/pause 2` and `/resume 2`
+to distinguish and manage the numbered tasks without routine UUIDs.
+Resume only clears an explicit owner pause after its original request
+has settled and the checkpoint is independently verified.
 No task breakdown, planning fields, plugin selection or additional scheduler
 are required from the Owner; the existing PI proposes and approves a
 versioned, dependency-ordered Work Item plan after the first observed browser

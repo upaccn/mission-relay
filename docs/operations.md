@@ -1,5 +1,27 @@
 # Operations
 
+## Multiple-Goal production gate (v1.2.0)
+
+This release adds no daemon, queue service or destructive SQLite migration.
+Goal B may be persisted as READY while Goal A is still running or has an
+outstanding original Send. Queued Goal intake is not permission to preempt
+Goal A, and every READY Goal also blocks the normal maintenance drain.
+
+Require exact-SHA GitHub main and successful same-SHA Ubuntu, Windows and
+macOS CI, then run the enrolled original Windows read-only restart
+preflight, real SQLite maintenance drain and the existing
+`scripts/windows/telegram-task.ps1 -Action Upgrade -ExpectedSha <sha>`
+pull-only upgrade. Preserve its isolated DB restore, backup, compiled
+rollback and one-Worker source/PID attestation. When any RUNNING or READY
+PI Mission, original reserved Send or undelivered notification remains,
+**do not deploy**; never stop the current Worker or reset its tasks.
+
+Live acceptance is separate from CI and synthetic tests: actual Goal A must
+remain unfinished while distinct Goal B is accepted; the one Worker must
+advance their different approved repositories and physical ChatGPT
+conversations in alternating settled checkpoints and deliver two
+independent final reports. A simulated browser does not meet this gate.
+
 ## One-time reset before the first formal project
 
 Only the authenticated owner may explicitly authorize a complete removal of

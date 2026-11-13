@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.0 — 2026-11-13
+
+- Accept independent authenticated `/goal-build` requests into the existing SQLite while another Goal is running, paused or awaiting its original Send; never treat a fresh Goal as an instruction to the previous one.
+- Scope each Goal-bound Mission to its own immutable repository and browser identity. Local operator approval supports multiple explicit repositories with `telegram-build-project --allow/--revoke/--list`, and Telegram selects with `/goal-build --repo <approved path> <objective>`. Existing single-project approval is honored until explicitly revoked.
+- Use the one leased Telegram Worker to rotate active Goals at **fully observed Send + committed PI decision** checkpoints; never preempt or resend an unsettled request. Preserve the existing ten-Send Chat limit, prompt snapshots, original Retry/recovery and one-worker SQLite locks.
+- Present running/queued/paused/needs-attention/PI-completed states in `/list`, `/status` and `/goals`; numeric selectors permit owner pause and explicit safe resume without routinely exposing internal UUIDs.
+- Extend synthetic SQLite/Playwriter regression coverage for two repository-separated Goals progressing A→B→A→B, restarted controller custody, persistence, authorization revocation, duplicate intake, owner pause and unsettled-Send safety. These tests are **not** live GMK concurrent acceptance.
+
 ## 1.1.5 — 2026-11-13
 
 - Redesign owner-facing Telegram: task titles, readable progress, pagination and status without UUIDs, a concise **All Done** completion summary and actionable paused/blocked messages.

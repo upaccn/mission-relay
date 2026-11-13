@@ -34,6 +34,7 @@ import {setTelegramChatAnchor} from './core/chat-anchor.js';
 import { connectChatPage, inspectChatPage, matchesSubmittedUserPrompt, matchesReservedPromptHash, lastVisibleUserPromptSha256, listConnectedChatCandidates, prepareNewChatOrigin, submitNewChatTurn, withBrowserSession } from './plugins/chatgpt-browser.js';
 import { executeBrowserTurn, driveChatConversation, browserDecision, exactReservedRolloverPrompt, browserRolloverPiPlan } from './core/browser-controller.js';
 import {SshPiPlanner,validatePictlRemoteConfig,validateRemoteProjectPath} from './core/pi-planner.js';
+import {approveBuildRepository,revokeBuildRepository,approvedBuildRepositories} from './core/build-scopes.js';
 import {adoptConnectedConversation} from './core/chat-adoption.js';
 import {watchedBrowser,enableBrowserWatch,disableBrowserWatch} from './core/browser-watch.js';
 import { listBrowsers } from 'playwriter';
@@ -86,7 +87,9 @@ Commands:
   telegram-pi-config --ssh-host <alias> --project <remote-absolute-path> | --clear
                       Configure tool-free PI inference through the existing SSH connection
   telegram-build-project --project <remote-absolute-path> | --clear
-                      Operator approval of one repository for /build (must equal configured PI project)
+                      Legacy default repository for /build (must equal configured PI project)
+  telegram-build-project --allow <remote-absolute-path> | --revoke <path> | --list
+                      Explicit per-repository approval for independent /goal-build --repo <path>
   telegram-identify     Inspect local /start sender IDs before owner authorization
   channel-status        Inspect durable Telegram delivery cursor and poller status (no secrets)
   pi-health             Inspect active PI/browser requests, observed turns and wait age (no content, no Send)
@@ -332,11 +335,26 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
     } else if (command === 'telegram-build-project' && id === '--clear') {
       store.setMeta('telegram.build.project','');
       result={configured:false,note:'No future /build command may start until locally re-approved.'};
+    } else if (command === 'telegram-build-project' && id === '--allow') {
+      if(rest.length!==0||!store.getMeta('telegram.pi.sshHost'))
+        throw new Error('A configured PI route and exactly one --allow path are required');
+      result={approved:approveBuildRepository(store,option(flags(argv.slice(1)),'allow')),
+        repositories:approvedBuildRepositories(store)};
+    } else if (command === 'telegram-build-project' && id === '--revoke') {
+      if(rest.length!==0)throw new Error('Supply exactly one --revoke path');
+      const project=validateRemoteProjectPath(option(flags(argv.slice(1)),'revoke'));
+      revokeBuildRepository(store,project);
+      result={revoked:project,repositories:approvedBuildRepositories(store),
+        note:'Future Sends into this repository are refused; existing requests and receipts were not altered.'};
+    } else if (command === 'telegram-build-project' && id === '--list') {
+      if(rest.length!==0)throw new Error('No arguments allowed with --list');
+      result={repositories:approvedBuildRepositories(store)};
     } else if (command === 'telegram-build-project') {
       const project=validateRemoteProjectPath(option(flags(argv.slice(1)),'project'));
       if(!store.getMeta('telegram.pi.sshHost')||project!==store.getMeta('telegram.pi.project'))
         throw new Error('Build project must exactly match the configured PI remote project');
       store.setMeta('telegram.build.project',project);
+      approveBuildRepository(store,project);
       result={configured:true,project,note:'The owner may opt into project changes with /build. This is a ChatGPT authorization prompt, not an operating-system sandbox.'};
     } else if (command === 'telegram-identify') {
       const token=process.env.MISSION_RELAY_TELEGRAM_BOT_TOKEN;

@@ -2,7 +2,7 @@
 
 Mission Relay is a local-first, Node.js 24+ Mission controller for long-running AI work. It persists goals, plans, unbounded PI Missions, browser requests, independent review decisions and audit evidence in SQLite. Each Chat is limited to ten durably observed Relay Sends; new PI Missions have no fixed turn ceiling. The default path is **Telegram → tool-free PI planning → a user-approved ChatGPT Chrome tab**. An optional, separately installed native executor plugin provides a different execution route; Codex is not bundled with Core.
 
-**Version: v1.1.5.** Local-first production operation requires an exact-SHA GitHub CI qualification, a maintenance-gated Windows promotion and independent runtime readback. Package version and CI do not establish that an individual Goal has independently passed its release gate; inspect the current deployed source and [current state](STATE.md) before declaring any Goal DONE.
+**Version: v1.2.0.** Local-first production operation requires an exact-SHA GitHub CI qualification, a maintenance-gated Windows promotion and independent runtime readback. Package version and CI do not establish that an individual Goal has independently passed its release gate; inspect the current deployed source and [current state](STATE.md) before declaring any Goal DONE.
 
 ## Installation and read-only inspection
 
@@ -24,7 +24,17 @@ The CLI uses Node's built-in SQLite; there is no required database server, broke
 
 In Telegram, send a normal message for PI-coordinated read-only work, or use `/build <task>` for an approved repository. `/help` shows the daily commands; `/help advanced` lists infrequent and legacy operations.
 
-**Browser / PI (primary):** Telegram is owner-allowlisted, and the interactive-user Windows Worker is a single, SQLite-leased controller. PI inference uses a separately configured SSH host and project with its own default model and no model/provider/effort override or agent tools. ChatGPT executes only the currently approved task/work package using the user's own Playwriter-enabled Chrome profile. A new PI Mission has **no fixed turn ceiling**. Five **observed** Relay sends per Chat are enforced; further work uses a verified fresh Chat inside the same Mission. PI may stop on DONE/BLOCKED, and the owner can pause. Pre-v1 bounded Missions and their cross-Mission successor receipts remain readable without modifying their history. Model NEXT/DONE/BLOCKED markers are hints, not independent evidence of task or Goal completion.
+**Browser / PI (primary):** Telegram is owner-allowlisted, and the interactive-user Windows Worker is a single, SQLite-leased controller. PI inference uses a separately configured SSH host and project with its own default model and no model/provider/effort override or agent tools. ChatGPT executes only the currently approved task/work package using the user's own Playwriter-enabled Chrome profile. A new PI Mission has **no fixed turn ceiling**. Ten **observed** Relay sends per Chat are enforced; further work uses a verified fresh Chat inside the same Mission. Multiple Goal-bound Missions may be queued and take turns at fully settled PI checkpoints on this same Worker. An unsettled Send blocks scheduling but not intake; no second daemon or queue exists. PI may stop on DONE/BLOCKED, and the owner can pause. Pre-v1 bounded Missions and their cross-Mission successor receipts remain readable without modifying their history. Model NEXT/DONE/BLOCKED markers are hints, not independent evidence of task or Goal completion.
+
+For multi-repository Goals, the local operator explicitly approves each source path:
+
+```sh
+node dist/cli.js telegram-build-project --allow /srv/projects/product-a
+node dist/cli.js telegram-build-project --allow /srv/projects/product-b
+node dist/cli.js telegram-build-project --list
+```
+
+Then send `/goal-build --repo /srv/projects/product-a <objective>` and `/goal-build --repo /srv/projects/product-b <objective>` in the authenticated Telegram chat. These approvals persist in the existing private SQLite; the `--repo` argument is **never** selected by PI/model text. Mission Relay constrains its own Send authorization and prompt scope, **not** the independent ChatGPT executor's operating-system filesystem permissions. Review actual Git changes in each repository before considering either Goal complete. `/list`, `/status 2`, `/goals`, `/pause 2`, and `/resume 2` use everyday numeric task selectors; the underlying audit retains exact original IDs.
 
 **Native executor (optional):** A trusted local JS module must explicitly be registered, provide an executor manifest, implement execute/verify and manage its own credentials and privileges. The local Mission Engine pins an executor identity and performs configured deterministic checks before it can accept write-capable completion. The checks run operator-defined commands: they are not a sandbox. Native execution does not inherit browser or Telegram write authority.
 

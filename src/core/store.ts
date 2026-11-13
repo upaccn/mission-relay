@@ -7,6 +7,7 @@ import type { CreateMission, Mission, MissionEvent, MissionState, VerificationCh
 import { normalizeChatGPTUrl } from './chatgpt-handoff.js';
 import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 import {missionTurnsRemaining,missionTurnLimitReached} from './mission-turns.js';
+import {isApprovedBuildRepository} from './build-scopes.js';
 import type {RuntimeProvenance} from './runtime-provenance.js';
 
 type MissionRow = {
@@ -1152,8 +1153,7 @@ export class Store {
       if(!options.newConversation&&this.piChatObservedTurns(id)>=MAX_RELAY_CHAT_TURNS)
         throw new Error(`ChatGPT conversation already has ${MAX_RELAY_CHAT_TURNS} observed Relay Sends; start a new conversation before another Send`);
       if(m.sandbox==='workspace-write'&&this.getMeta(`pi.autopilot.enabled.${id}`)==='1'&&
-        (this.getMeta('telegram.build.project')!==m.workspace||
-         this.getMeta('telegram.pi.project')!==m.workspace))
+        !isApprovedBuildRepository(this,m.workspace))
         throw new Error('Approved PI build workspace changed or was revoked before Send');
       if(options.goalBinding){
         const binding=options.goalBinding;
@@ -1872,6 +1872,42 @@ export class Store {
             stopRequested:true,...(m.state==='READY'?{state:'PAUSED' as const}:{})},
             'mission.pause_requested',{reason:'Owner paused PI Mission lineage'});
         cursor=this.piChainSuccessor(cursor);
+      }
+      return this.get(id);
+    });
+  }
+  /** Explicit owner action only. Stop flags are never cleared on restart or
+   * scheduling. The original reservation must have settled and, if there was
+   * a Send, its exact independently verified checkpoint must still exist. */
+  resumePiChain(id:string):Mission {
+    return this.transaction(()=>{
+      if(this.channelDrainRequested('telegram'))
+        throw new Error('Maintenance drain forbids resuming a Goal');
+      const chain:string[]=[];
+      const visited=new Set<string>();
+      let cursor:string|null=id;
+      while(cursor){
+        if(visited.has(cursor))throw new Error('PI Mission lineage cycle detected');
+        visited.add(cursor);
+        const m=this.get(cursor),receipt=this.chatBrowserTurn(cursor);
+        if(this.getMeta(`pi.autopilot.enabled.${cursor}`)!=='1'||
+          m.state!=='PAUSED'||m.ownerPid!==null||m.lastError||
+          !m.stopRequested||
+          (receipt&&['reserved','uncertain'].includes(receipt.status))||
+          (m.turnCount>0&&(!receipt||
+            !['observed','reconciled'].includes(receipt.status)||
+            !this.hasVerifiedPiBrowserCheckpoint(cursor)))||
+          ['DONE','BLOCKED'].includes(this.piPlan(cursor)?.action??''))
+          throw new Error('Goal resume requires an owner-paused, settled and verified checkpoint; no Send was retried');
+        chain.push(cursor);
+        cursor=this.piChainSuccessor(cursor);
+      }
+      for(const missionId of chain){
+        const m=this.get(missionId);
+        this.update(missionId,m.version,{
+          stopRequested:false,
+          ...(m.turnCount===0&&!this.chatBrowserTurn(missionId)?{state:'READY' as const}:{}),
+        },'mission.owner_resumed',{ownerInitiated:true,noBrowserReplay:true});
       }
       return this.get(id);
     });

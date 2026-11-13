@@ -1345,7 +1345,7 @@ test('An uncertain old PI Send still prevents new work while its side effects ar
   }finally{f.cleanup();}
 });
 
-test('A new Goal cannot bypass an owner-paused in-flight Send; after settlement old Goal and evidence remain untouched',async()=>{
+test('A new Goal is durably queued beside an owner-paused in-flight Send, but never dispatches until settlement',async()=>{
   const f=rig(goalPlanner());
   try{
     f.store.setMeta('telegram.pi.project',APPROVED_PROJECT);
@@ -1368,9 +1368,15 @@ test('A new Goal cannot bypass an owner-paused in-flight Send; after settlement 
     const objective='Fresh independently scoped Mission Relay Goal';
     f.setUpdates([f.message(3401,`/goal-build ${objective}`)]);
     await f.bridge.pollOnce(0);
-    assert.equal(ledger.listGoals().length,1,'The outstanding original Send blocks another Goal');
+    assert.equal(ledger.listGoals().length,2,'Goal intake must not be blocked by the old in-flight Send');
     assert.equal(f.state().sends,0);
-    assert.ok(f.sent.some(x=>/earlier PI Mission.*not terminal/.test(x)));
+    assert.ok(f.sent.some(x=>/Task accepted|Task queued/.test(x)));
+    const newMission=f.engine.list().find(m=>m.goal===objective)!;
+    assert.equal(newMission.state,'READY');
+    assert.equal(f.store.chatBrowserTurn(newMission.id),null);
+    await (f.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>})
+      .recoverObservedPiCheckpoint();
+    assert.equal(f.state().sends,0,'An unsettled Send must block scheduler switching');
     assert.equal(f.store.chatBrowserTurn(old.id)?.status,'reserved');
     assert.equal(f.store.get(old.id).stopRequested,true);
     assert.deepEqual(f.store.events(old.id),oldEventsWhileReserved);
@@ -1384,15 +1390,14 @@ test('A new Goal cannot bypass an owner-paused in-flight Send; after settlement 
     const oldGraph=ledger.graph(oldGoal.id);
     assert.equal(settledOld.state,'PAUSED');
     assert.equal(settledOld.stopRequested,true);
-    f.setUpdates([f.message(3402,`/goal-build ${objective}`)]);
-    await f.bridge.pollOnce(0);
     const newGoal=ledger.listGoals().find(g=>g.id!==oldGoal.id)!;
     assert.ok(newGoal);
     assert.notEqual(newGoal.id,oldGoal.id);
-    const newMission=f.engine.list().find(m=>m.goal===objective)!;
     assert.ok(newMission);
     assert.equal(ledger.missionGoalId(newMission.id),newGoal.id);
     assert.notEqual(newMission.id,old.id);
+    await (f.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>})
+      .recoverObservedPiCheckpoint();
     for(let i=0;i<160&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
     assert.equal(f.state().closed,true);
     assert.ok(f.state().sentPrompts[0]?.includes(objective));

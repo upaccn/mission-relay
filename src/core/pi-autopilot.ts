@@ -9,6 +9,7 @@ import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 import {missionTurnLimitReached,missionTurnsRemaining} from './mission-turns.js';
 import {withReadOnlyDeadline} from './read-only-deadline.js';
 import {GoalLedger} from './goal-store.js';
+import {isApprovedBuildRepository} from './build-scopes.js';
 import {reviewGoalPiRound} from './goal-pi.js';
 import {goalWorkPrompt} from './goal-prompts.js';
 import {captureGoalChromeBoundary,retireGoalOwnedTab} from './goal-release-chrome-probes.js';
@@ -41,6 +42,9 @@ function nextPiBrowserPrompt(goal:string,plan:PiPlan,writeWorkspace:string|null)
 export interface PiAutopilotArgs {
   store:Store;planner:PiPlanner;missionId:string;revision:number;
   requestPrefix:string;page:Page;url:string;
+  /** Cooperative scheduler: return only AFTER the original Send is settled
+   * and the PI decision is durably committed. Never preempt a browser turn. */
+  yieldAtGoalCheckpoint?:boolean;
   /** Only supplied after an independent read-only browser hash comparison. */
   recoveredAnswer?:{responseSha256:string;lastAssistant:string};
 }
@@ -216,9 +220,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
   if(!store.chatBrowserBinding(missionId))
     throw new Error('PI autopilot requires an exact pinned ChatGPT Mission');
   const writeWorkspace=origin.sandbox==='workspace-write'?origin.workspace:null;
-  if(writeWorkspace && (adopted||
-    store.getMeta('telegram.build.project')!==writeWorkspace||
-    store.getMeta('telegram.pi.project')!==writeWorkspace))
+  if(writeWorkspace && (adopted||!isApprovedBuildRepository(store,writeWorkspace)))
     throw new Error('PI write mode requires its original locally approved project and a fresh Telegram owner command');
   if(origin.sandbox!=='read-only'&&!writeWorkspace)
     throw new Error('PI Mission has no approved execution scope');
@@ -317,9 +319,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
     const before=store.get(missionId);
     let exactSource:{promptSha256:string;assistantSha256:string}|undefined;
     if(before.stopRequested) return;
-    if(writeWorkspace&&(
-      store.getMeta('telegram.build.project')!==writeWorkspace||
-      store.getMeta('telegram.pi.project')!==writeWorkspace))
+    if(writeWorkspace&&!isApprovedBuildRepository(store,writeWorkspace))
       throw new Error('Approved build project was revoked or changed; no further browser send');
     if((i>0||adopted||chainParentId)&&!nextPlan)throw new Error('PI cannot continue without a durable next-step decision');
     if(i>0||adopted){
@@ -457,6 +457,26 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
     if(['DONE','BLOCKED'].includes(nextPlan!.action)||missionTurnLimitReached(origin.maxTurns,received.turnCount))
       return;
     revision=store.get(missionId).version;
+    // Other live Goals are durable, independent contenders. The controller
+    // releases its one browser session only at this settled PI checkpoint.
+    // Existing single-Goal operation retains its normal continuous behavior.
+    if(input.yieldAtGoalCheckpoint){
+      const ledger=new GoalLedger(store),currentGoal=ledger.missionGoalId(missionId);
+      const anotherRunnable=currentGoal&&store.list().some(other=>{
+        if(other.id===missionId||other.stopRequested||other.lastError||
+          store.getMeta(`pi.autopilot.enabled.${other.id}`)!=='1')return false;
+        const otherGoal=ledger.missionGoalId(other.id);
+        if(!otherGoal||otherGoal===currentGoal||!['DRAFT','ACTIVE'].includes(
+          ledger.getGoal(otherGoal).status))return false;
+        const receipt=store.chatBrowserTurn(other.id),pi=store.piPlan(other.id);
+        if(receipt&&['reserved','uncertain'].includes(receipt.status))return false;
+        if(other.state==='READY'&&other.turnCount===0)return true;
+        return other.state==='PAUSED'&&receipt?.assistantSha256&&
+          store.hasVerifiedPiBrowserCheckpoint(other.id)&&
+          (pi?.round!==other.turnCount||['NEXT','HANDOFF'].includes(pi.action));
+      });
+      if(anotherRunnable)return;
+    }
   }
 }
 
