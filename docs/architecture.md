@@ -201,7 +201,20 @@ The explicit, existing `browser-recover-rollover` recovery command reads the imm
 
 ### PI Goal management (WP2)
 
-Goal enrollment is opt-in: the existing authenticated Telegram `/goal` or `/goal-build` path creates a durable Goal, an unstarted PI Mission and one exact browser binding transactionally after owner/browser/PI preflights. The underlying `GoalLedger.bindPiMission` API retains the same strict scope and unstarted-Mission checks. Existing Missions are not backfilled, and a live independently bound second Mission root for the same Goal is refused. A historical 32-turn successor resolves the binding through the existing reciprocal PI parent chain, without changing the owning Goal. Before a fresh owner Goal can start, the controller checks *all* previous PI Missions for a reserved or uncertain original browser Send, **including those with an owner pause flag**. An owner pause is not a request settlement. Once that original Send is durably observed and the owner pause remains in force, a separate fresh Goal can start without unpausing, replaying or inheriting the previous Mission or its work.
+Goal enrollment is opt-in. The authenticated Telegram `/goal` or
+`/goal-build` creates the Goal, one original request-keyed PI Mission and
+its repository/profile binding in a single SQLite transaction. Queued Goal
+intake never requires an earlier Goal's browser Send to settle; the
+single Worker **dispatch** does. A repeated authenticated update with the
+same active objective and repository reuses that Goal rather than creating
+another; the same objective in a different independently approved repository
+is a separate Goal. Only original, zero-Send Goal dispatch may safely
+bootstrap a missing approved ChatGPT launch tab; continuation, ambiguous
+Send recovery and successor handoff must use their exact original tab.
+The underlying `GoalLedger.bindPiMission` still refuses a second live
+independent root for the **same** Goal. Preexisting Missions are not
+backfilled, and finite-limit historical successors keep their inherited
+association without any request replay.
 
 After the first **fully observed** browser answer, the existing `reviewPiRound` dispatches a Goal-bound Mission to the project's PI planning/review methods. PI proposes a bounded dependency-DAG plan, which is validated and persisted; the plan is approved before a work item may leave PENDING. The highest-priority eligible item is selected, and its work directive becomes the `NEXT` instruction under the original PI `commitPiPlan` and browser Controller. Subsequent answers are reviewed as `PASS/PARTIAL/FAIL/REPLAN/BLOCKED`: PASS records a *PI-reported* acceptance and chooses the next eligible item; PARTIAL/FAIL keep the same item in scope; REPLAN supersedes the prior plan without discarding history; BLOCKED retains evidence and uses the existing PI terminal action. When no work remains, the existing PI action is BLOCKED pending independent release verification, not Goal DONE. A PI-requested context rollover maps to HANDOFF, obeying the ten-Send-per-Chat limit; old finite-limit Missions and original append-only browser history remains intact.
 

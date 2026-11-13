@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
 import {mkdtempSync,rmSync,existsSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve} from 'node:path';
 import {DatabaseSync} from 'node:sqlite';
+import {approveBuildRepository,revokeBuildRepository,isApprovedBuildRepository} from '../src/core/build-scopes.js';
 import {Store} from '../src/core/store.js';
 import {GoalLedger} from '../src/core/goal-store.js';
 
@@ -30,6 +32,8 @@ function fixture(){
   store.setMeta('telegram.pi.sshHost','approved-pi');
   store.setMeta('telegram.pi.project','/srv/projects/project');
   store.setMeta('telegram.build.project','/srv/projects/project');
+  approveBuildRepository(store,'/srv/projects/second');
+  revokeBuildRepository(store,'/srv/projects/retired');
   store.setMeta('telegram.agent.workspace','/srv/projects/project');
   store.setMeta('telegram.inbox_cursor','700001');
   store.setMeta('telegram.notifications_cursor',String(store.maxEventId()));
@@ -71,6 +75,10 @@ test('fenced fresh reset preserves owner configuration and cursors but zero proj
       assert.equal(reopened.getMeta('telegram.chatgpt.anchorMissionId'),null);
       assert.equal(reopened.getMeta('browser.watch.seen'),null);
       assert.equal(reopened.getMeta('telegram.build.project'),'/srv/projects/project');
+      assert.equal(isApprovedBuildRepository(reopened,'/srv/projects/second'),true);
+      assert.equal(isApprovedBuildRepository(reopened,'/srv/projects/retired'),false);
+      assert.equal(reopened.getMeta('telegram.build.allow.'+
+        createHash('sha256').update('/srv/projects/retired').digest('hex')),'');
       assert.equal(reopened.getMeta('telegram.pi.project'),'/srv/projects/project');
       assert.equal(reopened.getMeta('telegram.agent.workspace'),'/srv/projects/project');
       assert.equal(reopened.channelDrainId('telegram'),f.drain);

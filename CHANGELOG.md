@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.1 — 2026-11-13
+
+- Fix queued Goal bootstrap when the original approved ChatGPT launcher tab is absent; only zero-Send Goal intake can use the approved-profile fallback, while all existing conversation recovery still requires the exact original tab.
+- De-duplicate accidentally resent live Goal requests by objective and approved repository without merging distinct repositories; retain original durable request identities.
+- Keep explicitly owner-paused queued Goals in the actionable Telegram list so numeric status/resume selectors work without UUIDs.
+- Resolve `/goal-status` to the newest Goal and support stable numbered `/goal-status N` from `/goals`, rather than silently displaying the oldest Goal.
+- Preserve independently approved repository grants and explicit revocation tombstones across the optional, safely fenced pre-production project reset, with hash validation and isolated database round-trip tests.
+- Align architecture, Telegram operations and user-facing product documentation with single-Worker multi-Goal checkpoint scheduling, removing contradictory pre-v1.2 instructions. Real two-Goal GMK execution remains a separate deployment acceptance requirement.
+
 ## 1.2.0 — 2026-11-13
 
 - Accept independent authenticated `/goal-build` requests into the existing SQLite while another Goal is running, paused or awaiting its original Send; never treat a fresh Goal as an instruction to the previous one.

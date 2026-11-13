@@ -14,17 +14,24 @@ queue, second agent scheduler or separate service is necessary.
 | Ordinary Telegram message | Start a read-only PI-coordinated task in a new Chat |
 | `/build <task>` | Start a write-capable task in the previously approved repository |
 | `/goal <objective>` | Persist a long-term goal and let PI create/approve its work plan |
-| `/goal-build <objective>` | Same, with the owner's already enrolled code-write scope |
+| `/goal-build <objective>` | Persist an independent Goal in the legacy approved default repository |
+| `/goal-build --repo /approved/path <objective>` | Persist a separate Goal with its own explicitly approved repository, work and ChatGPT conversation |
 | `/list` | Show tasks requiring attention, with history accessible from the inbox |
-| `/status` | Show the latest task; optional explicit Mission ID selects another |
-| `/pause` | Stop the sole active task at its next safe boundary; explicit ID if ambiguous |
+| `/status` or `/status 2` | Show the current task or select a numbered task from `/list` |
+| `/pause` or `/pause 2` | Stop the current or selected Goal at the next safe checkpoint |
+| `/resume 2` | Resume an explicitly paused, settled and independently verified Goal without replaying its prior Send |
+| `/goals` and `/goal-status 2` | Use a stable Goal number to read the second Goal, without copying its internal UUID |
 | `/help` | Show only common actions; `/help advanced` lists optional diagnostics |
 
-A task description is the authorization context. The system never treats
+A task description plus its operator-approved repository is the authorization context. The system never treats
 untrusted ChatGPT response text as new authority. When a task is active,
-additional owner text is queued for the next PI decision, not submitted as
-another browser Send. A simple natural-language instruction is preferred to
-an additional slash command.
+additional ordinary owner text is queued for the next PI decision, not submitted as
+another browser Send. A new `/goal-build` is instead a **new independent Goal**;
+it is durable while another Goal runs, and the single Worker rotates only
+after a complete observed Send and committed PI decision. An unresolved
+Send blocks switching, never independent intake. Repeating the same active
+objective/repository is treated as a duplicate; two approved repositories
+can have the same objective without being merged.
 
 ## System-owned planning and review
 
@@ -82,9 +89,10 @@ The CLI can re-enroll it with `telegram-anchor --url ... --browser-id ...`.
 ## Scope control and deliberate omissions
 
 Keep only one writer, one database, one Telegram channel, the configured PI
-default model, and replaceable execution adapters. No automatic multi-Goal
-parallelism, blind Send replay, silent write escalation, password handling in
-Telegram, or human micro-approvals for ordinary PI planning. Optional native
+default model, and replaceable execution adapters. Multi-Goal **cooperative
+interleaving** is supported; parallel browser Sends, blind replay, silent
+write escalation, password handling in Telegram, or human micro-approvals for
+ordinary PI planning are not. Optional native
 executor and historical diagnostics need not appear in everyday help.
 User-visible complexity is a product defect unless it materially improves
 safety or task success.

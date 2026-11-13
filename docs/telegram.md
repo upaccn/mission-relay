@@ -103,7 +103,7 @@ Independent Goal B intake is persisted while Goal A is running or an
 original Send is unresolved; B is not an instruction to A. The existing
 single Worker rotates at *observed Send plus committed PI decision*
 checkpoints. Reserved/uncertain Sends prohibit switching, never intake.
-Use `/list`, `/goals`, `/status 2`, `/pause 2` and `/resume 2`
+Use `/list`, `/goals`, `/goal-status 2`, `/status 2`, `/pause 2` and `/resume 2`
 to distinguish and manage the numbered tasks without routine UUIDs.
 Resume only clears an explicit owner pause after its original request
 has settled and the checkpoint is independently verified.
@@ -123,7 +123,11 @@ An accepted but unsubmitted READY Goal after a controller restart may be
 recovered using the same approved browser anchor and original request key.
 If a browser Send has already been reserved or is uncertain, the channel
 does **not** duplicate or silently reconcile it; the original evidence
-must be inspected through the existing controlled recovery flow. Telegram
+must be inspected through the existing controlled recovery flow. New Goals
+may still enter the independent SQLite queue but cannot take the browser
+from this in-flight request. A queued first Goal may bootstrap a missing
+approved launch source without reusing another Mission's conversation;
+existing-Chat continuation never uses that bootstrap fallback. Telegram
 updates are idempotent; repeated update IDs do not create competing Goals.
 The channel does not backfill old `/auto`, `/build`, plain-text or
 one-turn `/new` requests. Current model-reported Work Item PASS or a

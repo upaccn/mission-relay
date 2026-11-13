@@ -1,6 +1,6 @@
 # Operations
 
-## Multiple-Goal production gate (v1.2.0)
+## Multiple-Goal production gate
 
 This release adds no daemon, queue service or destructive SQLite migration.
 Goal B may be persisted as READY while Goal A is still running or has an
@@ -21,6 +21,14 @@ remain unfinished while distinct Goal B is accepted; the one Worker must
 advance their different approved repositories and physical ChatGPT
 conversations in alternating settled checkpoints and deliver two
 independent final reports. A simulated browser does not meet this gate.
+
+If the optional, explicitly owner-approved `ResetProjects` action is ever
+used on a fresh pre-production environment, the SQLite-only reset must
+preserve all exact-path repository grants and explicit revocation tombstones,
+alongside the original PI route, legacy default, Telegram inbox cursor and
+approved Chrome launch profile. Verify that a previously revoked path stays
+revoked and that no old Mission, Goal, browser reservation or queued request
+survives the reset. **Never** use project reset as a production upgrade step.
 
 ## One-time reset before the first formal project
 

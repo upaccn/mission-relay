@@ -1,7 +1,7 @@
 // Reset the owner's pre-production projects under the EXISTING SQLite drain.
 // Never call this while a Telegram Worker can accept commands. No Chrome Send.
 import {DatabaseSync} from 'node:sqlite';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHash} from 'node:crypto';
 import {existsSync,mkdirSync,renameSync,rmSync,statSync} from 'node:fs';
 import {dirname,join,resolve,isAbsolute} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -42,6 +42,22 @@ function snapshotSource(db){
   for(const key of PRESERVE){
     const value=getMeta(db,key);
     if(value!==null)settings.set(key,value);
+  }
+  // A future owner-approved project reset must never silently destroy
+  // independent repository grants OR an explicit revocation. Preserve only
+  // strictly validated local operator scope records, never Goal state.
+  for(const row of db.prepare(
+    "SELECT key,value FROM meta WHERE key LIKE 'telegram.build.allow.%' ORDER BY key"
+  ).all()){
+    if(!/^telegram\.build\.allow\.[0-9a-f]{64}$/.test(row.key)||
+      (row.value!==''&&(
+        !/^\/[a-zA-Z0-9_./-]{1,240}$/.test(row.value)||
+        row.value.endsWith('/')||row.value==='/'||
+        row.value.split('/').some(part=>part==='.'||part==='..')||
+        createHash('sha256').update(row.value).digest('hex')!==
+          row.key.slice('telegram.build.allow.'.length))))
+      throw new Error('Invalid repository approval or revocation record');
+    settings.set(row.key,row.value);
   }
   // The old browser launch source was attached to a historical Mission.
   // Extract only the already-approved source URL/profile pair, not the
@@ -155,6 +171,14 @@ export function verifyFreshProjectDatabase(dbPath,drainId){
        !getMeta(db,'telegram.chatgpt.anchorUrl')||
        !getMeta(db,'telegram.chatgpt.browserId'))
       throw new Error('Fresh project readback failed');
+    // A reset may not leave a grant key pointing at an unrelated repository.
+    const scopes=db.prepare(
+      "SELECT key,value FROM meta WHERE key LIKE 'telegram.build.allow.%'"
+    ).all();
+    if(scopes.some(row=>!/^telegram\.build\.allow\.[0-9a-f]{64}$/.test(row.key)||
+      (row.value!==''&&createHash('sha256').update(row.value).digest('hex')!==
+      row.key.slice('telegram.build.allow.'.length))))
+      throw new Error('Repository approval corrupted after project reset');
     return {result:'EMPTY_PROJECT_HISTORY',missions:0,goals:0,events:0,
       inboxCursorPreserved:true,drainHeld:true};
   }finally{db.close()}

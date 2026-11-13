@@ -655,6 +655,12 @@ export class TelegramBridge {
       pauseFailedPiPlanning(this.store,m.id,'PI recovery source URL or bound Chrome profile is absent');
       return;
     }
+    // Only an original, zero-Send Goal launch can recreate a missing
+    // operator-approved anchor inside its already pinned Chrome profile.
+    // A continued/uncertain Send MUST reconnect to the exact original tab.
+    const firstGoalSend=m.state==='READY'&&m.turnCount===0&&
+      !this.store.piChainParent(m.id)&&ledger.missionGoalId(m.id)!==null&&
+      this.store.chatBrowserTurn(m.id)===null;
     let session:BrowserSession|undefined;
     try{
       // Only the side-effect-free connector/DOM read is transient. A real
@@ -662,7 +668,9 @@ export class TelegramBridge {
       let snapshot:Awaited<ReturnType<typeof inspectChatPage>>;
       let lastUserHash:string|null;
       try {
-        session=await withReadOnlyDeadline(this.browserConnector(url,{browserId}),30_000,
+        session=await withReadOnlyDeadline(this.browserConnector(url,{
+          browserId,...(firstGoalSend?{bootstrapMissingAnchor:true}:{})}),
+          30_000,
           lateSession=>lateSession.close());
         // One explicitly armed drill closes ONLY this already-pinned recovery
         // client session, not Chrome, the target tab or another controller.
@@ -697,8 +705,6 @@ export class TelegramBridge {
         console.error(`PI recovery ${m.id}: linked ChatGPT tab not idle; preserving exact checkpoint without Send`);
         return;
       }
-      const firstGoalSend=m.state==='READY'&&m.turnCount===0&&
-        !this.store.piChainParent(m.id)&&ledger.missionGoalId(m.id)!==null;
       // Only a zero-turn successor inherits the parent's final browser
       // checkpoint. Once the child has observed its own first Send, all
       // subsequent recovery reads MUST compare to the child's own latest
@@ -834,8 +840,20 @@ export class TelegramBridge {
           throw new Error('Goal idempotency key was reused with a different scope');
         // A duplicate command must never relink a now-running conversation
         // to the original launch anchor or change its approved repository.
-        return {mission:previous};
+        return {mission:previous,duplicate:true};
       }
+      // A new Telegram update ID is not proof of a new owner intention:
+      // repeated text in the same approved repository is usually a retry.
+      // Separate repositories remain separate identities even if their
+      // objective text is identical; terminal Goals may be reattempted.
+      const ledger=new GoalLedger(this.store);
+      const duplicate=this.engine.list().find(m=>{
+        if(m.goal.trim()!==objective||m.workspace!==(project??'')||
+          m.sandbox!==(project?'workspace-write':'read-only'))return false;
+        const goalId=ledger.missionGoalId(m.id);
+        return goalId!==null&&['DRAFT','ACTIVE','PAUSED'].includes(ledger.getGoal(goalId).status);
+      });
+      if(duplicate)return {mission:duplicate,duplicate:true};
       const m=this.engine.create({
         goal:objective,acceptance:[project?
           'Implement within the individually approved repository; verify tests, Git and CI before completion':
@@ -849,15 +867,15 @@ export class TelegramBridge {
       if(this.store.chatBrowserBinding(bound.id)!==anchor.browserId)
         throw new Error('Original Goal browser binding changed; refusing reassignment');
       this.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
-      const ledger=new GoalLedger(this.store);
       const goal=ledger.createGoal({requestKey:key,objective,priority:50});
       const existing=ledger.missionGoalId(m.id);
       if(existing&&existing!==goal.id)
         throw new Error('Original request key already belongs to a different Goal');
       if(!existing)ledger.bindPiMission(goal.id,m.id,bound.version,`initial-${commandId}`);
-      return {mission:bound};
+      return {mission:bound,duplicate:false};
     });
     return [
+      created.duplicate?'This Goal already exists — the original task was not duplicated.':
       this.activeMission?'Task queued — the current request will not be interrupted.':
         'Task accepted — awaiting the single Worker.',
       taskTitle(created.mission),
@@ -883,7 +901,19 @@ export class TelegramBridge {
     });
     const alreadyEnrolled=goalDriven&&this.engine.list().some(m=>
       m.requestKey===`telegram-goal-${commandId}`);
-    if(goalDriven&&(this.activeMission||otherActive||alreadyEnrolled||
+    const exactScope=write?(task.trim().startsWith('--repo ')?
+      /^--repo\s+(\S+)\s+/.exec(task.trim())?.[1]??'':
+      this.store.getMeta('telegram.build.project')??''):'';
+    const desiredObjective=goalDriven?(write&&task.trim().startsWith('--repo ')?
+      task.trim().replace(/^--repo\s+\S+\s+/,'').trim():task.trim()):'';
+    const repeatedLiveGoal=goalDriven&&this.engine.list().some(m=>{
+      if(m.goal.trim()!==desiredObjective||m.workspace!==exactScope||
+        m.sandbox!==(write?'workspace-write':'read-only'))return false;
+      const goalId=new GoalLedger(this.store).missionGoalId(m.id);
+      return goalId!==null&&['DRAFT','ACTIVE','PAUSED'].includes(
+        new GoalLedger(this.store).getGoal(goalId).status);
+    });
+    if(goalDriven&&(this.activeMission||otherActive||alreadyEnrolled||repeatedLiveGoal||
       task.trim().startsWith('--repo')))
       return this.enqueueGoal(task,commandId,write);
     const goal=task.trim();
@@ -1107,11 +1137,10 @@ export class TelegramBridge {
   /** An actionable inbox, independent of the bounded diagnostic preview.
    * User-visible numbers are only view selectors, never persistent IDs. */
   private inboxMissions():Mission[] {
+    const ledger=new GoalLedger(this.store);
     const all=this.engine.list().filter(m=>!this.store.isMissionArchived(m.id)&&(
       ['READY','RUNNING','VERIFYING','BLOCKED','NEEDS_RECONCILIATION'].includes(m.state)||
-      (new GoalLedger(this.store).missionGoalId(m.id)!==null&&
-        this.store.events(m.id).some(e=>e.type==='pi.autopilot_finished'&&
-          (e.payload as {action?:unknown}).action==='DONE'))||
+      (ledger.missionGoalId(m.id)!==null&&m.state==='PAUSED')||
       (this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1'&&m.state==='PAUSED'&&
         !m.stopRequested&&(!!m.lastError||
         (missionTurnsRemaining(m.maxTurns,m.turnCount)&&
@@ -1180,15 +1209,22 @@ export class TelegramBridge {
             m?this.taskDisplayState(m):'Queued';
           return `${start+i+1}. ${compactTelegramText(g.objective,100)} — ${state}`;
         }),
-        'Use /goal-status for the latest goal.'
+        'Use /goal-status 2 for Goal 2, or /goal-status for the latest.'
       ].join('\n'):'No tracked goals. Send /goal <objective> to begin.';
     }
     if(cmd==='/goal-status'){
-      if(words.length)throw new Error('Use /goal-status (or /goal-status <id> in advanced mode)');
-      id=id??new GoalLedger(this.store).listGoals()[0]?.id;
+      if(words.length)throw new Error('Use /goal-status or /goal-status <number from /goals>');
+      const goals=new GoalLedger(this.store).listGoals();
+      if(id&&/^[1-9]\d*$/.test(id)){
+        const ordinal=Number(id);
+        if(!Number.isSafeInteger(ordinal)||ordinal>goals.length)
+          throw new Error('Goal number is no longer present; refresh /goals.');
+        id=goals[ordinal-1]!.id;
+      }
+      id=id??goals.at(-1)?.id;
       if(!id)return 'No tracked goals yet.';
       if(!/^[0-9a-f-]{36}$/i.test(id))
-        throw new Error('Use /goal-status or a complete internal Goal reference');
+        throw new Error('Use /goal-status or a goal number from /goals');
       const graph=new GoalLedger(this.store).graph(id);
       const approved=graph.plans.find(p=>p.status==='APPROVED');
       const items=approved?graph.items.filter(x=>x.planId===approved.id):[];

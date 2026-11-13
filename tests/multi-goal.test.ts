@@ -97,12 +97,17 @@ function multiRig(){
     }),
   };
   let updates:TelegramUpdate[]=[],replies:string[]=[];
+  let originalAnchorAvailable=true;
+  const connectionAttempts:Array<{url:string;bootstrap:boolean}>=[];
   const transport:TelegramTransport={
     getUpdates:async offset=>updates.filter(u=>u.update_id>=offset),
     sendMessage:async(_id,message)=>{replies.push(message);},
   };
   const connect=async(url:string,options?:{browserId?:string;bootstrapMissingAnchor?:boolean})=>{
       assert.equal(options?.browserId,browserId);
+      connectionAttempts.push({url,bootstrap:options?.bootstrapMissingAnchor===true});
+      if(url===ORIGIN&&!originalAnchorAvailable&&!options?.bootstrapMissingAnchor)
+        throw new Error('Original source tab no longer exists; a queued first Goal needs an owned bootstrap');
       const page=url===ORIGIN?anchor:sessions.find(x=>x.url()===url)?.page;
       if(!page)throw new Error('Unknown independently bound ChatGPT tab');
       return {page,close:async()=>{}};
@@ -121,6 +126,7 @@ function multiRig(){
     }
   };
   return {store,file,engine,bridge,newController,replies,sends,sessions,message,idle,
+    connectionAttempts,loseOriginalAnchor:()=>{originalAnchorAvailable=false;},
     setUpdates:(items:TelegramUpdate[])=>{updates=items;},
     close:()=>{store.close();rmSync(dir,{recursive:true,force:true});}};
 }
@@ -162,12 +168,17 @@ test('two durable write Goals rotate A→B→A→B on one Worker with separate r
     try{
       assert.equal(freshReadOnly.get(a.id).turnCount,1);
       assert.equal(freshReadOnly.get(b.id).turnCount,0);
-      assert.equal(freshReadOnly.getMeta('pi.scheduler.lastMission'),a.id);
+    assert.equal(freshReadOnly.getMeta('pi.scheduler.lastMission'),a.id);
     }finally{freshReadOnly.close();}
+    r.loseOriginalAnchor();
     await switchOnce();
     assert.equal(r.store.get(b.id).turnCount,1);
+    assert.ok(r.connectionAttempts.some(x=>x.url===ORIGIN&&x.bootstrap),
+      'The queued zero-Send Goal must be able to bootstrap its approved Chrome launch source');
     await switchOnce();
     assert.equal(r.store.get(a.id).turnCount,2);
+    assert.ok(r.connectionAttempts.some(x=>x.url===r.store.chatLink(a.id)&&!x.bootstrap),
+      'Existing conversation recovery must refuse a surrogate launch tab');
     await switchOnce();
     assert.equal(r.store.get(b.id).turnCount,2);
     assert.equal(r.sends.length,4);
@@ -234,6 +245,69 @@ test('duplicate Goal intake cannot relink the original conversation or mutate re
     assert.equal(new GoalLedger(r.store).listGoals().length,1);
     assert.throws(()=>api.enqueueGoal(`--repo ${REPO_A} Different Goal`,
       'duplicate-500',true),/idempotency key/);
+  }finally{r.close();}
+});
+
+test('a fresh Telegram update repeating the same active Goal is de-duplicated, while different repositories remain independent',async()=>{
+  const r=multiRig();
+  try{
+    const api=r.bridge as unknown as {enqueueGoal:(task:string,key:string,write:boolean)=>string};
+    const sameObjective='Shared human objective: safely deliver a feature';
+    const first=api.enqueueGoal(`--repo ${REPO_A} ${sameObjective}`,'owner-update-01',true);
+    assert.match(first,/Task accepted/);
+    const repeated=api.enqueueGoal(`--repo ${REPO_A} ${sameObjective}`,'owner-update-02',true);
+    assert.match(repeated,/already exists/);
+    assert.equal(new GoalLedger(r.store).listGoals().length,1);
+    const second=api.enqueueGoal(`--repo ${REPO_B} ${sameObjective}`,'owner-update-03',true);
+    assert.match(second,/Task accepted/);
+    assert.equal(new GoalLedger(r.store).listGoals().length,2);
+    assert.deepEqual(r.engine.list().filter(m=>m.goal===sameObjective)
+      .map(m=>m.workspace).sort(),[REPO_A,REPO_B]);
+    assert.throws(()=>api.enqueueGoal('--repo /srv/projects/unauthorized No access',
+      'owner-update-04',true),/locally approved repository/);
+    assert.equal(new GoalLedger(r.store).listGoals().length,2);
+  }finally{r.close();}
+});
+
+test('owner-paused queued Goal remains visible in /list and can be resumed by its current numeric selector',async()=>{
+  const r=multiRig();
+  try{
+    const api=r.bridge as unknown as {
+      enqueueGoal:(task:string,key:string,write:boolean)=>string;
+      inboxMissions:()=>Array<{id:string}>;
+    };
+    api.enqueueGoal(`--repo ${REPO_B} Pause and resume test`,'owner-pause-50',true);
+    const goal=r.engine.list().find(m=>m.goal==='Pause and resume test')!;
+    r.store.pausePiChain(goal.id);
+    const selected=api.inboxMissions().findIndex(m=>m.id===goal.id)+1;
+    assert.ok(selected>0,'Paused Goal must remain in actionable inbox');
+    r.setUpdates([r.message(810,'/list'),r.message(811,`/status ${selected}`)]);
+    await r.bridge.pollOnce(0);
+    assert.ok(r.replies.some(reply=>/Pause and resume test.*Paused/.test(reply)));
+    assert.ok(r.replies.some(reply=>reply.includes('Task status: Paused')));
+    r.setUpdates([r.message(812,`/resume ${selected}`)]);
+    await r.bridge.pollOnce(0);
+    assert.equal(r.store.get(goal.id).state,'READY');
+    assert.equal(r.store.get(goal.id).stopRequested,false);
+    assert.equal(r.store.chatBrowserTurn(goal.id),null);
+  }finally{r.close();}
+});
+
+test('/goal-status resolves latest Goal and stable numeric entries from /goals without UUIDs',async()=>{
+  const r=multiRig();
+  try{
+    const api=r.bridge as unknown as {enqueueGoal:(task:string,key:string,write:boolean)=>string};
+    api.enqueueGoal(`--repo ${REPO_A} First independently tracked build`,'goal-ordinal-a',true);
+    api.enqueueGoal(`--repo ${REPO_B} Second independently tracked build`,'goal-ordinal-b',true);
+    r.setUpdates([r.message(920,'/goals'),r.message(921,'/goal-status'),
+      r.message(922,'/goal-status 2'),r.message(923,'/goal-status 1')]);
+    await r.bridge.pollOnce(0);
+    const names=r.replies.filter(reply=>reply.includes('Goal status:'));
+    assert.equal(names.length,3);
+    assert.ok(names[0]!.includes('Second independently tracked build'));
+    assert.ok(names[1]!.includes('Second independently tracked build'));
+    assert.ok(names[2]!.includes('First independently tracked build'));
+    assert.ok(r.replies.some(reply=>reply.includes('Use /goal-status 2')));
   }finally{r.close();}
 });
 
