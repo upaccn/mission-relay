@@ -111,9 +111,8 @@ test('five original Sends stay in one Chat; sixth is separately reserved and cre
   const f=fixture();try{
     f.firstFive();
     assert.equal(inspectPiEvidence(f.store,f.missionId).maxObservedTurnsInOneChat,5);
-    assert.throws(()=>f.store.reserveChatBrowserTurn(f.missionId,
-      f.store.get(f.missionId).version,'forbidden-same-chat',sha('forbidden')),
-      /five|chat|limit|rollover/i);
+    // The 5→6 fixture is an explicit historical HANDOFF, no longer a
+    // mandatory limit. New v1.1.4 conversations can continue to ten Sends.
     assert.equal(f.store.get(f.missionId).turnCount,5);
     f.six();
     const report=inspectPiEvidence(f.store,f.missionId);
@@ -343,14 +342,14 @@ test('every five-to-six rotation needs its own independent physical witness, wit
     const raw=readFileSync(missing,'utf8');
     rmSync(missing);
     assert.throws(()=>inspectStoredChromeWitnesses(f.store,f.goalId,f.dir,
-      'chrome-5-to-6',SOURCE_SHA),/every Goal five-to-six rollover/i);
+      'chrome-5-to-6',SOURCE_SHA),/every Goal audited rollover/i);
     writeFileSync(missing,raw);
     const duplicate=JSON.parse(raw);
     duplicate.observedAt=new Date(Date.parse(duplicate.observedAt)+1000).toISOString();
     const duplicateRaw=JSON.stringify(duplicate);
     writeFileSync(join(root,`five-to-six-${sha(duplicateRaw)}.json`),duplicateRaw);
     assert.throws(()=>inspectStoredChromeWitnesses(f.store,f.goalId,f.dir,
-      'chrome-5-to-6',SOURCE_SHA),/every Goal five-to-six rollover/i);
+      'chrome-5-to-6',SOURCE_SHA),/every Goal audited rollover/i);
     assert.equal(f.store.events(f.missionId).filter(e=>e.type==='chatgpt.browser_reserved').length,11);
     t.diagnostic('MR_PROBE_RECEIPT='+JSON.stringify({kind:'chrome-missing-or-reused-witness',
       sourceSha:SOURCE_SHA,fixture:'isolated-synthetic',rotationsRequired:2,
@@ -446,12 +445,22 @@ test('original physical witness is immutable: tampered file contents fail closed
 
 test('real release gate can store only SHA-bound inspected synthetic Chrome evidence, never a PI answer alone',async()=>{
   const f=fixture();try{
-    f.firstFive();f.six();const p=physicalPages();
-    const {source,destination}=await captured(f,p);
+    // The current release gate covers the tenth/eleventh boundary. Legacy
+    // five/six witnesses above remain independently readable but cannot
+    // satisfy the new release requirement.
+    for(let n=1;n<=10;n++)f.observe(n,n===1);
+    f.observe(11,true,false);
+    const p=physicalPages();
+    const source=p.make(target(1),url(2),prompt(10),answer(10));
+    const destination=p.make(target(11),url(12),prompt(11),answer(11));
+    await captureGoalChromeBoundary({store:f.store,goalId:f.goalId,
+      missionId:f.missionId,sourcePage:source,destinationPage:destination,
+      sourceUrl:url(2),destinationUrl:url(12),sourceSha:SOURCE_SHA,privateRoot:f.dir});
     assert.equal(await retireGoalOwnedTab({store:f.store,goalId:f.goalId,
       missionId:f.missionId,sourcePage:source,destinationPage:destination,
-      sourceUrl:url(2),destinationUrl:url(7),sourceSha:SOURCE_SHA,privateRoot:f.dir}),true);
-    f.reviewSix();
+      sourceUrl:url(2),destinationUrl:url(12),sourceSha:SOURCE_SHA,privateRoot:f.dir}),true);
+    f.store.commitPiPlan(f.missionId,sha(answer(11)),[],{
+      action:'NEXT',summary:'Observed eleventh answer PI reviewed',nextPrompt:'Continue'});
     const ledger=new GoalLedger(f.store),graph=ledger.graph(f.goalId);
     const item=graph.items[0]!,criterion=graph.acceptance[0]!;
     for(const status of ['READY','IN_PROGRESS','REVIEW'] as const){
@@ -459,19 +468,19 @@ test('real release gate can store only SHA-bound inspected synthetic Chrome evid
       ledger.setWorkStatus(f.goalId,item.id,old.version,status,[],`synthetic-${status}`);
     }
     ledger.recordAcceptance(f.goalId,criterion.id,criterion.version,'PASS',
-      [`browser-sha256:${sha(answer(6))}`],'synthetic-criterion');
+      [`browser-sha256:${sha(answer(11))}`],'synthetic-criterion');
     const current=ledger.graph(f.goalId).items[0]!;
     ledger.setWorkStatus(f.goalId,item.id,current.version,'PASSED',
-      [`browser-sha256:${sha(answer(6))}`],'synthetic-pass');
+      [`browser-sha256:${sha(answer(11))}`],'synthetic-pass');
     const gate=new GoalReleaseGate(f.store);
-    const target=gate.begin(f.goalId,SOURCE_SHA);
-    assert.equal(target.checks.filter(x=>x.state==='PASS').length,0);
+    const releaseTarget=gate.begin(f.goalId,SOURCE_SHA);
+    assert.equal(releaseTarget.checks.filter(x=>x.state==='PASS').length,0);
     const inspected={
       source:'chrome-readback',
       inspect:async(requirement:string,sha:string)=>
         inspectStoredChromeWitnesses(f.store,f.goalId,f.dir,requirement,sha),
     };
-    for(const req of ['chrome-5-to-6','relay-tab-retirement']){
+    for(const req of ['chrome-10-to-11','relay-tab-retirement']){
       const result=await gate.inspect(f.goalId,req,inspected);
       const receipt=result.checks.find(x=>x.requirement===req)!;
       assert.equal(receipt.state,'PASS');
@@ -481,7 +490,7 @@ test('real release gate can store only SHA-bound inspected synthetic Chrome evid
     }
     assert.equal(gate.report(f.goalId).ready,false,'Other mandatory release gates remain pending');
     assert.equal(f.store.events(f.missionId).filter(e=>
-      e.type==='chatgpt.browser_reserved').length,6);
+      e.type==='chatgpt.browser_reserved').length,11);
   }finally{f.close();}
 });
 
@@ -511,7 +520,7 @@ test('tab release probe refuses historical controller closure receipts lacking a
     assert.equal(f.store.canRetireOwnedChatTab(f.missionId,url(7),url(12)),true);
     f.store.recordOwnedChatTabRetired(f.missionId,url(7),url(12));
     assert.throws(()=>inspectStoredChromeWitnesses(f.store,f.goalId,f.dir,
-      'chrome-5-to-6',SOURCE_SHA),/every Goal five-to-six rollover/i,
+      'chrome-5-to-6',SOURCE_SHA),/every Goal audited rollover/i,
       'An earlier genuine boundary must not certify a later unwitnessed rollover');
     assert.throws(()=>inspectStoredChromeWitnesses(f.store,f.goalId,f.dir,
       'relay-tab-retirement',SOURCE_SHA),/lacks its own physical Chrome witness/);

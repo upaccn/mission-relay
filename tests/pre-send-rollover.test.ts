@@ -17,7 +17,7 @@ const prompt='One original new-chat prompt that was NOT sent';
 const originalAnswer='Previous verified answer\n[MISSION_RELAY:NEXT]';
 const newAnswer='First actual new-chat response\n[MISSION_RELAY:NEXT]';
 
-function fixture(){
+function fixture(observedSends:5|10=5){
   const dir=mkdtempSync(join(tmpdir(),'relay-pre-send-'));
   const store=new Store(join(dir,'missions.sqlite'));
   const m=store.create({goal:'Continue goal after original navigation failure',
@@ -26,8 +26,8 @@ function fixture(){
   const linked=store.linkChat(m.id,URL,m.version).mission;
   const bound=store.bindChatBrowser(m.id,'install:Chrome:synthetic',linked.version).mission;
   store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
-  for(let i=1;i<=5;i++){
-    const question=`Prior question ${i}`,answer=i===5?originalAnswer:
+  for(let i=1;i<=observedSends;i++){
+    const question=`Prior question ${i}`,answer=i===observedSends?originalAnswer:
       `Prior answer ${i}\n[MISSION_RELAY:NEXT]`;
     const key=`original-${i}`;
     store.reserveChatBrowserTurn(m.id,store.get(m.id).version,key,sha(question));
@@ -36,19 +36,40 @@ function fixture(){
       action:'NEXT',summary:'Continue original Mission',nextPrompt:'Open the next chat',
     });
   }
-  store.reserveChatBrowserTurn(m.id,store.get(m.id).version,'original-6',
+  store.reserveChatBrowserTurn(m.id,store.get(m.id).version,`original-${observedSends+1}`,
     sha(prompt),{newConversation:true});
-  store.finishChatBrowserTurn(m.id,'original-6',{
+  store.finishChatBrowserTurn(m.id,`original-${observedSends+1}`,{
     kind:'uncertain',error:navigationFailure,
   });
   const revision=store.get(m.id).version;
   const input={originalPromptSha256:sha(prompt),
-    sourcePromptSha256:sha('Prior question 5'),
+    sourcePromptSha256:sha(`Prior question ${observedSends}`),
     sourceAnswerSha256:sha(originalAnswer)};
   return {store,dir,id:m.id,revision,input,cleanup(){
     store.close();rmSync(dir,{recursive:true,force:true});
   }};
 }
+
+test('v1.1.4 tenth→eleventh one-shot recovery retains the original request without replay',()=>{
+  const f=fixture(10);try{
+    const original=f.store.events(f.id);
+    const token=f.store.authorizePreSendRolloverOnce(f.id,f.revision,f.input);
+    assert.ok(token.intentEventId>0);
+    assert.equal(f.store.get(f.id).turnCount,10);
+    assert.deepEqual(f.store.events(f.id).slice(0,original.length),original);
+    assert.throws(()=>f.store.authorizePreSendRolloverOnce(f.id,f.revision,f.input),
+      /already been attempted/);
+    const recovered=f.store.recoverObservedBrowserRollover(f.id,f.revision,{
+      requestPromptSha256:f.input.originalPromptSha256,newChatUrl:NEXT,
+      assistantSha256:sha(newAnswer),summary:newAnswer,
+    });
+    assert.equal(recovered.turnCount,11);
+    const proof=inspectPiEvidence(f.store,f.id);
+    assert.equal(proof.ledgerConsistent,true,proof.violations.join(','));
+    assert.equal(proof.maxObservedTurnsInOneChat,10);
+    assert.deepEqual(proof.pendingPiReviewRounds,[11]);
+  }finally{f.cleanup();}
+});
 
 test('only the exact first origin goto timeout qualifies as provably pre-Send',()=>{
   assert.equal(isPreSendNewChatOriginNavigationTimeout(navigationFailure),true);

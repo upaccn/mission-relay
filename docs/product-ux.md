@@ -36,9 +36,9 @@ requires independent evidence and applicable release checks; missing
 permissions, unsafe side effects or genuinely unavailable evidence become
 an explicit BLOCKED condition, not an endless series of review requests.
 
-A Mission has no fixed turn ceiling. Every Chat is limited to five durably
+A Mission has no fixed turn ceiling. Every Chat is limited to ten durably
 observed Relay Sends, requiring an independently verified different conversation
-before a sixth. An ambiguous Send is never reissued automatically. The owner
+before an eleventh. An ambiguous Send is never reissued automatically. The owner
 can pause at any time; in-flight work is observed/reconciled before its lock
 is released. Network and model inference retries are local to the existing
 observed checkpoint, not permission to duplicate a browser request.

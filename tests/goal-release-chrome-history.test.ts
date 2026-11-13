@@ -8,7 +8,7 @@ import {join} from 'node:path';
 import {Store} from '../src/core/store.js';
 import {GoalLedger} from '../src/core/goal-store.js';
 import {GoalReleaseGate} from '../src/core/goal-release.js';
-import {inspectGoalChromeFiveToSixHistory} from '../src/core/goal-release-chrome-history.js';
+import {inspectGoalChromeFiveToSixHistory,inspectGoalChromeTenToElevenHistory} from '../src/core/goal-release-chrome-history.js';
 import {inspectGoalReleaseMatrix} from '../src/core/goal-release-matrix.js';
 
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
@@ -72,7 +72,7 @@ function recoveredRound31(f:ReturnType<typeof fixture>){
   const item=ledger.graph(f.goalId).items[0]!;
   const ready=ledger.setWorkStatus(f.goalId,item.id,item.version,'READY',[],'synthetic-ready');
   ledger.setWorkStatus(f.goalId,item.id,ready.version,'IN_PROGRESS',[],'synthetic-start');
-  for(let i=1;i<=30;i++)f.observe(i,i%5===1);
+  for(let i=1;i<=30;i++)f.observe(i,i%10===1);
   const key='secret-key-31',prompt='original private prompt 31';
   const answer='Recovered synthetic response 31\n[MISSION_RELAY:NEXT]';
   f.store.reserveChatBrowserTurn(f.missionId,f.store.get(f.missionId).version,
@@ -98,8 +98,8 @@ test('isolated round-31 one-shot recovery is traceable custody, not historic phy
   const f=fixture();try{
     recoveredRound31(f);
     const before=f.store.maxEventId();
-    const history=inspectGoalChromeFiveToSixHistory(f.store,f.goalId);
-    assert.equal(history.historicalRotations,6);
+    const history=inspectGoalChromeTenToElevenHistory(f.store,f.goalId);
+    assert.equal(history.historicalRotations,3);
     assert.equal(history.custodyConsistent,true,JSON.stringify(history.rotations.at(-1)?.violations));
     const r=history.rotations.at(-1)!;
     assert.deepEqual([r.fromRound,r.toRound],[30,31]);
@@ -115,10 +115,10 @@ test('isolated round-31 one-shot recovery is traceable custody, not historic phy
     assert.ok(history.missingIndependentProof.includes('historical_physical_target_independent_attestation'));
     const matrix=inspectGoalReleaseMatrix(f.store,f.goalId);
     assert.equal(matrix.chromeHistory.custodyConsistent,true);
-    assert.equal(matrix.requirements.find(x=>x.requirement==='chrome-5-to-6')?.state,'PENDING');
+    assert.equal(matrix.requirements.find(x=>x.requirement==='chrome-10-to-11')?.state,'PENDING');
     assert.equal(new GoalReleaseGate(f.store).report(f.goalId).target,null);
     assert.equal(f.store.maxEventId(),before,'History and matrix must not change the audit');
-    assert.equal(inspectGoalChromeFiveToSixHistory(f.store,f.goalId).evidenceIndexSha256,
+    assert.equal(inspectGoalChromeTenToElevenHistory(f.store,f.goalId).evidenceIndexSha256,
       history.evidenceIndexSha256);
   }finally{f.close();}
 });
@@ -150,7 +150,7 @@ test('recovered round-31 custody rejects tampered original request, URLs, answer
     const f=fixture();try{
       recoveredRound31(f);
       mutate(f,scenario.type,31,scenario.edit);
-      const history=inspectGoalChromeFiveToSixHistory(f.store,f.goalId);
+      const history=inspectGoalChromeTenToElevenHistory(f.store,f.goalId);
       assert.equal(history.custodyConsistent,false,scenario.name);
       assert.ok(history.rotations.at(-1)?.violations.includes(scenario.issue),
         `${scenario.name}: ${JSON.stringify(history.rotations.at(-1)?.violations)}`);
@@ -183,9 +183,10 @@ test('isolated 5->6 and 10->11 original custody, answers, PI and physical TARGET
       assert.ok(r.observationEventId<r.decisionEventId!);
     }
     const matrix=inspectGoalReleaseMatrix(f.store,f.goalId);
-    assert.equal(matrix.chromeHistory.historicalRotations,2);
-    assert.equal(matrix.chromeHistory.custodyConsistent,true);
-    assert.equal(matrix.requirements.find(x=>x.requirement==='chrome-5-to-6')?.state,'PENDING');
+    assert.equal(matrix.chromeHistory.historicalRotations,0,
+      'The current release index never mislabels historical 5→6 events as 10→11');
+    assert.equal(matrix.chromeHistory.custodyConsistent,false);
+    assert.equal(matrix.requirements.find(x=>x.requirement==='chrome-10-to-11')?.state,'PENDING');
     assert.equal(new GoalReleaseGate(f.store).report(f.goalId).target,null);
     assert.equal(f.store.maxEventId(),before,'Read-only history/matrix cannot append audit events');
     const printed=JSON.stringify(history);
@@ -194,6 +195,24 @@ test('isolated 5->6 and 10->11 original custody, answers, PI and physical TARGET
       assert.ok(!printed.includes(secret));
     assert.equal(inspectGoalChromeFiveToSixHistory(f.store,f.goalId).evidenceIndexSha256,
       history.evidenceIndexSha256);
+  }finally{f.close();}
+});
+
+test('current 10→11 release history requires real ten-send segments and ignores valid early handoffs',()=>{
+  const f=fixture();try{
+    for(let i=1;i<=21;i++)f.observe(i,[1,11,21].includes(i));
+    const history=inspectGoalChromeTenToElevenHistory(f.store,f.goalId);
+    assert.equal(history.historicalRotations,2);
+    assert.equal(history.custodyConsistent,true,JSON.stringify(history.rotations.map(x=>x.violations)));
+    assert.deepEqual(history.rotations.map(x=>[x.fromRound,x.toRound]),[[10,11],[20,21]]);
+    const legacy=inspectGoalChromeFiveToSixHistory(f.store,f.goalId);
+    assert.equal(legacy.historicalRotations,0,
+      'Permitted same-Chat sixth Sends are not historic five-to-six rotations');
+    const matrix=inspectGoalReleaseMatrix(f.store,f.goalId);
+    assert.equal(matrix.chromeHistory.historicalRotations,2);
+    assert.equal(matrix.chromeHistory.custodyConsistent,true);
+    assert.equal(matrix.requirements.find(x=>x.requirement==='chrome-10-to-11')?.state,'PENDING');
+    assert.equal(f.store.get(f.missionId).turnCount,21);
   }finally{f.close();}
 });
 
@@ -300,7 +319,7 @@ test('synthetic owned-tab retirement is only a controller receipt, never an inde
     assert.equal(after.rotations[0]?.independentlyVerifiedCompleteAnswer,false);
     assert.equal(after.releaseGateState,'PENDING');
     const matrix=inspectGoalReleaseMatrix(f.store,f.goalId);
-    assert.equal(matrix.requirements.find(x=>x.requirement==='chrome-5-to-6')?.state,
+    assert.equal(matrix.requirements.find(x=>x.requirement==='chrome-10-to-11')?.state,
       'PENDING');
     assert.equal(matrix.requirements.find(x=>x.requirement==='relay-tab-retirement')?.state,
       'PENDING');

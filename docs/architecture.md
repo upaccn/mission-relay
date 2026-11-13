@@ -49,7 +49,7 @@ evidence verifier, not a PI dispatcher. It creates an exact Git SHA release
 target only after the approved plan's Work Items and their criteria all have
 PI-*reported* PASS; that report never counts as independent acceptance.
 Eleven current-Goal release gates cover check, privacy, full tests, build,
-Ubuntu/macOS/Windows CI, live 5→6, maintenance recovery,
+Ubuntu/macOS/Windows CI, live 10→11, maintenance recovery,
 tab retirement and GMK readback. Every work criterion adds its own independent
 evidence requirement. A verified receipt records source, original proof
 digest, reference, target SHA, observed time and bounded freshness. Every
@@ -72,7 +72,7 @@ probes are deliberately restricted to independently observed evidence. The
 first-party `gmk-production-readback` adapter now checks the installed
 Worker/compiled manifest, original enrolled Scheduled Task, SQLite and pinned
 Chrome read-only, but it remains **unverified in production** until a safe
-exact-SHA checkpoint. The first-party Chrome 5→6 and same-Mission Relay tab-retirement probes now
+exact-SHA checkpoint. The first-party Chrome 10→11 (legacy 5→6) and same-Mission Relay tab-retirement probes now
 capture two stable, hashed physical Target/Chat transcripts **before** old-tab
 cleanup, then compare the enabled physical Target inventory before and after
 closure, without reading unrelated tab contents. Original witnesses are
@@ -175,7 +175,7 @@ The explicit, existing `browser-recover-rollover` recovery command reads the imm
 
 Goal enrollment is opt-in: the existing authenticated Telegram `/goal` or `/goal-build` path creates a durable Goal, an unstarted PI Mission and one exact browser binding transactionally after owner/browser/PI preflights. The underlying `GoalLedger.bindPiMission` API retains the same strict scope and unstarted-Mission checks. Existing Missions are not backfilled, and a live independently bound second Mission root for the same Goal is refused. A historical 32-turn successor resolves the binding through the existing reciprocal PI parent chain, without changing the owning Goal. Before a fresh owner Goal can start, the controller checks *all* previous PI Missions for a reserved or uncertain original browser Send, **including those with an owner pause flag**. An owner pause is not a request settlement. Once that original Send is durably observed and the owner pause remains in force, a separate fresh Goal can start without unpausing, replaying or inheriting the previous Mission or its work.
 
-After the first **fully observed** browser answer, the existing `reviewPiRound` dispatches a Goal-bound Mission to the project's PI planning/review methods. PI proposes a bounded dependency-DAG plan, which is validated and persisted; the plan is approved before a work item may leave PENDING. The highest-priority eligible item is selected, and its work directive becomes the `NEXT` instruction under the original PI `commitPiPlan` and browser Controller. Subsequent answers are reviewed as `PASS/PARTIAL/FAIL/REPLAN/BLOCKED`: PASS records a *PI-reported* acceptance and chooses the next eligible item; PARTIAL/FAIL keep the same item in scope; REPLAN supersedes the prior plan without discarding history; BLOCKED retains evidence and uses the existing PI terminal action. When no work remains, the existing PI action is BLOCKED pending independent release verification, not Goal DONE. A PI-requested context rollover maps to HANDOFF, obeying the five-Send-per-Chat limit; old finite-limit Missions remain compatible.
+After the first **fully observed** browser answer, the existing `reviewPiRound` dispatches a Goal-bound Mission to the project's PI planning/review methods. PI proposes a bounded dependency-DAG plan, which is validated and persisted; the plan is approved before a work item may leave PENDING. The highest-priority eligible item is selected, and its work directive becomes the `NEXT` instruction under the original PI `commitPiPlan` and browser Controller. Subsequent answers are reviewed as `PASS/PARTIAL/FAIL/REPLAN/BLOCKED`: PASS records a *PI-reported* acceptance and chooses the next eligible item; PARTIAL/FAIL keep the same item in scope; REPLAN supersedes the prior plan without discarding history; BLOCKED retains evidence and uses the existing PI terminal action. When no work remains, the existing PI action is BLOCKED pending independent release verification, not Goal DONE. A PI-requested context rollover maps to HANDOFF, obeying the ten-Send-per-Chat limit; old finite-limit Missions and 5→6 history remain compatible.
 
 Goal planning and plan approval are internal PI/controller operations, with no user-visible stage, review or activation ceremony. Work review receives prior verdicts for the **same active item** from the append-only PI ledger. After repeated PARTIAL/FAIL, PI is directed to seek real evidence or REPLAN a missing prerequisite rather than request another editorial rewrite; this does not automatically pass work, replace missing evidence or allow a second Send. The controller owns all persistence and execution authority.
 

@@ -5,7 +5,8 @@ import type {Page} from 'playwriter';
 import type {Store} from './store.js';
 import {InsufficientReleaseEvidenceError,type ReleaseProbe,type EvidenceReadback} from './goal-release.js';
 import {inspectGoalRequestLedger} from './request-ledger.js';
-import {inspectGoalChromeFiveToSixHistory} from './goal-release-chrome-history.js';
+import {inspectGoalChromeFiveToSixHistory,inspectGoalChromeTenToElevenHistory} from './goal-release-chrome-history.js';
+import {LEGACY_RELAY_CHAT_TURNS,MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 import {inspectPiEvidence} from './pi-evidence.js';
 import {GoalLedger} from './goal-store.js';
 import {requireSettledReleaseCustody} from './goal-release.js';
@@ -28,7 +29,7 @@ export type TrustedChromeTabObservation={
   assistantTurnSha256:string|null;userCount:number;assistantCount:number;
 };
 type BoundaryWitness={
-  kind:'five-to-six';version:1;goalId:string;missionId:string;sourceSha:string;
+  kind:'five-to-six'|'ten-to-eleven';version:1;goalId:string;missionId:string;sourceSha:string;
   observedAt:string;sourceObservationEventId:number;sourceDecisionEventId:number;
   destinationReservationEventId:number;destinationMigrationEventId:number;
   destinationObservationEventId:number;source:TrustedChromeTabObservation;destination:TrustedChromeTabObservation;
@@ -131,7 +132,7 @@ export async function observeTrustedChromeTab(page:Page,url:string):Promise<Trus
 }
 
 /** Called by the existing PI controller immediately after an observed
- * rollover, BEFORE its ordinary old-tab cleanup and BEFORE sixth-turn PI review.
+ * rollover, BEFORE its ordinary old-tab cleanup and BEFORE the new Chat PI review.
  * The final ReleaseProbe still requires the later matching PI decision. */
 export async function captureGoalChromeBoundary(input:{
   store:Store;goalId:string;missionId:string;sourcePage:Page;destinationPage:Page;
@@ -142,12 +143,13 @@ export async function captureGoalChromeBoundary(input:{
     throw new Error('Chrome boundary needs distinct physical tabs and a verified source revision');
   const report=inspectPiEvidence(store,missionId);
   const latest=report.rounds.at(-1),prior=report.rounds.at(-2);
-  if(!report.ledgerConsistent||!latest||!prior||prior.chatTurn!==5||
+  if(!report.ledgerConsistent||!latest||!prior||
+    ![LEGACY_RELAY_CHAT_TURNS,MAX_RELAY_CHAT_TURNS].includes(prior.chatTurn)||
     latest.chatTurn!==1||latest.round!==prior.round+1||
     !prior.decisionShaMatches||prior.decisionEventId===null||
     latest.decisionEventId!==null||latest.reservedEventId===null||
     store.get(missionId).state!=='PAUSED')
-    throw new Error('No pending PI-reviewed five-to-six Chrome boundary to capture');
+    throw new Error('No pending PI-reviewed five-to-six or ten-to-eleven Chrome boundary to capture');
   const ledger=inspectGoalRequestLedger(store,goalId);
   if(!ledger.ledgerConsistent||!ledger.missionIds.includes(missionId)||
     ledger.quarantineEventIds.length||ledger.unattributedEventIds.length)
@@ -179,7 +181,8 @@ export async function captureGoalChromeBoundary(input:{
     (migration.payload as {newTabTargetSha256?:string}).newTabTargetSha256!==newTab.targetSha256)
     throw new Error('Chrome physical Target or original request/reply differs from controller ledger');
   return saveWitness(input.privateRoot??stateHome(),{
-    kind:'five-to-six',version:1,goalId,missionId,sourceSha:input.sourceSha,
+    kind:prior.chatTurn===MAX_RELAY_CHAT_TURNS?'ten-to-eleven':'five-to-six',
+    version:1,goalId,missionId,sourceSha:input.sourceSha,
     observedAt:new Date().toISOString(),
     sourceObservationEventId:prior.observedEventId,
     sourceDecisionEventId:prior.decisionEventId,
@@ -290,7 +293,7 @@ export function validateChromeWitness(store:Store,goalId:string,targetSha:string
   if(witness.goalId!==goalId||witness.sourceSha!==targetSha||
     !SHA40.test(targetSha))throw new Error('Chrome witness belongs to a different Goal or source SHA');
   const event=store.events(witness.missionId).find(e=>e.id===
-    (witness.kind==='five-to-six'
+    (witness.kind!=='tab-retirement'
       ?witness.destinationObservationEventId:witness.retirementEventId));
   if(!event)throw new Error('Chrome witness original observation event is missing');
   requireCaptureTime(witness.observedAt,event.createdAt);
@@ -301,9 +304,11 @@ export function validateChromeWitness(store:Store,goalId:string,targetSha:string
     throw new Error('Goal has missing, duplicate, reconciled or unreviewed original requests');
   if(!ledger.missionIds.includes(witness.missionId))
     throw new Error('Chrome witness Mission is not part of the approved Goal');
-  if(witness.kind==='five-to-six'){
+  if(witness.kind!=='tab-retirement'){
     requireTab(witness.source);requireTab(witness.destination);
-    const history=inspectGoalChromeFiveToSixHistory(store,goalId);
+    const history=witness.kind==='ten-to-eleven'
+      ?inspectGoalChromeTenToElevenHistory(store,goalId)
+      :inspectGoalChromeFiveToSixHistory(store,goalId);
     const rotation=history.rotations.find(r=>
       r.sourceObservationEventId===witness.sourceObservationEventId&&
       r.sourceDecisionEventId===witness.sourceDecisionEventId&&
@@ -332,7 +337,7 @@ export function validateChromeWitness(store:Store,goalId:string,targetSha:string
       witness.source.targetSha256===witness.destination.targetSha256||
       (origin?.payload as {newTabTargetSha256?:string}|undefined)?.newTabTargetSha256!==witness.source.targetSha256||
       (migration?.payload as {newTabTargetSha256?:string}|undefined)?.newTabTargetSha256!==witness.destination.targetSha256)
-      throw new Error('Chrome fifth/sixth original requests, replies, PI or physical Targets are inconsistent');
+      throw new Error('Chrome rollover original requests, replies, PI or physical Targets are inconsistent');
   }else {
     const e=store.events(witness.missionId);
     const receipt=e.find(v=>v.id===witness.retirementEventId&&
@@ -368,12 +373,13 @@ export function validateChromeWitness(store:Store,goalId:string,targetSha:string
  * Production can reach it only after runtime-provenance validation. */
 export function inspectStoredChromeWitnesses(store:Store,goalId:string,root:string,
   requirement:string,targetSha:string,runtimeIdentity?:ReleaseWorkerIdentity):EvidenceReadback {
-  if(!['chrome-5-to-6','relay-tab-retirement'].includes(requirement))
+  if(!['chrome-5-to-6','chrome-10-to-11','relay-tab-retirement'].includes(requirement))
     throw new Error('Unapproved trusted Chrome ReleaseProbe requirement');
   if(runtimeIdentity&&runtimeIdentity.source.sourceSha!==targetSha)
     throw new Error('Chrome physical observations cannot attest a different Worker revision');
   requireSettledReleaseCustody(store,goalId);
-  const kind=requirement==='chrome-5-to-6'?'five-to-six':'tab-retirement';
+  const kind=requirement==='chrome-5-to-6'?'five-to-six':
+    requirement==='chrome-10-to-11'?'ten-to-eleven':'tab-retirement';
   const proofs=loadWitnesses(root,goalId,kind)
     .filter(x=>x.witness.sourceSha===targetSha);
   // Retain earlier revision evidence without treating it as a new target's
@@ -383,20 +389,22 @@ export function inspectStoredChromeWitnesses(store:Store,goalId:string,root:stri
   // A single failed or tampered witness never gets skipped in favor of a
   // convenient other PASS candidate. The target revision must be coherent.
   for(const proof of proofs)validateChromeWitness(store,goalId,targetSha,proof.witness);
-  if(kind==='five-to-six'){
-    const history=inspectGoalChromeFiveToSixHistory(store,goalId);
+  if(kind!=='tab-retirement'){
+    const history=kind==='ten-to-eleven'
+      ?inspectGoalChromeTenToElevenHistory(store,goalId)
+      :inspectGoalChromeFiveToSixHistory(store,goalId);
     const witnessed=proofs.map(p=>(p.witness as BoundaryWitness).destinationObservationEventId);
     const unique=new Set(witnessed);
-    // Every 5->6 boundary in the Goal must have its own physical proof.
+    // Every boundary of this exact kind must have its own physical proof.
     // One genuine historical witness must never certify later unwitnessed
     // rollovers, nor may duplicate receipts stand in for a missing one.
     if(!history.custodyConsistent||unique.size!==proofs.length||
       proofs.length>history.rotations.length)
-      throw new Error('Every Goal five-to-six rollover requires unique, non-contradictory physical evidence');
+      throw new Error('Every Goal audited rollover requires unique, non-contradictory physical evidence');
     if(history.rotations.length!==proofs.length||
       history.rotations.some(r=>!unique.has(r.observationEventId)))
       throw new InsufficientReleaseEvidenceError(
-        'Every Goal five-to-six rollover requires its own physical Chrome witness');
+        'Every Goal audited rollover requires its own physical Chrome witness');
   }else{
     const documented=inspectGoalRequestLedger(store,goalId).verifiedTabRetirementEventIds;
     const observed=new Set(proofs.map(p=>(p.witness as RetirementWitness).retirementEventId));
@@ -413,7 +421,7 @@ export function inspectStoredChromeWitnesses(store:Store,goalId:string,root:stri
   // Surface the *validated* event identities in the top-level receipt, not
   // just their witness digests. The original private witnesses remain the
   // source of truth; missing or substituted events already fail validation.
-  const eventReferences=proofs.map(({witness,digest})=>witness.kind==='five-to-six'
+  const eventReferences=proofs.map(({witness,digest})=>witness.kind!=='tab-retirement'
     ?{witnessSha256:digest,missionId:witness.missionId,
       sourceObservationEventId:witness.sourceObservationEventId,
       sourceDecisionEventId:witness.sourceDecisionEventId,

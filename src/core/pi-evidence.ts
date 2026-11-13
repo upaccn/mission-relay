@@ -106,7 +106,7 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
   // The initial source chat may be an adopted/owner-linked tab, so its hash
   // is unknown until the first independently recorded destination. Do not
   // count a later migration from an unrelated source as a valid reset of
-  // the five-Send ceiling merely because its two URL hashes differ.
+  // the per-Chat Send ceiling merely because its two URL hashes differ.
   let lastDestinationUrlSha256:string|null=null;
   const observations:PiRoundEvidence[]=[];
   const warn=(issue:string)=>{if(!violations.includes(issue))violations.push(issue);};
@@ -126,7 +126,7 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
       else reserved.set(p.requestKey,e.id);
     }
     if(e.type==='chatgpt.browser_migrated'){
-      // An arbitrary migration marker must not reset the five-Send counter.
+      // An arbitrary migration marker must not reset the per-Chat Send counter.
       // Normal rollover commits this event immediately before the matching
       // observed response; recovered rollovers use their own observation type.
       if(pendingMigration!==null)warn('multiple_migrations_without_observation');

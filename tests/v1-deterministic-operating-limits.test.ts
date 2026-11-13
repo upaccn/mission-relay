@@ -107,7 +107,7 @@ test('PI inference inherits configured default without overriding model/provider
     argvSha256:policy.argvSha256,modelOverride:false,providerOverride:false,
     thinkingOverride:false,remoteInferenceInvoked:false});
 });
-test('five observed Sends per Chat and 32-turn Mission enforce distinct rollover and unique zero-turn successor',()=>{
+test('ten observed Sends per Chat and 32-turn legacy Mission enforce distinct rollover and unique successor',()=>{
   const f=fixture();let parallel:Store|undefined;
   try{
     const ledger=new GoalLedger(f.store),objective='Synthetic bounded mission';
@@ -127,14 +127,14 @@ test('five observed Sends per Chat and 32-turn Mission enforce distinct rollover
     const bound=f.store.bindChatBrowser(mission.id,'isolated-physical-target',linked.version).mission;
     f.store.setMeta('pi.autopilot.enabled.'+bound.id,'1');
     ledger.bindPiMission(goal.id,bound.id,bound.version,'original-binding');
-    assert.equal(MAX_RELAY_CHAT_TURNS,5);
+    assert.equal(MAX_RELAY_CHAT_TURNS,10);
     for(let n=1;n<=32;n++){
       const newConversation=n>1&&(n-1)%MAX_RELAY_CHAT_TURNS===0;
-      if(n===6){
+      if(n===11){
         assert.throws(()=>f.store.reserveChatBrowserTurn(bound.id,
-          f.store.get(bound.id).version,'illegal-sixth',digest('old-chat')),
-          /five|new conversation/i);
-        assert.equal(f.store.get(bound.id).turnCount,5);
+          f.store.get(bound.id).version,'illegal-eleventh',digest('old-chat')),
+          /ten|10|new conversation/i);
+        assert.equal(f.store.get(bound.id).turnCount,10);
       }
       const key='original-'+n,answer='Synthetic observed answer '+n+'\n[MISSION_RELAY:NEXT]';
       f.store.reserveChatBrowserTurn(bound.id,f.store.get(bound.id).version,
@@ -150,8 +150,8 @@ test('five observed Sends per Chat and 32-turn Mission enforce distinct rollover
     assert.equal(report.ledgerConsistent,true,report.violations.join(','));
     assert.equal(report.observedTurns,32);
     assert.equal(report.decisionsVerified,32);
-    assert.equal(report.maxObservedTurnsInOneChat,5);
-    assert.equal(report.chatSegments,7);
+    assert.equal(report.maxObservedTurnsInOneChat,10);
+    assert.equal(report.chatSegments,4);
     assert.equal(f.store.get(bound.id).turnCount,32);
     assert.throws(()=>f.store.reserveChatBrowserTurn(bound.id,
       f.store.get(bound.id).version,'illegal-round-33',digest('forbidden'),
@@ -166,11 +166,11 @@ test('five observed Sends per Chat and 32-turn Mission enforce distinct rollover
     assert.equal(f.store.events(bound.id).filter(e=>e.type==='pi.chain_successor').length,1);
     assert.equal(f.store.events(child.id).filter(e=>e.type==='pi.chain_started').length,1);
     assert.equal(f.store.chatBrowserTurn(child.id),null);
-    receipt('five-send-and-32-turn-limits',{
+    receipt('ten-send-and-32-turn-limits',{
       maxChatSends:MAX_RELAY_CHAT_TURNS,maxMissionTurns:32,
       observedParentTurns:report.observedTurns,verifiedPiDecisions:report.decisionsVerified,
       observedChatSegments:report.chatSegments,maxObservedSendsPerChat:report.maxObservedTurnsInOneChat,
-      illegalSixthSameChatRejected:true,illegalThirtyThirdTurnRejected:true,
+      illegalEleventhSameChatRejected:true,illegalThirtyThirdTurnRejected:true,
       successorCount:1,childInitialTurns:0,childOriginalSends:0,
       duplicateSuccessorAttemptSameId:true});
   }finally{parallel?.close();f.close();}

@@ -1,5 +1,5 @@
 /** A zero stored limit means no Mission-level turn ceiling. Only explicitly
- * bounded legacy/native Missions have a finite limit. The separate five-Send
+ * bounded legacy/native Missions have a finite limit. The separate per-Chat Send
  * ChatGPT conversation ceiling remains mandatory for every PI Mission. */
 export const UNBOUNDED_MISSION_TURNS=0;
 

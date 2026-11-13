@@ -55,43 +55,43 @@ function observed(store:Store,id:string,round:number,rollover=false){
     nextPrompt:`Continue the scoped unfinished work after round ${round}`});
 }
 
-test('crash during sixth new-Chat request preserves five-turn ceiling, exact reservation and pending PI review',()=>{
+test('crash during eleventh new-Chat request preserves ten-turn ceiling, original request and PI review',()=>{
   const f=fixture();let restart:Store|undefined;
   try{
-    for(let round=1;round<=5;round++)observed(f.store,f.bound.id,round);
+    for(let round=1;round<=10;round++)observed(f.store,f.bound.id,round);
     assert.throws(()=>f.store.reserveChatBrowserTurn(f.bound.id,
-      f.store.get(f.bound.id).version,'illegal-sixth',sha('same old chat')),
-      /five|new conversation/i);
+      f.store.get(f.bound.id).version,'illegal-eleventh',sha('same old chat')),
+      /ten|10|new conversation/i);
     const before=f.store.events(f.bound.id);
-    const key='sixth-original',prompt=sha('sixth new chat only');
+    const key='eleventh-original',prompt=sha('eleventh new chat only');
     f.store.reserveChatBrowserTurn(f.bound.id,f.store.get(f.bound.id).version,
       key,prompt,{newConversation:true});
     f.store.finishChatBrowserTurn(f.bound.id,key,{kind:'uncertain',
-      error:'Injected connection loss after sixth Send; do not replay'});
+      error:'Injected connection loss after eleventh Send; do not replay'});
     restart=new Store(f.file);
-    const answer='Recovered sixth original reply\n[MISSION_RELAY:NEXT]';
+    const answer='Recovered eleventh original reply\n[MISSION_RELAY:NEXT]';
     assert.throws(()=>restart!.reserveChatBrowserTurn(f.bound.id,
-      restart!.get(f.bound.id).version,'sixth-again',prompt,{newConversation:true}),
+      restart!.get(f.bound.id).version,'eleventh-again',prompt,{newConversation:true}),
       /Cannot run|reconcile|State conflict/);
-    assert.equal(restart.get(f.bound.id).turnCount,5);
+    assert.equal(restart.get(f.bound.id).turnCount,10);
     restart.recoverObservedBrowserRollover(f.bound.id,restart.get(f.bound.id).version,{
-      requestPromptSha256:prompt,newChatUrl:chat(6),assistantSha256:sha(answer),summary:answer,
+      requestPromptSha256:prompt,newChatUrl:chat(11),assistantSha256:sha(answer),summary:answer,
     });
     assert.deepEqual(restart.events(f.bound.id).slice(0,before.length),before);
     const awaiting=inspectPiEvidence(restart,f.bound.id);
     assert.equal(awaiting.ledgerConsistent,true,awaiting.violations.join(','));
-    assert.deepEqual(awaiting.pendingPiReviewRounds,[6],
+    assert.deepEqual(awaiting.pendingPiReviewRounds,[11],
       'An observed recovered reply is not permission to skip PI review');
-    assert.equal(awaiting.maxObservedTurnsInOneChat,5);
+    assert.equal(awaiting.maxObservedTurnsInOneChat,10);
     assert.equal(awaiting.chatSegments,2);
-    assert.equal(restart.events(f.bound.id).filter(e=>e.type==='chatgpt.browser_reserved').length,6);
+    assert.equal(restart.events(f.bound.id).filter(e=>e.type==='chatgpt.browser_reserved').length,11);
     assert.equal(restart.events(f.bound.id).filter(e=>e.type==='chatgpt.browser_rollover_recovered').length,1);
     assert.throws(()=>restart!.recoverObservedBrowserRollover(f.bound.id,
       restart!.get(f.bound.id).version,{
-        requestPromptSha256:prompt,newChatUrl:chat(6),assistantSha256:sha(answer),summary:answer,
+        requestPromptSha256:prompt,newChatUrl:chat(11),assistantSha256:sha(answer),summary:answer,
       }),/Only an uncertain/);
     restart.commitPiPlan(f.bound.id,sha(answer),[],{
-      action:'NEXT',summary:'Exactly one recovered sixth answer independently reviewed',
+      action:'NEXT',summary:'Exactly one recovered eleventh answer independently reviewed',
       nextPrompt:'Proceed only from the new Chat'});
     assert.deepEqual(inspectPiEvidence(restart,f.bound.id).pendingPiReviewRounds,[]);
     assert.equal(new GoalReleaseGate(restart).report(f.goal.id).complete,false);
@@ -102,13 +102,13 @@ test('32-round verified active Goal creates one zero-turn successor across compe
   const f=fixture();let parallel:Store|undefined;
   try{
     for(let round=1;round<=32;round++)
-      observed(f.store,f.bound.id,round,round>1&&(round-1)%5===0);
+      observed(f.store,f.bound.id,round,round>1&&(round-1)%10===0);
     const report=inspectPiEvidence(f.store,f.bound.id);
     assert.equal(report.ledgerConsistent,true,report.violations.join(','));
     assert.equal(report.observedTurns,32);
     assert.equal(report.decisionsVerified,32);
-    assert.equal(report.maxObservedTurnsInOneChat,5);
-    assert.equal(report.chatSegments,7);
+    assert.equal(report.maxObservedTurnsInOneChat,10);
+    assert.equal(report.chatSegments,4);
     const beforeGraph=f.ledger.graph(f.goal.id);
     parallel=new Store(f.file);
     const a=f.store.createPiSuccessor(f.bound.id);

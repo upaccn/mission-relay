@@ -67,8 +67,8 @@ export function inspectGoalReleaseCoverage(store:Store,goalId:string,candidateSh
       missing.push('exact_sha_trusted_source_check_receipt');
     }else if(ciGates.has(row.requirement)){
       missing.push('exact_sha_authenticated_push_main_ci_receipt');
-    }else if(row.requirement==='chrome-5-to-6'){
-      if(!evidenceEventIds.length)missing.push('goal_bound_observed_fifth_to_sixth_turn');
+    }else if(row.requirement==='chrome-10-to-11'){
+      if(!evidenceEventIds.length)missing.push('goal_bound_observed_tenth_to_eleventh_turn');
       missing.push('independent_original_request_and_physical_chrome_handoff_attestation');
     }else if(row.requirement==='mission-32-successor'){
       if(!matrix.lineage.chainConsistent||matrix.lineage.missionCount<2||

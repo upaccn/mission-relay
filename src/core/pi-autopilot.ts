@@ -348,7 +348,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
         throw new Error('PI next browser Send refused: visible ChatGPT history differs from the last observed receipt');
       // The source can change AGAIN after this read, while the rollover
       // prompt is being constructed. Recheck both exact hashes at the final
-      // pre-reservation boundary, including for automatic 5→6 rotation.
+      // pre-reservation boundary, including for automatic 10→11 rotation.
       exactSource={promptSha256:previous.promptSha256,
         assistantSha256:previous.assistantSha256!};
     }
@@ -407,7 +407,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
           console.error('Goal Chrome boundary witness unavailable; preserving old tab for recovery');
         }
       }
-      // Never destroy the only physical source when an original fifth-to-sixth
+      // Never destroy the only physical source when an original Chat rollover
       // boundary was not independently witnessed. The new answer is already
       // settled; this cleanup decision never authorizes another Send.
       if(goalId&&ownedPage&&!boundaryWitnessMissing&&

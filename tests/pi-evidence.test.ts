@@ -16,7 +16,7 @@ const fixture=()=>{
   const dir=mkdtempSync(join(tmpdir(),'relay-pi-evidence-'));
   const store=new Store(join(dir,'missions.sqlite'));
   const created=store.create({goal:'Owner private nine-round work',acceptance:['Check nine stages'],
-    workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:10,checks:[],requestKey:'nine'});
+    workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:20,checks:[],requestKey:'nine'});
   const linked=store.linkChat(created.id,source,created.version).mission;
   const bound=store.bindChatBrowser(created.id,'install:Chrome:synthetic',linked.version).mission;
   store.setMeta(`pi.autopilot.enabled.${created.id}`,'1');
@@ -353,19 +353,19 @@ test('PI ledger exposes pending PI review and duplicate reservations as failures
   }finally{f.cleanup();}
 });
 
-test('PI ledger independently flags a sixth Send in one conversation even when PI decisions are hash-matched',()=>{
+test('PI ledger independently flags an eleventh Send in one conversation even when PI decisions are hash-matched',()=>{
   const f=fixture();try{
-    for(let i=1;i<=6;i++)observe(f.store,f.id,i,i===6?second:undefined);
-    // The live reservation gate now prevents this illegal sixth Send. Corrupt
+    for(let i=1;i<=11;i++)observe(f.store,f.id,i,i===11?second:undefined);
+    // The live reservation gate prevents this illegal eleventh Send. Corrupt
     // an isolated test ledger instead: erase the migration event without
     // changing the observed answer, PI SHA or recorded Send counts.
     const migration=f.store.events(f.id).find(e=>e.type==='chatgpt.browser_migrated')!;
     f.store.db.prepare('DELETE FROM events WHERE id=?').run(migration.id);
     const report=inspectPiEvidence(f.store,f.id);
-    assert.equal(report.decisionsVerified,6);
+    assert.equal(report.decisionsVerified,11);
     assert.equal(report.ledgerConsistent,false);
     assert.equal(report.chatSegments,1);
-    assert.equal(report.maxObservedTurnsInOneChat,6);
+    assert.equal(report.maxObservedTurnsInOneChat,11);
     assert.ok(report.violations.includes('chat_send_limit_exceeded'));
     assert.equal(report.businessAcceptanceVerified,false);
   }finally{f.cleanup();}

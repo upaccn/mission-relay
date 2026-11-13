@@ -34,7 +34,7 @@ test('unsupported non-source release requirements fail before any gh call',async
   const probe=githubReleaseProbe('upaccn/mission-relay','42366651487');
   assert.equal(probe.source,'github-actions');
   for(const requirement of ['gmk-production-readback','maintenance-resume',
-    'relay-tab-retirement','mission-32-successor','chrome-5-to-6',
+    'relay-tab-retirement','mission-32-successor','chrome-10-to-11',
     'criterion:forged']){
     await assert.rejects(probe.inspect(requirement,'a'.repeat(40)),
       /cannot attest/);

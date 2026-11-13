@@ -457,13 +457,13 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       }else if(command==='goal-release-verify'||command==='goal-release-probe-diagnose'){
         const f=flags(rest),requirement=option(f,'requirement');
         const runId=f['--run-id']?option(f,'run-id'):null;
-        if(runId&&(['gmk-production-readback','chrome-5-to-6',
+        if(runId&&(['gmk-production-readback','chrome-5-to-6','chrome-10-to-11',
           'relay-tab-retirement','mission-32-successor','maintenance-resume'].includes(requirement)||
           requirement.startsWith('criterion:')))
           throw new Error('Independent production or work verification cannot use a CI run as evidence');
         const probe=requirement==='gmk-production-readback'
           ?gmkProductionReleaseProbe(store,id,join(home,'goal-release-evidence'))
-          :['chrome-5-to-6','relay-tab-retirement'].includes(requirement)
+          :['chrome-5-to-6','chrome-10-to-11','relay-tab-retirement'].includes(requirement)
           ?trustedChromeReleaseProbe(store,id)
           :requirement==='mission-32-successor'
           ?trustedSuccessorReleaseProbe(store,id)

@@ -185,7 +185,7 @@ historic journal entries for older deployments.
 
 | Requirement | Existing first-party implementation | Raw evidence needed for PASS |
 | --- | --- | --- |
-| Chrome fifth → sixth Send | `goal-release-chrome-probes.ts`, `goal-release-chrome-history.ts` | Per-rollover original reservation, both physical Target/prompt/answer witnesses, new Chat URL hash and PI decision |
+| Chrome tenth → eleventh Send (historical fifth → sixth supported) | `goal-release-chrome-probes.ts`, `goal-release-chrome-history.ts` | Per-rollover original reservation, both physical Target/prompt/answer witnesses, new Chat URL hash and PI decision |
 | Mission 32 → successor | `goal-release-successor-probe.ts` | Exactly 32 committed parent turns, reciprocal zero-turn child, immutable original child request, physical successor witness and independent child PI review |
 | Tab custody/retirement | `goal-release-chrome-probes.ts` | Original controller retirement event, before/after physical tab inventory and owner-tab preservation |
 | Maintenance/recovery | `goal-release-maintenance-probe.ts`, `telegram-task.ps1` | Hash-linked original drain, restored SQLite snapshot, original compiled rollback bytes, fenced Worker/SQLite validation and live Chrome readback |
@@ -194,7 +194,7 @@ historic journal entries for older deployments.
 All five inspectors already exist, including the **fenced upgrade and
 rollback evidence checks**; none is a model-to-PASS shortcut. The
 production adapters require matching compiled target SHA and original state.
-Chrome five-to-six, successor, tab retirement and maintenance/recovery
+Chrome ten-to-eleven, legacy five-to-six, successor, tab retirement and maintenance/recovery
 inspections additionally require a live, enrolled single Windows Worker
 whose SQLite channel lease, PID, compiled tree/CLI/manifest, Telegram
 notification cursor and task identity agree with the target SHA both before
@@ -210,7 +210,7 @@ criterion receipts bind the approved original answer and authenticated SSH
 test-execution session instead of claiming a Windows runtime observation.
 These checks do not invoke maintenance or browser Send;
 isolated synthetic tests cannot grant a production Gate PASS. Every real
-5→6, 32→child, tab, recovery and business criterion still requires its own
+10→11 (plus historical 5→6), 32→child, tab, recovery and business criterion still requires its own
 unfabricated physical/execution evidence for the deployed exact SHA.
 
 Each generated private trusted-probe inspection receipt now identifies the
@@ -540,8 +540,8 @@ and actual private missions.sqlite backup by SHA/integrity/foreign keys,
 original event history, exact source/Worker and a live physical Chrome/PI
 custody readback. Incomplete/rolled-back upgrades cannot PASS.
 
-The trusted Chrome 5-to-6 ReleaseProbe requires an independently captured
-physical source/destination witness for **every** Goal-bound fifth-to-sixth
+The trusted Chrome 10-to-11 ReleaseProbe requires an independently captured
+physical source/destination witness for **every** Goal-bound tenth-to-eleventh
 Chat rollover, not merely one earlier successful rotation. Missing,
 duplicate, mismatched-SHA or contradictory witnesses fail closed; a later
 rollover cannot inherit an earlier receipt. The 32-turn successor probe
@@ -614,11 +614,11 @@ The Telegram worker has a 30-second unreferenced in-process watchdog. After five
 
 The cross-Mission controller extension creates one linked READY successor only for a legacy finite-limit PI Mission at a fully observed 32/32-turn checkpoint with a durable `LIMIT` event. New PI Missions have no Mission-level turn ceiling and continue in the same Mission. An idempotent recovery scan fills a missing legacy child after a worker restart, while the child's first Send requires a stable parent-tab exact prompt/answer hash comparison. The first child Send opens a new conversation and remains subject to the existing URL lock and no-replay semantics. `/status` shows predecessor/successor IDs; a legacy `LIMIT` notification with a successor is a *progress* report, never owner-goal completion. No change to the existing Windows Scheduled Task, PI SSH permissions, Playwriter profile or local SQLite path is required. Do not promote or restart the Telegram task while its currently executing `/build` Mission is RUNNING or has a reserved browser Send; wait for a safe idle maintenance gate, then use the existing drain/task. Cross-Mission live acceptance and independent external-code validation remain separate from software release qualification.
 
-The controller's five-Send rollover check is backed by the same SQLite transaction that reserves a request key: a sixth request directed at the unchanged conversation fails **before** an external Send. An explicit new-tab reservation records its intent, and an observed answer cannot be credited until that reservation migrates to a different direct ChatGPT URL. After a crash or browser disconnect, do not bypass the ceiling by issuing a raw `browser-send` into the old conversation or by reconstructing a different prompt for an uncertain new-tab Send. Inspect the original reservation and use exact-prompt supported recovery only.
+The controller's ten-Send rollover check is backed by the same SQLite transaction that reserves a request key: an eleventh request directed at the unchanged conversation fails **before** an external Send. An explicit new-tab reservation records its intent, and an observed answer cannot be credited until that reservation migrates to a different direct ChatGPT URL. After a crash or browser disconnect, do not bypass the ceiling by issuing a raw `browser-send` into the old conversation or by reconstructing a different prompt for an uncertain new-tab Send. Inspect the original reservation and use exact-prompt supported recovery only.
 
 **Relay-owned tab retirement after successful handoff:** Playwriter's connection deliberately sets `closeTabsOnEnd:false`; otherwise connection cleanup could close a verified active destination or a user tab. To reduce the cost of repeated long-task handoffs, the continuous PI and browser-drive controllers separately remember only new tabs they themselves opened. Following a *later* fully observed, atomically committed destination, a bounded best-effort cleanup closes the previously created superseded tab, provided its URL still matches the old approved ChatGPT conversation. Never close the user's initial tab, the newly active tab, or a page whose URL changed. A browser-close exception is logged without changing the durable answer or authorizing a resend. No global tab sweeper, profile takeover, or cross-process ownership inference exists. Test coverage uses distinct synthetic tabs, consecutive handoffs, thrown close, and changed URL. A real GMK 5→6 migration has since been independently verified by the original source/destination URL and matching first prompt/answer SHA-256s; **Chrome memory reduction is still unmeasured**, and a stored tab-retirement receipt alone is not physical closure evidence.
 
-PI rotation performs the source transcript exact-SHA check twice: first before choosing the next action, then in `executeBrowserRollover` immediately before reserving the new-tab Send. The second check receives the last durable user prompt and full assistant answer digests, so a changed source after the earlier browser read cannot authorize a fresh Send. An explicit test changes the source assistant response between those reads; it must fail with **zero new reservations and zero new tabs**. This test does not replace observing the actual fifth-to-sixth live handoff on GMK.
+PI rotation performs the source transcript exact-SHA check twice: first before choosing the next action, then in `executeBrowserRollover` immediately before reserving the new-tab Send. The second check receives the last durable user prompt and full assistant answer digests, so a changed source after the earlier browser read cannot authorize a fresh Send. An explicit test changes the source assistant response between those reads; it must fail with **zero new reservations and zero new tabs**. This test does not replace observing the actual tenth-to-eleventh live handoff on GMK.
 
 Ordinary PI `NEXT` into the same existing ChatGPT conversation now performs the analogous second source-hash verification in `executeBrowserTurn` immediately before SQLite reservation, covering a human/browser change during PI planning. Sequential `browser-drive` batches likewise recheck the previous observed exchange at the boundary before their next intra-batch Send or explicit HANDOFF new-tab Send. The check covers both latest canonical user prompt SHA-256 and complete assistant-answer SHA-256; changed DOM state fails with **no new request key, tab or Send**. A first manually instructed browser Send in a separate batch retains its existing explicit-command and SQLite authorization; these checks do not claim browser control is an OS-enforced sandbox. Tests inject changes between preflight reads and test invalid user/assistant hashes; live Chrome acceptance remains required.
 
@@ -626,7 +626,7 @@ A chained PI Mission has an additional first-Send guard inside the reservation t
 
 `pi-evidence` independently validates browser migration attribution, not just a count of migration markers. Normal migration must carry a valid, distinct pair of hashed URLs and an already reserved request key that matches the immediately following observed response. A dangling or unrelated migration is an audit failure and cannot justify a claimed 5→6 acceptance. Recovered rollovers use their separate independently inspected recovery event. The report reveals only event identifiers and digests, not the conversation URLs or request keys.
 
-For 5→6 and later autonomous Chat rotations, the read-only ledger now also rejects **broken URL-hash lineage**: once a first destination is known, the previous-URL SHA-256 of every next normal/recovered migration must equal that last recorded destination SHA-256. Previously, an unrelated but syntactically valid source hash could reset the observed chat-turn count without violating the migration's individual two-URL inequality. The first source Chat may be owner-provided and is not independently attested by an earlier migration event. Two adversarial tests tamper with the normal sixth-turn migration and a separately recovered rollover; both must yield `migration_source_url_discontinuity`. This is a detection hardening, not proof of a real browser switch or of faithful context inheritance; validate the live browser and linked reply separately.
+For current 10→11 and historical 5→6 autonomous Chat rotations, the read-only ledger rejects **broken URL-hash lineage**: once a first destination is known, the previous-URL SHA-256 of every next normal/recovered migration must equal that last recorded destination SHA-256. Previously, an unrelated but syntactically valid source hash could reset the observed chat-turn count without violating the migration's individual two-URL inequality. The first source Chat may be owner-provided and is not independently attested by an earlier migration event. Adversarial tests tamper with migrations and recovered rollovers; both must yield `migration_source_url_discontinuity`. This is a detection hardening, not proof of a real browser switch or faithful context inheritance; validate the live browser and linked reply separately.
 
 The Windows **read-only restart preflight** now also checks locally marked READY PI Missions. This covers the short interval between Telegram accepting a task and the first browser Send reservation; its earlier active-only query would misleadingly report restart-safe during that interval even though the authoritative drain correctly rejected it. The script also treats an invalid browser receipt as an error, not a quiescent Send. The drain's atomic decision, not the preliminary script or a healthy Bot API heartbeat, is still the final maintenance authority.
 
@@ -638,9 +638,9 @@ The owner-authorized text-only two-stage post-fix test on 2026-11-05 used a **ne
 
 ### Read-only PI long-task diagnostics
 
-**Bounded Goal continuation and remote PI defaults.** After the fifth
-durably observed browser request a sixth request must reserve a distinct
-ChatGPT conversation, never a sixth Send into the old URL. At 32/32,
+**Bounded Goal continuation and remote PI defaults.** After the tenth
+durably observed browser request an eleventh request must reserve a distinct
+ChatGPT conversation, never an eleventh Send into the old URL. At 32/32,
 only the settled PI LIMIT/NEXT/HANDOFF checkpoint may create one 0-turn
 successor. For Goal-bound Missions, a *new* child additionally requires
 an ACTIVE Goal with one remaining approved active work package. The
@@ -669,7 +669,7 @@ platform CI receipts and no Goal, plan, PI approval, or SQLite database;
 this is a read-only check and it never reports deployment success.
 The separately fenced Windows promotion establishes runtime readiness.
 Existing `goal-release-*` commands are retained for old Goal business
-acceptance, but a Goal's missing 5→6 / 32→successor witness is **not**
+acceptance, but a Goal's missing 10→11 / historical 5→6 / 32→successor witness is **not**
 an impediment to verifying and shipping an otherwise qualified software
 release. Do not migrate or overwrite historic Goal events to simplify
 release reporting.
@@ -731,7 +731,7 @@ The normal independent release process is:
    notification and event cursors remain unchanged across both Chrome reads;
    new commands or events invalidate the observation. It refuses a running
    or owner-paused original request and records only hash-linked private
-   evidence. The separate trusted 5→6, 32→child, maintenance/restore,
+   evidence. The separate trusted 10→11 (legacy 5→6), 32→child, maintenance/restore,
    physical tab-retirement and independently executed per-criterion work
    probes exist, but each remains PENDING without its own original,
    complete, exact-SHA production witness. Never script a fake PASS.
@@ -775,9 +775,9 @@ Never use this report to reset, replay or resume an uncertain request, and
 do not bypass the existing GMK maintenance drain. The report contains hashes
 and UUIDs, not prompt text, answer text, request keys or ChatGPT URLs.
 
-Run `node dist/cli.js pi-health` in the **existing GMK checkout** to see bounded, secret-free in-flight PI Mission IDs, observed browser rounds, current-chat 5-Send budget, PI decision/round, request reservation age and an explicit request phase. The same phase and request age appear in authenticated Telegram `/status [mission-id]`. `pi-health`, `pi-evidence` and `pi-chain-evidence` open existing SQLite schema **v3, v4 or v5** in **read-only mode with `PRAGMA query_only`**; Goal ledger and release-gate commands require **v5**. These diagnostics refuse unsupported schemas without creating or upgrading them. They do not attach to Playwriter, inspect conversations, read credentials, modify Mission records, send messages or start a second worker. The report omits owner goals, raw prompts, response text, browser URLs and Chrome identities. PI evidence reports may include SHA-256 digests and event IDs, never answer bodies. A `browser_answer_pending_do_not_resend` phase means a request is still reserved and its final answer **has not been credited**, not that the browser is frozen or that a resend is permitted. A healthy Telegram `getUpdates` heartbeat proves transport connectivity only. When the phase becomes `reconciliation_required_do_not_resend`, independently inspect the exact original request and browser answer before any acknowledged recovery. Do not bypass the existing channel-drain maintenance gate for deployment.
+Run `node dist/cli.js pi-health` in the **existing GMK checkout** to see bounded, secret-free in-flight PI Mission IDs, observed browser rounds, current-chat 10-Send budget, PI decision/round, request reservation age and an explicit request phase. The same phase and request age appear in authenticated Telegram `/status [mission-id]`. `pi-health`, `pi-evidence` and `pi-chain-evidence` open existing SQLite schema **v3, v4 or v5** in **read-only mode with `PRAGMA query_only`**; Goal ledger and release-gate commands require **v5**. These diagnostics refuse unsupported schemas without creating or upgrading them. They do not attach to Playwriter, inspect conversations, read credentials, modify Mission records, send messages or start a second worker. The report omits owner goals, raw prompts, response text, browser URLs and Chrome identities. PI evidence reports may include SHA-256 digests and event IDs, never answer bodies. A `browser_answer_pending_do_not_resend` phase means a request is still reserved and its final answer **has not been credited**, not that the browser is frozen or that a resend is permitted. A healthy Telegram `getUpdates` heartbeat proves transport connectivity only. When the phase becomes `reconciliation_required_do_not_resend`, independently inspect the exact original request and browser answer before any acknowledged recovery. Do not bypass the existing channel-drain maintenance gate for deployment.
 
-After a turn is credited, `node dist/cli.js pi-evidence <mission-id>` produces a content-free event correlation report. Use `rounds[].observedEventId`, `reservedEventId`, `answerSha256`, `decisionEventId` and `decisionShaMatches` to verify real ChatGPT → PI linkage. `chatSegments`, `maxObservedTurnsInOneChat` and `currentChatObservedTurns` expose any violation of the five-Send-per-Chat ceiling; `pendingPiReviewRounds` is valid while PI inference is unfinished. `ledgerConsistent` only means no detected event-counter/hash violations, **not** that code, tests, deployment or business acceptance passed. Missing or ambiguous browser observations remain unresolved without the existing operator-confirmed recovery. This audit does not send new ChatGPT prompts or publish Telegram messages.
+After a turn is credited, `node dist/cli.js pi-evidence <mission-id>` produces a content-free event correlation report. Use `rounds[].observedEventId`, `reservedEventId`, `answerSha256`, `decisionEventId` and `decisionShaMatches` to verify real ChatGPT → PI linkage. `chatSegments`, `maxObservedTurnsInOneChat` and `currentChatObservedTurns` expose any violation of the ten-Send-per-Chat ceiling; `pendingPiReviewRounds` is valid while PI inference is unfinished. `ledgerConsistent` only means no detected event-counter/hash violations, **not** that code, tests, deployment or business acceptance passed. Missing or ambiguous browser observations remain unresolved without the existing operator-confirmed recovery. This audit does not send new ChatGPT prompts or publish Telegram messages.
 
 For a real 32-turn continuation, run `node dist/cli.js pi-chain-evidence <mission-id>` on the existing, idle-compatible GMK runtime. It traverses the parent and successor IDs and checks each source/child audit event and complete answer hash, the original scope, deterministic child request identity and the first child Send's new-chat migration. `chainConsistent=true` with `missionCount=1` is **not** evidence of a 32-to-1 rollover; require a verified parent/child link and a completed observed child Send. The command does not create Missions, connect to Chrome or send Telegram messages. Do not run newer compiled code inside an old live Node task or fast-forward the runtime before maintenance drain is safely accepted.
 

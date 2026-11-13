@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.4 — 2026-11-13
+
+- Increase per-ChatGPT-conversation capacity from five to ten durably observed Relay Sends; the eleventh must open a distinct observed Chat URL, retaining no-replay and PI review protections.
+- Align independent Chrome rollover verification with 10→11 while retaining read-only legacy 5→6 custody evidence.
+- Preserve the existing cooperative pause, atomic maintenance drain, isolated SQLite restore and rollback requirements for GMK deployment.
+
 ## 1.1.3 — 2026-11-13
 
 - Fix a long-running Windows Task Scheduler defect discovered from repeated 00:04 Event 111 task terminations: a daily two-minute recovery trigger inherited `StopAtDurationEnd=true` despite `ExecutionTimeLimit=PT0S`. Explicitly set `StopAtDurationEnd=false` to keep the enrolled Worker running through midnight.

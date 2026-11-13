@@ -1,6 +1,7 @@
 import {createHash} from 'node:crypto';
 import {inspectGoalRequestLedger} from './request-ledger.js';
 import {inspectPiEvidence} from './pi-evidence.js';
+import {LEGACY_RELAY_CHAT_TURNS,MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 import type {Store} from './store.js';
 import type {MissionEvent} from './types.js';
 
@@ -14,7 +15,7 @@ const data=(event:MissionEvent|undefined):Record<string,unknown>=>
  * This reconstructs controller request/answer/PI/URL custody, with physical
  * Target fingerprints only where the original event actually recorded them.
  * It NEVER claims independent Chrome DOM/Target proof or a Gate PASS. */
-export function inspectGoalChromeFiveToSixHistory(store:Store,goalId:string){
+function inspectGoalChromeBoundaryHistory(store:Store,goalId:string,boundary:number){
   const custody=inspectGoalRequestLedger(store,goalId);
   const rotations:Array<{
     missionOrdinal:number;fromRound:number;toRound:number;
@@ -37,9 +38,11 @@ export function inspectGoalChromeFiveToSixHistory(store:Store,goalId:string){
     const missionRequests=custody.requests.filter(r=>r.missionId===missionId);
     for(let i=1;i<report.rounds.length;i++){
       const previous=report.rounds[i-1]!,current=report.rounds[i]!;
-      // A malformed sixth Send in the SAME Chat must be rejected, not
-      // silently omitted because the controller failed to count a migration.
-      if(previous.chatTurn!==5&&current.chatTurn!==1&&current.round%5!==1)continue;
+      // Inspect only original rollovers at this exact historic/current limit.
+      // Early explicit HANDOFF is valid. A same-Chat excess is independently
+      // rejected by the current limit in inspectPiEvidence, not by falsely
+      // classifying a v1.1.4 sixth Send as a legacy 5→6 event.
+      if(previous.chatTurn!==boundary||current.chatTurn!==1)continue;
       const violations:string[]=[];
       const fail=(issue:string)=>{if(!violations.includes(issue))violations.push(issue);};
       const prior=missionRequests.find(r=>r.observationEventId===previous.observedEventId);
@@ -76,10 +79,11 @@ export function inspectGoalChromeFiveToSixHistory(store:Store,goalId:string){
         data(e).requestKey===requestKey);
       if(!report.ledgerConsistent||!custody.ledgerConsistent)
         fail('original_goal_or_mission_ledger_inconsistent');
-      if(previous.chatTurn!==5||current.chatTurn!==1||
+      if(previous.chatTurn!==boundary||current.chatTurn!==1||
         current.chatSegment!==previous.chatSegment+1||
         current.round!==previous.round+1)
-        fail('five_to_six_turn_boundary_invalid');
+        fail(boundary===LEGACY_RELAY_CHAT_TURNS?
+          'five_to_six_turn_boundary_invalid':'ten_to_eleven_turn_boundary_invalid');
       if(!prior||!next||prior.status!=='observed'||next.status!=='observed'||
         prior.round!==previous.round||next.round!==current.round||
         prior.reservationEventId!==previous.reservedEventId||
@@ -158,8 +162,8 @@ export function inspectGoalChromeFiveToSixHistory(store:Store,goalId:string){
         (!recovered&&(!SHA.test(String(target))||priorTarget===target)))
         fail('physical_target_identity_not_proven_in_original_ledger');
       if(!recovered&&SHA.test(String(target))){
-        // Include the source tab created before round five, not only
-        // targets encountered in five-to-six boundary rows.
+        // Include the source tab created before this rollover, not only
+        // targets encountered in the current boundary rows.
         if(migrations.some(e=>e.id!==migration?.id&&
           data(e).newTabTargetSha256===target&&
           data(e).newUrlSha256!==mp.newUrlSha256))
@@ -203,3 +207,9 @@ export function inspectGoalChromeFiveToSixHistory(store:Store,goalId:string){
   };
   return {...report,evidenceIndexSha256:hash(JSON.stringify(report))};
 }
+/** Legacy 5→6 audit is read-only; never rewrite its original request history. */
+export const inspectGoalChromeFiveToSixHistory=(store:Store,goalId:string)=>
+  inspectGoalChromeBoundaryHistory(store,goalId,LEGACY_RELAY_CHAT_TURNS);
+/** Current v1.1.4 10→11 audit has the same independent custody requirements. */
+export const inspectGoalChromeTenToElevenHistory=(store:Store,goalId:string)=>
+  inspectGoalChromeBoundaryHistory(store,goalId,MAX_RELAY_CHAT_TURNS);

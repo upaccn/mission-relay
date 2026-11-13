@@ -5,7 +5,7 @@ import { dirname } from 'node:path';
 import { hostname } from 'node:os';
 import type { CreateMission, Mission, MissionEvent, MissionState, VerificationCheck } from './types.js';
 import { normalizeChatGPTUrl } from './chatgpt-handoff.js';
-import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
+import {LEGACY_RELAY_CHAT_TURNS,MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 import {missionTurnsRemaining,missionTurnLimitReached} from './mission-turns.js';
 import type {RuntimeProvenance} from './runtime-provenance.js';
 
@@ -1571,9 +1571,12 @@ export class Store {
         this.channelDrainRequested('telegram')||
         !this.goalContinuationEligible(id))
         throw new Error('One-shot pre-Send recovery requires the exact old navigation timeout and an active, settled PI continuation');
-      // A new conversation is mandatory after five observed sends; do not
-      // grant this recovery for an existing-chat or premature rollover.
-      if(this.piChatObservedTurns(id)<MAX_RELAY_CHAT_TURNS)
+      // This is a one-shot recovery of an ALREADY reserved new-chat request.
+      // Pre-v1.1.4 Workers could legitimately reserve it after five Sends.
+      // Keep that precise historical boundary valid without lowering the
+      // current ten-Send ceiling for fresh reservations.
+      if(![LEGACY_RELAY_CHAT_TURNS,MAX_RELAY_CHAT_TURNS]
+        .includes(this.piChatObservedTurns(id)))
         throw new Error('Pre-Send new-chat recovery requires the exhausted original ChatGPT segment');
       this.requireUnspentBrowserReservation(id,r);
       const uncertain=events.filter(e=>e.type==='chatgpt.browser_uncertain'&&

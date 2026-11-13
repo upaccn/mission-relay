@@ -11,7 +11,7 @@ import {inspectGoalRequestLedger} from './request-ledger.js';
  * no CLI command that accepts a user/model-supplied PASS flag or receipt. */
 export const RELEASE_GATES=[
   'check','privacy-check','test','build','ci-ubuntu','ci-macos','ci-windows',
-  'chrome-5-to-6','maintenance-resume',
+  'chrome-10-to-11','maintenance-resume',
   'relay-tab-retirement','gmk-production-readback',
 ] as const;
 export type ReleaseGate=typeof RELEASE_GATES[number];
@@ -97,7 +97,7 @@ const sourceFor=(requirement:string):string|null=>
   ['ci-ubuntu','ci-macos','ci-windows'].includes(requirement)?'github-actions':
   requirement==='gmk-production-readback'?'gmk-readback':
   requirement==='maintenance-resume'?'maintenance-readback':
-  ['chrome-5-to-6','mission-32-successor','relay-tab-retirement'].includes(requirement)
+  ['chrome-5-to-6','chrome-10-to-11','mission-32-successor','relay-tab-retirement'].includes(requirement)
     ?'chrome-readback':null;
 /** Shared requirement-to-probe binding for release admission and the
  * read-only coverage index. GitHub CI may additionally attest source

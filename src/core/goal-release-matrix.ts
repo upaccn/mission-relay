@@ -2,7 +2,7 @@ import {GoalLedger} from './goal-store.js';
 import {GoalReleaseGate,RELEASE_GATES} from './goal-release.js';
 import {inspectGoalRequestLedger} from './request-ledger.js';
 import {inspectPiChainEvidence} from './pi-evidence.js';
-import {inspectGoalChromeFiveToSixHistory} from './goal-release-chrome-history.js';
+import {inspectGoalChromeTenToElevenHistory} from './goal-release-chrome-history.js';
 import type {Store} from './store.js';
 
 /** An evidence INDEX, not an independent PASS assertion. A PI-reported
@@ -13,7 +13,7 @@ import type {Store} from './store.js';
 export function inspectGoalReleaseMatrix(store:Store,goalId:string){
   const graph=new GoalLedger(store).graph(goalId);
   const custody=inspectGoalRequestLedger(store,goalId);
-  const chromeHistory=inspectGoalChromeFiveToSixHistory(store,goalId);
+  const chromeHistory=inspectGoalChromeTenToElevenHistory(store,goalId);
   const release=new GoalReleaseGate(store).report(goalId);
   const checked=new Map(release.checks.map(c=>[c.requirement,c]));
   // Historical plans and their acceptance rows remain in SQLite for audit,
@@ -30,8 +30,9 @@ export function inspectGoalReleaseMatrix(store:Store,goalId:string){
   const allGoalEvents=custody.missionIds.flatMap(id=>store.events(id));
   const eventIds=(types:string[])=>allGoalEvents.filter(e=>types.includes(e.type)).map(e=>e.id);
   const candidateEvents:Record<string,number[]>={
-    'chrome-5-to-6':lineage?.missions.flatMap(m=>m.rounds
-      .filter(r=>r.chatSegment>1&&r.chatTurn===1)
+    'chrome-10-to-11':lineage?.missions.flatMap(m=>m.rounds
+      .filter((r,i)=>r.chatSegment>1&&r.chatTurn===1&&
+        m.rounds[i-1]?.chatTurn===10)
       .map(r=>r.observedEventId))??[],
     'mission-32-successor':lineage?.links.flatMap(l=>
       [l.limitEventId,l.successorEventId,l.startedEventId]

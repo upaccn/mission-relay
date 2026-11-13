@@ -48,7 +48,7 @@ test('release coverage maps 38 active Goal requirements without obsolete 32-turn
       row.candidateState==='NOT_TARGET'&&row.missing.length>0));
     const fixed=first.requirements.filter(row=>row.kind==='fixed');
     assert.equal(fixed.length,11);
-    for(const name of ['chrome-5-to-6',
+    for(const name of ['chrome-10-to-11',
       'maintenance-resume','relay-tab-retirement']){
       const row=fixed.find(x=>x.requirement===name);
       assert.ok(row);

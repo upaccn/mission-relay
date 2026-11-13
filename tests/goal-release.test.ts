@@ -162,7 +162,7 @@ test('a model/PI-reported work PASS is insufficient for Goal DONE',async()=>{
 
 test('text-only, Git commit-only and DONE-marker claims cannot run or PASS any trusted runtime or work ReleaseProbe',async()=>{
   const requirements=[
-    'chrome-5-to-6','mission-32-successor','maintenance-resume',
+    'chrome-10-to-11','mission-32-successor','maintenance-resume',
     'relay-tab-retirement','criterion:123e4567-e89b-42d3-a456-426614174001',
   ];
   const claims=[
@@ -234,6 +234,7 @@ test('every registered ReleaseProbe has an exact source binding, with no cross-s
     check:'local-command','privacy-check':'local-command',
     test:'local-command',build:'local-command',
     'ci-ubuntu':'github-actions','ci-macos':'github-actions','ci-windows':'github-actions',
+    'chrome-10-to-11':'chrome-readback',
     'chrome-5-to-6':'chrome-readback',
     'mission-32-successor':'chrome-readback',
     'maintenance-resume':'maintenance-readback',
@@ -241,10 +242,10 @@ test('every registered ReleaseProbe has an exact source binding, with no cross-s
     'gmk-production-readback':'gmk-readback',
     'criterion:123e4567-e89b-42d3-a456-426614174001':'independent-work',
   };
-  // The old 32-to-successor probe remains a supported legacy evidence source,
-  // but it is no longer a gate when registering a new Goal release target.
+  // Historical 5→6 and 32-to-successor probes remain supported read-only
+  // evidence sources, but are not new-release gates.
   assert.deepEqual(Object.keys(bound).filter(x=>!x.startsWith('criterion:')).sort(),
-    [...RELEASE_GATES,'mission-32-successor'].sort());
+    [...RELEASE_GATES,'mission-32-successor','chrome-5-to-6'].sort());
   const allSources=['local-command','github-actions','chrome-readback',
     'maintenance-readback','gmk-readback','independent-work','model-answer',null];
   for(const [requirement,source] of Object.entries(bound)){
@@ -268,7 +269,7 @@ test('trusted probe diagnostic distinguishes PASS, contradictory FAIL and insuff
   const f=fixture();
   try{
     const eventCount=f.ledger.graph(f.goal.id).events.length;
-    const requirement='chrome-5-to-6',good=independent(requirement);
+    const requirement='chrome-10-to-11',good=independent(requirement);
     const pass=await inspectReleaseProbeOutcome(requirement,SHA,good);
     assert.equal(pass.verdict,'PASS');
     assert.equal(pass.targetSha,SHA);
@@ -352,7 +353,7 @@ test('read-only release matrix never promotes a PI browser-answer claim to indep
     assert.equal(matrix.goalState,'ACTIVE');
     assert.equal(matrix.requirements.length,RELEASE_GATES.length+1);
     assert.equal(matrix.requirements.every(x=>x.state==='PENDING'),true);
-    const browser=matrix.requirements.find(x=>x.requirement==='chrome-5-to-6');
+    const browser=matrix.requirements.find(x=>x.requirement==='chrome-10-to-11');
     assert.equal(browser?.requiresIndependentProbe,true);
     const claimed=matrix.requirements.find(x=>x.requirement.startsWith('criterion:'));
     assert.equal(claimed?.requiresIndependentProbe,true);
@@ -590,7 +591,7 @@ test('exact-head GitHub CI can independently attest source gates, never Chrome/G
     const current=f.gate.report(f.goal.id);
     assert.equal(current.ready,false);
     assert.ok(current.blockers.includes('gmk-production-readback'));
-    assert.ok(current.blockers.includes('chrome-5-to-6'));
+    assert.ok(current.blockers.includes('chrome-10-to-11'));
     assert.ok(current.blockers.some(b=>b.startsWith('criterion:')));
     await assert.rejects(f.gate.inspect(f.goal.id,'gmk-production-readback',{
       ...independent('gmk-production-readback'),source:'github-actions',
