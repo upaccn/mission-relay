@@ -1471,7 +1471,7 @@ test('Telegram /continue end-to-end delivers one result after two synthetic brow
     assert.equal(closed,true);
     assert.equal(submitted,2);
     await bridge.pollOnce(0);
-    const notifications=f.transport.sent.filter(x=>/ChatGPT update — Round/.test(x));
+    const notifications=f.transport.sent.filter(x=>/All Done — ChatGPT task finished/.test(x));
     assert.equal(notifications.length,1);
     assert.match(notifications[0]!,/final verified/);
     assert.doesNotMatch(notifications[0]!,/Progress: interim/);
