@@ -188,7 +188,8 @@ test('two durable write Goals rotate A→B→A→B on one Worker with separate r
     r.setUpdates([r.message(703,'/list'),r.message(704,'/goals'),r.message(705,'/status 1')]);
     await r.bridge.pollOnce(0);
     assert.ok(r.replies.some(msg=>msg.includes('Goal A:')&&msg.includes('Goal B:')));
-    assert.ok(r.replies.some(msg=>msg.includes('Goals:')));
+    assert.ok(r.replies.some(msg=>msg.includes('Goals:')&&
+      msg.includes('Needs attention')));
   }finally{await r.idle();r.close();}
 });
 

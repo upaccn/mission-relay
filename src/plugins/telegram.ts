@@ -1127,6 +1127,8 @@ export class TelegramBridge {
     if(m.stopRequested)return 'Paused';
     if(this.store.events(m.id).some(e=>e.type==='pi.autopilot_finished'&&
       (e.payload as {action?:unknown}).action==='DONE'))return 'Completed (PI review)';
+    if(m.state==='PAUSED'&&this.store.piPlan(m.id)?.action==='BLOCKED')
+      return 'Needs attention — PI blocked';
     if(m.id===this.activeMission)return 'Running';
     if(m.state==='READY')return 'Queued';
     if(m.state==='PAUSED'&&!m.lastError&&
@@ -1174,7 +1176,8 @@ export class TelegramBridge {
         ...goals.slice(start,start+TELEGRAM_MISSION_PAGE_SIZE).map((g,i)=>{
           const m=this.engine.list().find(x=>ledger.missionGoalId(x.id)===g.id);
           const state=g.status==='DONE'?'Completed':
-            m?this.taskDisplayState(m):g.status==='BLOCKED'?'Needs attention':'Queued';
+            g.status==='BLOCKED'?'Needs attention':
+            m?this.taskDisplayState(m):'Queued';
           return `${start+i+1}. ${compactTelegramText(g.objective,100)} — ${state}`;
         }),
         'Use /goal-status for the latest goal.'
