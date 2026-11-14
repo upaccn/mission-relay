@@ -1,6 +1,6 @@
 {
   "name": "mission-relay",
-  "version": "1.2.6",
+  "version": "1.2.7",
   "private": false,
   "type": "module",
   "description": "Local-first, open-source mission control for long-running AI agents",

@@ -2,7 +2,7 @@
 
 ## Release boundaries
 
-- Current source package version: `1.2.6`. Prior to the next deployment GMK ran `1.2.5` at `2e246acd6e1935e32156eb03248dd4676600511a`. The source version, independently qualified GitHub release, GMK runtime deployment and Goal acceptance are separate states; never infer one from another. Do not claim deployment of a newer SHA without an exact-SHA runtime attestation and audited maintenance admission.
+- Current source package version: `1.2.7`. Prior to the next deployment GMK ran `1.2.5` at `2e246acd6e1935e32156eb03248dd4676600511a`. The source version, independently qualified GitHub release, GMK runtime deployment and Goal acceptance are separate states; never infer one from another. Do not claim deployment of a newer SHA without an exact-SHA runtime attestation and audited maintenance admission.
 - GitHub `main` is the published software source boundary. Run `software-release-status --sha <exact-main-SHA> --run-id <CI-run>` to independently qualify the three-platform Node.js CI **without a Goal, PI or local SQLite database**.
 - A successful CI qualification alone does not deploy software. Runtime promotion separately requires a clean target checkout, zero in-flight requests, an atomic maintenance drain, independently restored database backup, previous compiled rollback image, verified single Worker and source SHA, and drain release.
 - Goal work is an independent business acceptance process. PI automatically reviews each answer and validates plans and work items; the user does not approve staged Goal checkpoints. Separate `goal-release-*` probes remain operator-only for independent business evidence, not a software-build prerequisite.

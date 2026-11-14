@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.7 — 2026-11-14
+
+- Refresh the public README to document current Goal, repository isolation, PI, browser execution, recovery and deployment features without incident history or private production state. No changes to scheduler, credentials, browser requests or the SQLite schema.
+
 ## 1.2.6 — 2026-11-14
 
 - Recover the exact bytes of user-authored ChatGPT prompts from the current accessible transcript paragraph. ChatGPT's inline URL widgets can insert extra visual line breaks into parent `innerText`, causing the unchanged original request SHA to appear different and triggering a false ambiguous-Send stop. Preserve actual HTML line breaks, recurse through link text and exclude only UI nodes explicitly marked `data-markdown-copy=exclude`; use the original strict fallback if the new paragraph structure is not uniquely present.
