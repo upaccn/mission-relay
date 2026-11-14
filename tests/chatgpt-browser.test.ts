@@ -11,7 +11,8 @@ import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUr
   chatTabTargetSha256,
   tolerateRolloverNavigation,rolloverUrlClass,newChatBootstrapDelayMs,
   shouldReloadBlankNewChat,reloadBlankDirectNewChat,isFreshResponseLoadFailure,
-  canonicalVisibleUserPrompt,matchesSubmittedUserPrompt,matchesReservedPromptHash,isNewAssistantReply,
+  canonicalVisibleUserPrompt,authoredUserParagraphText,lastVisibleUserPrompt,lastVisibleUserPromptSha256,
+  matchesSubmittedUserPrompt,matchesReservedPromptHash,isNewAssistantReply,
   stripVerifiedFileCardTail,
   isNewReplyAgainstVerifiedSource,
   visibleLongTaskBanner,clickDeliveryRetryOnce,interruptedDeadline,
@@ -230,6 +231,54 @@ test('ChatGPT accessible user transcript decorations are excluded from prompt id
   assert.notEqual(canonicalVisibleUserPrompt(`${submitted}\nShow less\nSubsequent human text`,true),submitted);
   assert.notEqual(canonicalVisibleUserPrompt(`You said:\n${submitted}\nAdditional human edit\n…\nShow more`,true),submitted);
   assert.notEqual(canonicalVisibleUserPrompt(`You said:\n${submitted}\nShow something else`,true),submitted);
+});
+
+test('inline-link DOM wraps do not change exact original user-prompt SHA or strip real line breaks',async()=>{
+  // A real Chrome/ChatGPT readback added a visual newline before each link,
+  // while the authored paragraph preserved the exact <span>/<br>/<a> text.
+  const textNode=(value:string)=>({nodeType:3,textContent:value,childNodes:[]});
+  const element=(tag:string,children:unknown[],attrs:Record<string,string>={})=>({
+    nodeType:1,tagName:tag,childNodes:children,
+    getAttribute:(key:string)=>attrs[key]??null,
+  });
+  const url='https://github.com/upaccn/X-to-Markdown-Copier';
+  const original=`Verify ${url} in its own repository.\nDo not modify the unrelated Goal.`;
+  const authored=element('P',[
+    element('SPAN',[textNode('Verify ')]),
+    element('A',[
+      element('SPAN',[textNode('icon')],{'data-markdown-copy':'exclude'}),
+      element('SPAN',[textNode(url)]),
+    ]),
+    element('SPAN',[textNode(' in its own repository.')]),
+    element('BR',[]),
+    element('SPAN',[textNode('Do not modify the unrelated Goal.')]),
+  ]);
+  const decoded=authoredUserParagraphText(authored as unknown as Node);
+  assert.equal(decoded,original);
+  const innerText=`You said:\nVerify \n${url} in its own repository.\nDo not modify the unrelated Goal.`;
+  assert.notEqual(canonicalVisibleUserPrompt(innerText,true),original);
+  const paragraph={count:async()=>1,evaluate:async(fn:(root:Node)=>string)=>
+    fn(authored as unknown as Node)};
+  const wrapper={locator:(selector:string)=>{
+    assert.equal(selector,'p[data-markdown-han-text="true"]');
+    return paragraph;
+  },innerText:async()=>innerText};
+  const heading={count:async()=>1,last:()=>({locator:()=>wrapper})};
+  const empty={count:async()=>0};
+  const fakePage={locator:()=>empty,getByRole:(role:string)=>role==='heading'?heading:empty};
+  const page=fakePage as unknown as Page;
+  assert.equal(await lastVisibleUserPrompt(page),original);
+  assert.equal(await lastVisibleUserPromptSha256(page),
+    createHash('sha256').update(original).digest('hex'));
+
+  const withRealNewline=element('P',[
+    element('SPAN',[textNode('Verify ')]),element('BR',[]),
+    element('A',[textNode(url)]),
+  ]);
+  assert.equal(authoredUserParagraphText(withRealNewline as unknown as Node),
+    `Verify \n${url}`);
+  assert.notEqual(authoredUserParagraphText(withRealNewline as unknown as Node),
+    `Verify ${url}`,'A real newline must never be ignored to satisfy another SHA');
 });
 
 test('A later PI prompt quoting the full original cannot satisfy earlier Send correlation',()=>{

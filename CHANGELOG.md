@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.6 — 2026-11-14
+
+- Recover the exact bytes of user-authored ChatGPT prompts from the current accessible transcript paragraph. ChatGPT's inline URL widgets can insert extra visual line breaks into parent `innerText`, causing the unchanged original request SHA to appear different and triggering a false ambiguous-Send stop. Preserve actual HTML line breaks, recurse through link text and exclude only UI nodes explicitly marked `data-markdown-copy=exclude`; use the original strict fallback if the new paragraph structure is not uniquely present.
+- Regression tests verify a link-wrapped prompt's original exact SHA and reject treating a genuinely newline-separated prompt as the same bytes. This changes read-only message attribution only: no automatic resend, fabricated receipt, changed write scope or concurrency.
+
+
 ## 1.2.5 — 2026-11-14
 
 - Repair the owner-local `telegram-build-project --allow <path>` and `--revoke <path>` CLI branches: one required flag value was incorrectly rejected as an extra argument. The documented multi-repository approval and revocation commands were unusable despite lower-level tests passing.

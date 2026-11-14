@@ -52,6 +52,25 @@ export function canonicalVisibleUserPrompt(text:string,headingWrapper:boolean):s
     .replace(/\nShow less\s*$/u,'').trim();
 }
 
+/** ChatGPT renders user-authored newlines as <br>, but its inline-link
+ * widgets can contribute extra visual line breaks to parent.innerText.
+ * Traverse only a single explicitly authored message paragraph: preserve
+ * actual <br> boundaries and link text, excluding copy-disabled UI icons.
+ * Never collapse arbitrary whitespace, since that could authenticate a
+ * different original request. The legacy/unknown DOM continues to use the
+ * existing strict visible-text fallback. */
+export function authoredUserParagraphText(root:Node):string {
+  const walk=(node:Node):string=>{
+    if(node.nodeType===3)return node.textContent??'';
+    if(node.nodeType!==1)return '';
+    const element=node as Element;
+    if(element.getAttribute('data-markdown-copy')==='exclude')return '';
+    if(element.tagName==='BR')return '\n';
+    return Array.from(node.childNodes).map(walk).join('');
+  };
+  return walk(root).trim();
+}
+
 /** User-authored last visible prompt, excluding ChatGPT accessibility labels.
  * An adoption goal can be seeded from it without inventing a new task. */
 export async function lastVisibleUserPrompt(page:Page):Promise<string|null>{
@@ -60,8 +79,15 @@ export async function lastVisibleUserPrompt(page:Page):Promise<string|null>{
     await legacy.last().innerText({timeout:5000}),false);
   const headings=userHeadings(page);
   if(!await headings.count())return null;
+  const wrapper=headings.last().locator('xpath=..');
+  const authored=typeof wrapper.locator==='function'
+    ?wrapper.locator('p[data-markdown-han-text="true"]'):null;
+  if(authored&&await authored.count()===1){
+    const exact=await authored.evaluate(authoredUserParagraphText);
+    if(exact.trim())return exact;
+  }
   return canonicalVisibleUserPrompt(
-    await headings.last().locator('xpath=..').innerText({timeout:5000}),true);
+    await wrapper.innerText({timeout:5000}),true);
 }
 
 /** Read-only recovery guard: match the last submitted prompt hash, never
