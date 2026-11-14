@@ -60,6 +60,8 @@ test('repository grants forbid parent/child overlaps but allow unrelated sibling
       /source roots cannot contain/);
     assert.throws(()=>approveBuildRepository(r.store,'/srv/projects'),
       /source roots cannot contain/);
+    assert.throws(()=>approveBuildRepository(r.store,'/srv/projects//first-product'),
+      /safe absolute path/,'Repeated separators cannot alias an already approved root');
     assert.equal(hasIsolatedRepositoryGrant(r.store,REPO_A),true);
     assert.equal(hasIsolatedRepositoryGrant(r.store,REPO_B),true);
     assert.deepEqual(approvedBuildRepositories(r.store),[REPO_A,REPO_B]);

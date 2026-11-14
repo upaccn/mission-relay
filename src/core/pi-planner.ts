@@ -51,6 +51,7 @@ export function isPiTransientCapacityFailure(exitCode:number|null,stderr:string)
 /** The project is an administrator-supplied remote path, never model text. */
 export function validateRemoteProjectPath(project:string):string {
   if(!/^\/[a-zA-Z0-9_./-]{1,240}$/.test(project)||
+    project.includes('//')||
     project.split('/').includes('..')||project.split('/').includes('.')||
     project==='/'||project.endsWith('/'))
     throw new Error('Remote project must be a specific safe absolute path');
