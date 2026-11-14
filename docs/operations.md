@@ -22,6 +22,39 @@ restart. Only perform the registered Windows `Upgrade` when the real
 SQLite idle preflight is satisfied. An active or uncertain original Send
 must settle; never clear its reservation to eliminate version drift.
 
+## ChatGPT conversation maximum length
+
+ChatGPT can display the exact native notice `You've reached the maximum
+length for this conversation, but you can keep talking by starting a new
+chat.` with a `Start new chat` button. This is not a completed reply,
+ordinary transport Retry or a model-suggested handoff. An in-flight observer
+records a specific uncertain capacity error, preserving the original Send's
+immutable request key, prompt SHA and URL lock. An older installed observer
+may instead reach its normal ambiguous response-observation timeout.
+
+The enrolled Worker may inspect an *unpaused* uncertain original Send and
+click only the unique adjacent native UI after recording the original
+request's one-shot `chatgpt.browser_length_start_intent`. An owner pause
+must be respected. When the original Send has ended uncertain, the
+source/runtime upgrade is fully verified and the owner explicitly authorizes
+the native action, use:
+
+```sh
+node dist/cli.js browser-binding-health <mission-id>
+node dist/cli.js browser-start-new-chat <mission-id> --revision <current-revision> --acknowledge-side-effects
+```
+
+The operator command first double-checks the exact original bound tab, last
+submitted user SHA, stable native banner and enabled button. It records one
+immutable intent **before** clicking, then appends its click receipt. If a
+click fails ambiguously, never run the command again to re-click: inspect
+the resulting page and retained evidence. It never clicks Send, credits an
+original answer, clears the old conversation lock, releases an owner pause,
+guesses a new chat URL, or marks the Mission DONE. Determine the actual
+new-chat state and verify pending code/CI/deployment effects before
+authorizing **distinct** further work; an automatically migrated context
+cannot be inferred from the button label.
+
 ## Metered CI and native verification
 
 Before pushing iterative changes to a private repository, inspect its `.github/workflows/` triggers. A push to a watched branch may automatically start a complete metered matrix. Prefer local deterministic checks and the already approved native testing host (for Android, the established device/emulator/Google Play readiness workflow); batch remote pushes at meaningful acceptance boundaries. Run hosted CI when the actual owner acceptance or high-risk release gate needs independent coverage. The native Play readiness check is not a Play submission or a replacement for mandatory independently evidenced remote release CI. Mission Relay's prompt policy cannot disable GitHub workflows in unrelated repositories; optimize those workflows separately when authorized.

@@ -1,6 +1,7 @@
 import type { Page, PlaywriterBrowserConnection } from 'playwriter';
 import {createHash} from 'node:crypto';
 import { normalizeChatGPTUrl } from '../core/chatgpt-handoff.js';
+import {MAX_CONVERSATION_LENGTH_ERROR} from '../core/chat-limits.js';
 
 const ASSISTANT_SELECTOR='[data-message-author-role="assistant"]';
 const USER_SELECTOR='[data-message-author-role="user"]';
@@ -473,10 +474,37 @@ async function inspectAfterSend(page:Page,url:string,
 export const CONNECTION_INTERRUPTED_TEXT='Connection interrupted. Waiting for the complete answer';
 export const MESSAGE_DELIVERY_TIMEOUT_TEXT='Message delivery timed out. Please try again.';
 export const MESSAGE_STREAM_ERROR_TEXT='Error in message stream';
+export const MAX_CONVERSATION_LENGTH_TEXT=
+  "You've reached the maximum length for this conversation, but you can keep talking by starting a new chat.";
 export type ChatGPTLongTaskBanner='interrupted'|'delivery-timeout'|'stream-error';
 export type RetryableChatGPTError='delivery-timeout'|'stream-error';
 export const INTERRUPTED_WAIT_GRACE_MS=120*60_000;
 export const MAX_INTERRUPTED_WAIT_MS=4*60*60_000;
+
+/** A unique platform-owned action adjacent to the exact limit message.
+ * Unlike generated model prose or the sidebar's unrelated New chat control,
+ * this requires the *same* visible UI group and does not click anything. */
+export async function visibleConversationLengthLimit(page:Page):Promise<boolean>{
+  const button=page.getByRole('button',{name:'Start new chat',exact:true});
+  if(await button.count()!==1||!await button.isVisible()||!await button.isEnabled())
+    return false;
+  const group=await button.locator('xpath=../..').innerText({timeout:5000});
+  return group.replace(/\s+/g,' ').trim()===
+    `${MAX_CONVERSATION_LENGTH_TEXT} Start new chat`;
+}
+
+/** One native UI click, never a composer Send. Caller MUST commit the
+ * unique SQLite click intent before the external action. */
+export async function clickConversationLengthStartOnce(page:Page,expectedUrl:string,
+  matchesOriginalPrompt:boolean,beforeClick:()=>boolean):Promise<boolean>{
+  if(!matchesOriginalPrompt||
+    normalizeChatGPTUrl(page.url())!==normalizeChatGPTUrl(expectedUrl)||
+    !await visibleConversationLengthLimit(page))return false;
+  if(!beforeClick())return false;
+  await page.getByRole('button',{name:'Start new chat',exact:true})
+    .click({timeout:10000});
+  return true;
+}
 
 export async function visibleLongTaskBanner(page:Page,answer:string):Promise<ChatGPTLongTaskBanner|null>{
   // A model can discuss these strings in ordinary prose. Only an exact
@@ -563,6 +591,8 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
   const before=await inspectChatPage(page,targetUrl);
   if(!before.composerReady||before.generating)
     throw new Error('ChatGPT composer not ready or another response is generating');
+  if(await visibleConversationLengthLimit(page))
+    throw new Error('ChatGPT conversation already reached maximum length; no Send attempted');
   const composer=await composerLocator(page);
   await composer.fill(prompt.trim(),{timeout:10000});
   const send=await sendLocator(page);
@@ -578,6 +608,8 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
   while(Date.now()<deadline) {
     const current=await inspectAfterSend(page,targetUrl,readState,deadline);
     if(!current){last='';lastTurnId=null;stableSince=Date.now();continue;}
+    if(await visibleConversationLengthLimit(page))
+      throw new Error(MAX_CONVERSATION_LENGTH_ERROR);
     const newestUserMatchesPrompt=current.userCount>0 &&
       matchesSubmittedUserPrompt(await lastVisibleUserPromptSha256(page),prompt);
     const banner=await visibleLongTaskBanner(page,current.lastAssistant);
@@ -723,6 +755,8 @@ export async function submitNewChatTurn(page:Page,prompt:string,
     if(destination) {
       const snapshot=await inspectAfterSend(page,destination,readState,deadline);
       if(!snapshot){last='';stableSince=Date.now();continue;}
+      if(await visibleConversationLengthLimit(page))
+        throw new Error(MAX_CONVERSATION_LENGTH_ERROR);
       const banner=await visibleLongTaskBanner(page,snapshot.lastAssistant);
       const newestUserMatchesPrompt=snapshot.userCount>0 &&
         matchesSubmittedUserPrompt(await lastVisibleUserPromptSha256(page),prompt);

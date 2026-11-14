@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.2.9`.
+- Current source package version: `1.2.10`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -39,6 +39,16 @@
   second composer Send. Owner pauses defer the click; recovery of a stopped
   uncertain request is revision-gated and owner-authorized. A complete answer
   must be independently correlated before PI proceeds.
+- The ChatGPT maximum-conversation-length UI is a distinct terminal capacity
+  condition, **not** a network Retry and **not** an assistant HANDOFF. A
+  verified exact native `Start new chat` control may be clicked **once**
+  only after a durable original-request click intent. The enrolled Worker may
+  do so automatically on an unpaused uncertain original request; an
+  operator-paused request needs explicit revision-gated approval after a
+  verified deployment. Neither path reissues the composer Send, credits the
+  unanswered turn, invents a new linked Chat URL or unlocks the original
+  reservation. A new chat is not proof that task context migrated; continue
+  only after independent new-conversation evidence and recovery authorization.
 - New or repaired production Workers require a **zero-in-flight**, read-only
   restart preflight, atomic maintenance drain, verified private SQLite backup
   and independent restore, byte-checked compiled rollback image, exact fetched

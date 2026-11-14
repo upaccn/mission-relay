@@ -72,6 +72,10 @@ export function checkProjectState(root){
   const ci=read('.github/workflows/ci.yml');
   if(!ci.includes('npm run check')||!ci.includes('npm run privacy-check'))
     errors.push('CI must run source-drift and privacy checks');
+  // A release tag must not rerun six OS/Node matrix jobs after main SHA
+  // already passed them. GitHub release tags are separately attested.
+  if(!/\bpush:\s*\n\s*branches:\s*\[main\]/.test(ci))
+    errors.push('CI must restrict push runs to main rather than release tags');
   return {version:version??null,checkedMarkdownLinks:links,errors};
 }
 

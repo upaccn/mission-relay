@@ -5,7 +5,7 @@ import {createHash} from 'node:crypto';
 import {withReadOnlyDeadline} from './read-only-deadline.js';
 import type {Page} from 'playwriter';
 import type {Store,PiPlan,GoalPromptBinding} from './store.js';
-import {inspectChatPage,lastVisibleUserPromptSha256,matchesSubmittedUserPrompt,chatTabTargetSha256,submitChatTurn,submitNewChatTurn,MAX_BROWSER_TURN_TIMEOUT_MS} from '../plugins/chatgpt-browser.js';
+import {inspectChatPage,lastVisibleUserPromptSha256,matchesSubmittedUserPrompt,chatTabTargetSha256,submitChatTurn,submitNewChatTurn,MAX_BROWSER_TURN_TIMEOUT_MS,visibleConversationLengthLimit} from '../plugins/chatgpt-browser.js';
 import {validateRemoteProjectPath} from './pi-planner.js';
 
 // One Telegram message has a 4096-character limit; leave room for "/build ".
@@ -40,6 +40,8 @@ export async function executeBrowserTurn(input:{
     throw new Error('Browser timeout must be between 10 seconds and 4 hours; no message was reserved');
   const before=await withReadOnlyDeadline(inspectChatPage(page,url));
   if(!before.composerReady||before.generating) throw new Error('ChatGPT tab is not ready for a new turn');
+  if(await withReadOnlyDeadline(visibleConversationLengthLimit(page)))
+    throw new Error('ChatGPT conversation already reached maximum length; no new request reserved');
   if(input.expectedSource&&(
     createHash('sha256').update(before.lastAssistant).digest('hex')!==input.expectedSource.assistantSha256||
     await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))!==input.expectedSource.promptSha256))

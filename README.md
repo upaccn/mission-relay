@@ -71,6 +71,14 @@ node dist/cli.js channel-status
 
 Mission Relay retains the original request if ChatGPT delivery is ambiguous; it never submits a fresh copy simply because a response timed out. A Playwriter tab count of zero means no tabs are currently attached to the extension, not necessarily that Chrome tabs have closed.
 
+When ChatGPT shows its maximum-conversation-length notice, the enrolled Worker
+can recognize the exact native `Start new chat` button and record a one-shot
+UI click (separate from transport Retry). Owner-paused requests instead need
+explicit operator approval through `browser-start-new-chat` after a
+verified upgrade. The original unanswered Send remains uncredited and locked;
+opening the native new-chat UI alone is **not** verified context migration
+or permission to repeat a potentially executed work package.
+
 For a cooperatively paused request that ended in an uncertain original ChatGPT delivery, the operator can use the revision-gated `browser-resume-pending-retry` command **after** an audited maintenance upgrade. It only releases the paused original message for inspection by the enrolled Worker; any UI Retry consumes the same durable one-shot budget and never replays a composer Send.
 
 For Windows scheduled-task deployment, SQLite maintenance, backup and rollback, see [Operations](docs/operations.md). For CI and software release qualification, run:

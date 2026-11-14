@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.2.10 — 2026-11-14
+
+- Detect ChatGPT's actual maximum-conversation-length banner and unique
+  adjacent native `Start new chat` button. Treat this as terminal UI capacity
+  rather than a response, ordinary connection interruption or Retry banner.
+- Add original-request, SQLite-backed one-shot `Start new chat` click intent
+  and audit. Normal enrolled-Worker recovery may click after an unpaused,
+  settled-uncertain original Send; for an owner-paused request, the operator
+  can use `browser-start-new-chat` after the guarded GMK upgrade. This
+  command checks the exact tab, original user SHA and stable native UI twice
+  before persisting intent, then clicks at most once.
+- Preserve original uncredited requests, scope approvals, PI evidence,
+  conversation lock and historical audit. Do not turn native UI navigation
+  into a fabricated complete answer, silently replay a composer Send or
+  claim automatic cross-chat context migration without independent evidence.
+- Add positive and negative synthetic browser/SQLite recovery tests.
+- Restrict the existing public CI matrix to `main` Push and Pull Requests,
+  avoiding a redundant six-job run when an already qualified release tag
+  is published.
+
 ## 1.2.9 — 2026-11-14
 
 - Remove an unrelated third-party browser-extension archive from the source

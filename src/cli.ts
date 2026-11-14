@@ -31,7 +31,7 @@ import { stateHome } from './core/paths.js';
 import {verifiedRuntimeProvenance} from './core/runtime-provenance.js';
 import { renderChatGPTHandoff, normalizeChatGPTUrl } from './core/chatgpt-handoff.js';
 import {setTelegramChatAnchor} from './core/chat-anchor.js';
-import { connectChatPage, inspectChatPage, matchesSubmittedUserPrompt, matchesReservedPromptHash, lastVisibleUserPromptSha256, listConnectedChatCandidates, prepareNewChatOrigin, submitNewChatTurn, withBrowserSession } from './plugins/chatgpt-browser.js';
+import { connectChatPage, inspectChatPage, matchesSubmittedUserPrompt, matchesReservedPromptHash, lastVisibleUserPromptSha256, listConnectedChatCandidates, prepareNewChatOrigin, submitNewChatTurn, withBrowserSession,visibleConversationLengthLimit,clickConversationLengthStartOnce } from './plugins/chatgpt-browser.js';
 import { executeBrowserTurn, driveChatConversation, browserDecision, exactReservedRolloverPrompt, browserRolloverPiPlan } from './core/browser-controller.js';
 import {SshPiPlanner,validatePictlRemoteConfig,validateRemoteProjectPath} from './core/pi-planner.js';
 import {approveBuildRepository,revokeBuildRepository,approvedBuildRepositories} from './core/build-scopes.js';
@@ -165,6 +165,9 @@ Commands:
          --acknowledge-side-effects  Read-only inspect old/new chats, then atomic observed recovery
   browser-resume-pending-retry <id> --revision <n> --acknowledge-side-effects
          Release an owner-paused, uncertain original existing/new-chat message for ONE enrolled-Worker
+  browser-start-new-chat <id> --revision <n> --acknowledge-side-effects
+         Click the exact native maximum-length Start new chat button ONCE after maintenance;
+         preserve the uncredited original Send and its lock; never replay the composer
          existing-message UI Retry; never perform Retry or composer Send here
   browser-retry-pre-send-rollover <id> --revision <n> --acknowledge-side-effects
          ONE original-reservation first Send only after the exact old page.goto
@@ -888,6 +891,43 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       result={missionId:id,revision:m.version,state:m.state,
         stopRequested:m.stopRequested,
         note:'Original request is preserved; only the enrolled Worker may inspect and perform one same-message UI Retry. No Send or Retry was executed by this command.'};
+    }
+    else if(command==='browser-start-new-chat'&&id){
+      const f=flags(rest);
+      if(f['--acknowledge-side-effects']?.[0]!=='true')
+        throw new Error('Explicit --acknowledge-side-effects required to click the native UI');
+      const revision=Number(option(f,'revision'));
+      if(!Number.isSafeInteger(revision)||revision<0)
+        throw new Error('Valid original Mission revision required');
+      const mission=store.get(id),record=store.chatBrowserTurn(id);
+      const url=store.chatLink(id),browserId=store.chatBrowserBinding(id);
+      if(mission.version!==revision||!mission.stopRequested||
+        mission.state!=='NEEDS_RECONCILIATION'||!record||
+        record.status!=='uncertain'||record.newConversation===true||
+        !url||!browserId)
+        throw new Error('Native new-chat recovery needs the original paused, uncertain existing-Chat request');
+      const session=await withReadOnlyDeadline(connectChatPage(url,{browserId}),30_000,
+        late=>late.close());
+      result=await withBrowserSession(session,async page=>{
+        const check=async()=>{
+          const current=await withReadOnlyDeadline(inspectChatPage(page,url));
+          return !current.generating&&current.composerReady&&
+            await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))===record.promptSha256&&
+            await withReadOnlyDeadline(visibleConversationLengthLimit(page));
+        };
+        if(!await check())throw new Error('Exact native maximum-length UI or original user prompt not verified');
+        await new Promise(resolve=>setTimeout(resolve,1500));
+        if(!await check())throw new Error('Maximum-length UI or original request changed during stability check');
+        const clicked=await clickConversationLengthStartOnce(page,url,true,
+          ()=>store.claimConversationLengthStartIntent(
+            id,revision,record.requestKey,record.promptSha256,true));
+        if(!clicked)throw new Error('Original native Start new chat button was unavailable or intent already used; do not click twice');
+        store.recordConversationLengthStartClicked(id,record.requestKey,record.promptSha256);
+        return {missionId:id,originalRequestKey:record.requestKey,
+          nativeStartClicked:true,composerSend:false,originalAnswerCredited:false,
+          originalReservationPreserved:true,
+          note:'Native Start new chat was clicked once. Original uncredited Send remains uncertain and locked; new-chat context and any continued work require separate verified settlement, never an automatic duplicate Send.'};
+      });
     }
     else if (command === 'browser-recover-rollover' && id) {
       const f=flags(rest);

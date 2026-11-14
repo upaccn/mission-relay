@@ -5,7 +5,7 @@ import { dirname } from 'node:path';
 import { hostname } from 'node:os';
 import type { CreateMission, Mission, MissionEvent, MissionState, VerificationCheck } from './types.js';
 import { normalizeChatGPTUrl } from './chatgpt-handoff.js';
-import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
+import {MAX_RELAY_CHAT_TURNS,MAX_CONVERSATION_LENGTH_ERROR} from './chat-limits.js';
 import {missionTurnsRemaining,missionTurnLimitReached} from './mission-turns.js';
 import {isApprovedBuildRepository,declaredSourceMatchesScope,hasIsolatedRepositoryGrant} from './build-scopes.js';
 import type {RuntimeProvenance} from './runtime-provenance.js';
@@ -840,6 +840,70 @@ export class Store {
         (e.payload as {requestKey?:string}).requestKey===requestKey))return;
       this.event(id,'chatgpt.browser_delivery_retry_clicked',{
         requestKey,mode:'same-message-ui-retry',sendAgain:false});
+    });
+  }
+  /** Native ChatGPT 'Start new chat' is a DIFFERENT side effect from
+   * delivery Retry and never replays an original composer Send. This only
+   * authorizes the one visible platform button after the original request
+   * has ended uncertain; its incomplete result is never credited as a turn.
+   * An explicitly paused request requires an operator-acknowledged call.
+   * Record intent BEFORE click, preserving original lock and provenance. */
+  claimConversationLengthStartIntent(id:string,revision:number,
+    requestKey:string,promptSha256:string,allowPaused=false):boolean {
+    return this.transaction(()=>{
+      const m=this.get(id),r=this.chatBrowserTurn(id);
+      const link=this.chatLink(id),plan=this.piPlan(id);
+      if(m.version!==revision||this.channelDrainRequested('telegram')||
+        m.state!=='NEEDS_RECONCILIATION'||m.ownerPid!==null||
+        (allowPaused&&!m.stopRequested)||
+        (m.stopRequested&&!allowPaused)||
+        !r||r.status!=='uncertain'||r.newConversation===true||
+        r.requestKey!==requestKey||r.promptSha256!==promptSha256||
+        r.error!==m.lastError||
+        ![MAX_CONVERSATION_LENGTH_ERROR,
+          'ChatGPT response observation timed out; submission outcome is ambiguous'].includes(m.lastError??'')||
+        !link||r.urlHash!==createHash('sha256').update(link).digest('hex')||
+        !this.chatBrowserBinding(id)||
+        this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
+        m.turnCount<1||plan?.round!==m.turnCount||
+        !['NEXT','HANDOFF'].includes(plan.action)||
+        !this.events(id).some(e=>
+          ['chatgpt.browser_observed','chatgpt.browser_turn_recovered',
+           'chatgpt.browser_rollover_recovered'].includes(e.type)&&
+          (e.payload as {round?:number;assistantSha256?:string}).round===m.turnCount&&
+          (e.payload as {assistantSha256?:string}).assistantSha256===plan.responseSha256)||
+        this.pendingPiOwnerDirectives(id).length>0||
+        !this.goalContinuationEligible(id)||
+        (m.sandbox==='workspace-write'&&
+          (!hasIsolatedRepositoryGrant(this,m.workspace)||
+           !declaredSourceMatchesScope(m.goal,m.workspace))))
+        throw new Error('Start new chat requires the original stopped, verified PI continuation and unchanged repository grant');
+      this.requireUnspentBrowserReservation(id,r);
+      const key=`chatgpt.browser.length_start.${id}.${requestKey}`;
+      if(this.getMeta(key)!==null)return false;
+      this.setMeta(key,JSON.stringify({
+        requestKey,promptSha256,at:new Date().toISOString(),
+        ownerAcknowledgedPause:allowPaused&&m.stopRequested,
+      }));
+      this.event(id,'chatgpt.browser_length_start_intent',{
+        requestKey,promptSha256,round:m.turnCount+1,
+        nativeUiOnly:true,composerSend:false,originalAnswerCredited:false});
+      return true;
+    });
+  }
+  recordConversationLengthStartClicked(id:string,requestKey:string,promptSha256:string):void {
+    this.transaction(()=>{
+      const raw=this.getMeta(`chatgpt.browser.length_start.${id}.${requestKey}`);
+      let saved:{requestKey?:string;promptSha256?:string}|null=null;
+      try{saved=raw?JSON.parse(raw) as {requestKey?:string;promptSha256?:string}:null;}
+      catch{/* fail closed */ }
+      if(saved?.requestKey!==requestKey||saved.promptSha256!==promptSha256)
+        throw new Error('Start new chat click lacks its original one-shot intent');
+      if(this.events(id).some(e=>e.type==='chatgpt.browser_length_start_clicked'&&
+        (e.payload as {requestKey?:string}).requestKey===requestKey))return;
+      this.event(id,'chatgpt.browser_length_start_clicked',{
+        requestKey,originalAnswerCredited:false,composerSend:false,
+        originalRequestPreserved:true});
     });
   }
   /** A dead local Send owner may have submitted its reserved request before

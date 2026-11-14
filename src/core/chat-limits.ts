@@ -4,3 +4,7 @@
  * conversation. Keep controller, audit, and operator status in sync.
  */
 export const MAX_RELAY_CHAT_TURNS=10;
+/** Terminal ChatGPT UI capacity is different from a transient transport
+ * error or a model-authored HANDOFF response. Never credit its failed Send. */
+export const MAX_CONVERSATION_LENGTH_ERROR=
+  'ChatGPT conversation reached its maximum length; original submitted request has no verified final answer';

@@ -7,7 +7,9 @@ import { Store,PI_SUCCESSOR_CHECKPOINT_MISMATCH,PAUSED_DELIVERY_RETRY_ERROR } fr
 import type {PreflightResult} from '../core/executor-plugins.js';
 import { renderChatGPTHandoff } from '../core/chatgpt-handoff.js';
 import {connectChatPage,inspectChatPage,lastVisibleUserPromptSha256,listConnectedChatCandidates,
-  clickDeliveryRetryOnce,visibleLongTaskBanner,type BrowserSession} from './chatgpt-browser.js';
+  clickDeliveryRetryOnce,visibleLongTaskBanner,visibleConversationLengthLimit,
+  clickConversationLengthStartOnce,type BrowserSession} from './chatgpt-browser.js';
+import {MAX_CONVERSATION_LENGTH_ERROR} from '../core/chat-limits.js';
 import {adoptConnectedConversation} from '../core/chat-adoption.js';
 import {watchedBrowser,nextBrowserWatchCandidate,acknowledgeBrowserWatchCandidate,
   orderedBrowserWatchCandidates,recordBrowserWatchAttempt,
@@ -492,7 +494,8 @@ export class TelegramBridge {
     const candidate=this.engine.list().find(m=>{
       const r=this.store.chatBrowserTurn(m.id);
       return m.state==='NEEDS_RECONCILIATION'&&!m.stopRequested&&
-        (((m.lastError==='ChatGPT response observation timed out; submission outcome is ambiguous'||
+        ((([MAX_CONVERSATION_LENGTH_ERROR,
+             'ChatGPT response observation timed out; submission outcome is ambiguous'].includes(m.lastError??'')||
            (m.lastError===PAUSED_DELIVERY_RETRY_ERROR&&r&&
              this.store.events(m.id).some(e=>
                e.type==='chatgpt.browser_existing_chat_retry_authorized'&&
@@ -544,6 +547,23 @@ export class TelegramBridge {
       const snapshot=await withReadOnlyDeadline(inspectChatPage(page,destination));
       if(!snapshot.composerReady||
         await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))!==r.promptSha256)return;
+      // Capacity exhaustion is terminal for THIS Chat, not an existing-message
+      // transport Retry. When not owner-paused, click the exact native UI
+      // only after a durable one-shot intent; do not claim the lost answer,
+      // release its lock, submit a new composer message or switch Goals.
+      if(scopeConsistent&&r.newConversation!==true&&!candidate.stopRequested&&
+        !snapshot.generating&&
+        await withReadOnlyDeadline(visibleConversationLengthLimit(page))) {
+        const clicked=await clickConversationLengthStartOnce(page,destination,true,
+          ()=>this.store.claimConversationLengthStartIntent(candidate.id,
+            candidate.version,r.requestKey,r.promptSha256));
+        if(clicked){
+          this.store.recordConversationLengthStartClicked(candidate.id,
+            r.requestKey,r.promptSha256);
+          console.warn('ChatGPT conversation exhausted; native Start new chat clicked once, original Send uncredited and preserved');
+        }
+        return;
+      }
       const already=this.store.hasDeliveryRetryIntent(candidate.id,r.requestKey,r.promptSha256);
       const banner=await withReadOnlyDeadline(visibleLongTaskBanner(page,snapshot.lastAssistant));
       if(scopeConsistent&&!already && !snapshot.generating &&

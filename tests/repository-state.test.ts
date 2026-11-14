@@ -19,7 +19,7 @@ function fixture(run:(root:string)=>void){
     writeFileSync(join(dir,'README.md'),'[Architecture](docs/architecture.md)\n');
     writeFileSync(join(dir,'docs','architecture.md'),'# Architecture\n');
     writeFileSync(join(dir,'.github','workflows','ci.yml'),
-      '- run: npm run check\n- run: npm run privacy-check\n');
+      'on:\n  push:\n    branches: [main]\n- run: npm run check\n- run: npm run privacy-check\n');
     for(const name of ['AGENTS.md','CONTRIBUTING.md','SECURITY.md'])
       writeFileSync(join(dir,name),'# '+name+'\n');
     run(dir);
@@ -70,4 +70,10 @@ test('source state gate refuses skipped CI and accepts ordinary build output',()
   assert.deepEqual(checkProjectState(dir).errors,[]);
   writeFileSync(join(dir,'.github','workflows','ci.yml'),'jobs: {}\n');
   assert.match(checkProjectState(dir).errors.join('\n'),/CI must run/);
+}));
+
+test('source state gate rejects tag-triggered duplicate full CI matrices',()=>fixture(dir=>{
+  writeFileSync(join(dir,'.github','workflows','ci.yml'),
+    'on:\n  push:\n  pull_request:\n- run: npm run check\n- run: npm run privacy-check\n');
+  assert.match(checkProjectState(dir).errors.join('\n'),/restrict push runs to main/);
 }));
