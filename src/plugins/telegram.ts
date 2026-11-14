@@ -8,7 +8,9 @@ import type {PreflightResult} from '../core/executor-plugins.js';
 import { renderChatGPTHandoff } from '../core/chatgpt-handoff.js';
 import {connectChatPage,inspectChatPage,lastVisibleUserPromptSha256,listConnectedChatCandidates,
   clickDeliveryRetryOnce,visibleLongTaskBanner,visibleConversationLengthLimit,
-  clickConversationLengthStartOnce,type BrowserSession} from './chatgpt-browser.js';
+  clickConversationLengthStartOnce,connectNativePrefilledDraft,
+  nativePrefilledDraftSha256,clickNativePrefilledSendOnce,
+  type BrowserSession} from './chatgpt-browser.js';
 import {MAX_CONVERSATION_LENGTH_ERROR} from '../core/chat-limits.js';
 import {adoptConnectedConversation} from '../core/chat-adoption.js';
 import {watchedBrowser,nextBrowserWatchCandidate,acknowledgeBrowserWatchCandidate,
@@ -326,6 +328,7 @@ export class TelegramBridge {
     }),
     private readonly watchCandidates:(browserId:string)=>Promise<ConnectedChatCandidate[]>=listConnectedChatCandidates,
     private readonly startupProvenance:RuntimeProvenance|null=null,
+    private readonly nativeDraftConnector:(browserId:string,promptSha256:string)=>Promise<BrowserSession>=connectNativePrefilledDraft,
   ) {
     if(!Number.isSafeInteger(userId)||userId<=0||!Number.isSafeInteger(chatId)||chatId<=0)
       throw new Error('Set numeric Telegram owner user and private chat IDs');
@@ -409,6 +412,10 @@ export class TelegramBridge {
       if(!this.store.channelDrainRequested(this.source))
         await this.recoverUncertainDeliveryOnce();
       if(!this.store.channelDrainRequested(this.source))
+        await this.recoverNativePrefilledDraftOnce();
+      if(!this.store.channelDrainRequested(this.source))
+        await this.recoverNativePrefilledReplyOnce();
+      if(!this.store.channelDrainRequested(this.source))
         await this.recoverObservedPiCheckpoint();
       while(!signal?.aborted) {
         if(this.store.channelDrainRequested(this.source)) {
@@ -446,6 +453,10 @@ export class TelegramBridge {
           // CLI. Only this leased foreground controller drives PI/browser.
           if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
             await this.recoverUncertainDeliveryOnce();
+          if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
+            await this.recoverNativePrefilledDraftOnce();
+          if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
+            await this.recoverNativePrefilledReplyOnce();
           if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
             await this.recoverObservedPiCheckpoint();
           if(!this.activeTask&&!this.store.channelDrainRequested(this.source)&&
@@ -624,6 +635,123 @@ export class TelegramBridge {
       console.error(`Delivery Retry recovery ${candidate.id}: ${error instanceof Error?error.message:'read failed'}`);
     }finally{
       if(session)try{await session.close();}catch{/* Preserve original state. */}
+    }
+  }
+
+  /** For future *unpaused* capacity recovery, the single enrolled Worker
+   * follows its own verified native Start-new-chat click with one Send of
+   * the exact carried draft. A cooperative owner pause ALWAYS wins; an
+   * already-paused request needs the explicit operator CLI after deployment.
+   * The original request remains uncertain until independent reply proof. */
+  async recoverNativePrefilledDraftOnce():Promise<void> {
+    if(this.activeMission||this.activeTask||this.store.channelDrainRequested(this.source))return;
+    const candidate=this.engine.list().find(m=>{
+      if(m.state!=='NEEDS_RECONCILIATION'||m.stopRequested||
+        this.store.getMeta(`pi.autopilot.enabled.${m.id}`)!=='1')return false;
+      const r=this.store.chatBrowserTurn(m.id);
+      if(r?.status!=='uncertain'||r.newConversation===true)return false;
+      const events=this.store.events(m.id);
+      return events.some(e=>e.type==='chatgpt.browser_length_start_clicked'&&
+        (e.payload as {requestKey?:string}).requestKey===r.requestKey)&&
+        !events.some(e=>e.type==='chatgpt.browser_native_prefilled_send_intent'&&
+          (e.payload as {requestKey?:string}).requestKey===r.requestKey);
+    });
+    if(!candidate)return;
+    const receipt=this.store.chatBrowserTurn(candidate.id)!;
+    const browserId=this.store.chatBrowserBinding(candidate.id);
+    if(!browserId)return;
+    let session:BrowserSession|undefined;
+    try {
+      session=await withReadOnlyDeadline(
+        this.nativeDraftConnector(browserId,receipt.promptSha256),30_000,
+        late=>late.close());
+      const page=session.page;
+      if(await withReadOnlyDeadline(nativePrefilledDraftSha256(page))!==receipt.promptSha256)return;
+      await new Promise(resolve=>setTimeout(resolve,1500));
+      if(await withReadOnlyDeadline(nativePrefilledDraftSha256(page))!==receipt.promptSha256)return;
+      const clicked=await clickNativePrefilledSendOnce(page,receipt.promptSha256,
+        ()=>this.store.claimNativePrefilledSendIntent(candidate.id,candidate.version,
+          receipt.requestKey,receipt.promptSha256,true),
+        ()=>this.store.recordNativePrefilledSendClicked(candidate.id,
+          receipt.requestKey,receipt.promptSha256));
+      if(clicked)console.warn('Native maximum-length new Chat submitted its exact carried draft once; original request remains uncertain');
+    }catch(error){
+      console.error(`Native draft recovery deferred: ${error instanceof Error?error.message:'read unavailable'}`);
+    }finally{
+      if(session)try{await session.close();}catch{/* Original intent remains durable. */}
+    }
+  }
+
+  /** After the native draft's FIRST Send, independently
+   * observe the exact original prompt in one distinct direct Chat, then
+   * settle the *original* uncertain reservation atomically. The Worker
+   * never clicks Send here. A stored click event alone is not a reply. */
+  async recoverNativePrefilledReplyOnce():Promise<void> {
+    if(this.activeMission||this.activeTask||this.store.channelDrainRequested(this.source))return;
+    const candidate=this.engine.list().find(m=>{
+      if(m.state!=='NEEDS_RECONCILIATION'||
+        this.store.getMeta(`pi.autopilot.enabled.${m.id}`)!=='1')return false;
+      const r=this.store.chatBrowserTurn(m.id);
+      return r?.status==='uncertain'&&r.newConversation!==true&&
+        this.store.events(m.id).some(e=>
+          e.type==='chatgpt.browser_native_prefilled_send_intent'&&
+          (e.payload as {requestKey?:string;promptSha256?:string}).requestKey===r.requestKey&&
+          (e.payload as {promptSha256?:string}).promptSha256===r.promptSha256);
+    });
+    if(!candidate)return;
+    const record=this.store.chatBrowserTurn(candidate.id)!;
+    const source=this.store.chatLink(candidate.id);
+    const browserId=this.store.chatBrowserBinding(candidate.id);
+    if(!source||!browserId)return;
+    let session:BrowserSession|undefined;
+    try{
+      const matched=(await withReadOnlyDeadline(
+        this.watchCandidates(browserId),30_000))
+        .filter(c=>c.url!==source&&
+          c.lastUserSha256===record.promptSha256&&!c.duplicate);
+      if(matched.length!==1)return;
+      const destination=matched[0]!.url;
+      if(this.engine.list().some(m=>m.id!==candidate.id&&
+        this.store.chatLink(m.id)===destination))return;
+      session=await withReadOnlyDeadline(this.browserConnector(destination,{browserId}),
+        30_000,late=>late.close());
+      const page=session.page;
+      const read=async()=>{
+        const snapshot=await withReadOnlyDeadline(inspectChatPage(page,destination));
+        const user=await withReadOnlyDeadline(lastVisibleUserPromptSha256(page));
+        const banner=await withReadOnlyDeadline(visibleLongTaskBanner(page,snapshot.lastAssistant));
+        if(snapshot.generating||!snapshot.composerReady||
+          user!==record.promptSha256||banner!==null||
+          !/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]\s*$/.test(snapshot.lastAssistant.trim()))
+          return null;
+        return snapshot.lastAssistant;
+      };
+      const first=await read();
+      if(!first)return;
+      await new Promise(resolve=>setTimeout(resolve,3000));
+      const second=await read();
+      if(second!==first)return;
+      const recovered=this.store.recoverObservedBrowserRollover(
+        candidate.id,candidate.version,{
+          requestPromptSha256:record.promptSha256,newChatUrl:destination,
+          assistantSha256:createHash('sha256').update(second).digest('hex'),
+          summary:second,
+        });
+      console.warn('Native prefilled new-chat response verified and original uncertain request atomically migrated; PI review required');
+      // The owner explicitly requested recovery/continuation after the
+      // guarded deployment, but a fresh verification gate must still run
+      // before PI may perform any *later* Send.
+      if(recovered.stopRequested){
+        try{
+          this.store.resumePausedPiCheckpoint(candidate.id,recovered.version);
+        }catch{
+          console.warn('Native reply recovered but PI auto-resume gate denied; Mission remains safely paused');
+        }
+      }
+    }catch(error){
+      console.error(`Native prefilled reply inspection deferred: ${error instanceof Error?error.message:'browser read unavailable'}`);
+    }finally{
+      if(session)try{await session.close();}catch{/* Keep stored answer evidence. */}
     }
   }
 

@@ -353,19 +353,19 @@ test('PI ledger exposes pending PI review and duplicate reservations as failures
   }finally{f.cleanup();}
 });
 
-test('PI ledger independently flags an eleventh Send in one conversation even when PI decisions are hash-matched',()=>{
+test('PI ledger independently flags a ninth Send in one conversation even when PI decisions are hash-matched',()=>{
   const f=fixture();try{
-    for(let i=1;i<=11;i++)observe(f.store,f.id,i,i===11?second:undefined);
-    // The live reservation gate prevents this illegal eleventh Send. Corrupt
+    for(let i=1;i<=9;i++)observe(f.store,f.id,i,i===9?second:undefined);
+    // The live reservation gate prevents this illegal ninth same-chat Send. Corrupt
     // an isolated test ledger instead: erase the migration event without
     // changing the observed answer, PI SHA or recorded Send counts.
     const migration=f.store.events(f.id).find(e=>e.type==='chatgpt.browser_migrated')!;
     f.store.db.prepare('DELETE FROM events WHERE id=?').run(migration.id);
     const report=inspectPiEvidence(f.store,f.id);
-    assert.equal(report.decisionsVerified,11);
+    assert.equal(report.decisionsVerified,9);
     assert.equal(report.ledgerConsistent,false);
     assert.equal(report.chatSegments,1);
-    assert.equal(report.maxObservedTurnsInOneChat,11);
+    assert.equal(report.maxObservedTurnsInOneChat,9);
     assert.ok(report.violations.includes('chat_send_limit_exceeded'));
     assert.equal(report.businessAcceptanceVerified,false);
   }finally{f.cleanup();}

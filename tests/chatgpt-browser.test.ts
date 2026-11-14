@@ -448,41 +448,41 @@ test('existing-chat Send refuses a changed latest user prompt or answer before r
   }
 });
 
-test('SQLite refuses an eleventh same-chat Send even after restart and only credits a verified new conversation',()=>{
+test('SQLite refuses a ninth same-chat Send even after restart and only credits a verified new conversation',()=>{
   const dir=mkdtempSync(join(tmpdir(),'relay-chat-limit-'));
   let store=new Store(join(dir,'state.sqlite'));
   try {
-    const m=store.create({goal:'Exercise ten-turn boundary',acceptance:['No eleventh same-chat Send'],
+    const m=store.create({goal:'Exercise eight-turn boundary',acceptance:['No ninth same-chat Send'],
       workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:14,requestKey:'chat-ceiling'});
     const linked=store.linkChat(m.id,URL,m.version).mission;
-    for(let round=1;round<=10;round++){
+    for(let round=1;round<=8;round++){
       const key=`limit-${round}`;
       store.reserveChatBrowserTurn(linked.id,store.get(linked.id).version,key,SHA);
       store.finishChatBrowserTurn(linked.id,key,{kind:'observed',
         assistantSha256:SHA,summary:'Stable complete answer'});
     }
-    assert.equal(store.piChatObservedTurns(linked.id),10);
+    assert.equal(store.piChatObservedTurns(linked.id),8);
     const eventsBefore=store.maxEventId();
     assert.throws(()=>store.reserveChatBrowserTurn(linked.id,store.get(linked.id).version,
-      'limit-eleven-old-chat',SHA),/already has 10 observed Relay Sends/);
+      'limit-nine-old-chat',SHA),/already has 8 observed Relay Sends/);
     assert.equal(store.maxEventId(),eventsBefore,'Rejected Send must not create a reservation');
     store.close();
     store=new Store(join(dir,'state.sqlite'));
     assert.throws(()=>store.reserveChatBrowserTurn(linked.id,store.get(linked.id).version,
-      'limit-eleven-after-restart',SHA),/already has 10 observed Relay Sends/);
+      'limit-nine-after-restart',SHA),/already has 8 observed Relay Sends/);
     store.reserveChatBrowserTurn(linked.id,store.get(linked.id).version,
-      'limit-eleven-new-chat',SHA,{newConversation:true});
+      'limit-nine-new-chat',SHA,{newConversation:true});
     assert.equal(store.chatBrowserTurn(linked.id)?.newConversation,true);
-    assert.throws(()=>store.finishChatBrowserTurn(linked.id,'limit-eleven-new-chat',
+    assert.throws(()=>store.finishChatBrowserTurn(linked.id,'limit-nine-new-chat',
       {kind:'observed',assistantSha256:SHA,summary:'No destination'}),
       /cannot be credited without a distinct observed ChatGPT URL/);
     assert.equal(store.chatBrowserTurn(linked.id)?.status,'reserved');
-    const finished=store.finishChatBrowserTurn(linked.id,'limit-eleven-new-chat',
+    const finished=store.finishChatBrowserTurn(linked.id,'limit-nine-new-chat',
       {kind:'observed',assistantSha256:SHA,summary:'New destination observed',
         newChatUrl:'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174001'});
-    assert.equal(finished.turnCount,11);
+    assert.equal(finished.turnCount,9);
     assert.equal(store.piChatObservedTurns(linked.id),1);
-    assert.equal(store.events(linked.id).filter(e=>e.type==='chatgpt.browser_reserved').length,11);
+    assert.equal(store.events(linked.id).filter(e=>e.type==='chatgpt.browser_reserved').length,9);
   }finally{store.close();rmSync(dir,{recursive:true,force:true});}
 });
 
@@ -1527,17 +1527,17 @@ test('manual NEXT and HANDOFF refuse a changed source before a second Send or ne
   }
 });
 
-test('separate manual browser-drive batches auto-handoff after ten verified sends without an eleventh old-chat Send',async()=>{
+test('separate manual browser-drive batches auto-handoff after eight verified sends without a ninth old-chat Send',async()=>{
   const f=fixture();try{
-    const base=f.store.create({goal:'Ten-turn browser load bound',
+    const base=f.store.create({goal:'Eight-turn browser load bound',
       acceptance:['Keep long tasks in small chats'],workspace:'',
       sandbox:'read-only',mode:'supervised',maxTurns:13,checks:[],requestKey:'manual-ten-limit'});
     const linked=f.store.linkChat(base.id,URL,base.version).mission;
     const page=new SourceWithNewTab();
     await assert.rejects(driveChatConversation({store:f.store,missionId:linked.id,
-      revision:linked.version,requestPrefix:'manual-over-limit',turns:11,
+      revision:linked.version,requestPrefix:'manual-over-limit',turns:9,
       page:page as unknown as Page,url:URL,timeoutMs:12000}),
-    /Drive turns must be 1–10/);
+    /Drive turns must be 1–8/);
     assert.equal(page.sends,0);
     const originalLocator=page.locator.bind(page);
     page.locator=(selector:string)=>{
@@ -1550,7 +1550,7 @@ test('separate manual browser-drive batches auto-handoff after ten verified send
       changing.first=()=>changing;
       return changing;
     };
-    for(let i=1;i<=10;i++){
+    for(let i=1;i<=8;i++){
       const result=await driveChatConversation({store:f.store,missionId:linked.id,
         revision:f.store.get(linked.id).version,requestPrefix:`manual-five-${i}`,turns:1,
         page:page as unknown as Page,url:URL,timeoutMs:12000});
@@ -1558,28 +1558,28 @@ test('separate manual browser-drive batches auto-handoff after ten verified send
       assert.equal(page.sends,i);
       assert.equal(page.created,0);
     }
-    assert.equal(f.store.piChatObservedTurns(linked.id),10);
-    page.reply='A human changed the old answer after the tenth verified Send';
+    assert.equal(f.store.piChatObservedTurns(linked.id),8);
+    page.reply='A human changed the old answer after the eighth verified Send';
     await assert.rejects(driveChatConversation({store:f.store,missionId:linked.id,
       revision:f.store.get(linked.id).version,requestPrefix:'manual-five-modified',turns:1,
       page:page as unknown as Page,url:URL,timeoutMs:12000}),
     /Chat-limit rollover refused: last visible ChatGPT exchange changed/);
-    assert.equal(page.sends,10);
+    assert.equal(page.sends,8);
     assert.equal(page.created,0);
     assert.equal(f.store.chatBrowserTurn(linked.id)?.status,'observed');
-    page.reply='Verified item 10\n[MISSION_RELAY:NEXT]';
+    page.reply='Verified item 8\n[MISSION_RELAY:NEXT]';
     page.destination.reply='Continued in the new chat with prior context.\n[MISSION_RELAY:DONE]';
     const next=await driveChatConversation({store:f.store,missionId:linked.id,
       revision:f.store.get(linked.id).version,requestPrefix:'manual-five-six',turns:1,
       page:page as unknown as Page,url:URL,timeoutMs:12000});
     assert.equal(next.turnsObserved.length,1);
-    assert.equal(page.sends,10,'No eleventh Send in the original long chat');
+    assert.equal(page.sends,8,'No ninth Send in the original long chat');
     assert.equal(page.created,1);
     assert.equal(page.destination.sends,1);
     assert.equal(f.store.chatLink(linked.id),NEXT_CHAT_URL);
     assert.equal(f.store.piChatObservedTurns(linked.id),1);
     assert.equal(f.store.events(linked.id).filter(e=>e.type==='chatgpt.browser_migrated').length,1);
-    assert.match(page.destination.prompt,/Verified item 10/);
+    assert.match(page.destination.prompt,/Verified item 8/);
   }finally{f.cleanup();}
 });
 

@@ -52,15 +52,15 @@ function fixture(){
     close:()=>{store.close();rmSync(dir,{recursive:true,force:true});}};
 }
 
-test('the 10→11 controller ledger is consistent, private, read-only and not an independent PASS',()=>{
+test('the 8→9 controller ledger is consistent, private, read-only and not an independent PASS',()=>{
   const f=fixture();try{
-    for(let n=1;n<=21;n++)f.observe(n,n===1||n===11||n===21);
+    for(let n=1;n<=17;n++)f.observe(n,n===1||n===9||n===17);
     const prior=f.store.maxEventId();
     const report=inspectGoalChromeTenToElevenHistory(f.store,f.goalId);
     assert.equal(report.historicalRotations,2);
     assert.equal(report.custodyConsistent,true,
       JSON.stringify(report.rotations.map(x=>x.violations)));
-    assert.deepEqual(report.rotations.map(x=>[x.fromRound,x.toRound]),[[10,11],[20,21]]);
+    assert.deepEqual(report.rotations.map(x=>[x.fromRound,x.toRound]),[[8,9],[16,17]]);
     assert.ok(report.rotations.every(x=>x.sourceTargetFingerprintRecorded&&
       x.destinationTargetFingerprintRecorded&&!x.independentlyVerifiedPhysicalTab));
     assert.equal(report.releaseGateState,'PENDING');
@@ -76,7 +76,7 @@ test('the 10→11 controller ledger is consistent, private, read-only and not an
   }finally{f.close();}
 });
 
-test('changing the original request, answer, migration target or PI decision breaks 10→11 custody',()=>{
+test('changing the original request, answer, migration target or PI decision breaks 8→9 custody',()=>{
   const scenarios=[
     {type:'chatgpt.browser_reserved',change:(p:Record<string,unknown>)=>({...p,promptSha256:'bad'}),
       issue:'reserved_prompt_or_request_identity_invalid'},
@@ -89,8 +89,8 @@ test('changing the original request, answer, migration target or PI decision bre
   ];
   for(const s of scenarios){
     const f=fixture();try{
-      for(let n=1;n<=11;n++)f.observe(n,n===1||n===11);
-      f.change(s.type,11,s.change);
+      for(let n=1;n<=9;n++)f.observe(n,n===1||n===9);
+      f.change(s.type,9,s.change);
       const report=inspectGoalChromeTenToElevenHistory(f.store,f.goalId);
       assert.equal(report.custodyConsistent,false,s.type);
       assert.ok(report.rotations[0]?.violations.includes(s.issue),
@@ -100,7 +100,7 @@ test('changing the original request, answer, migration target or PI decision bre
   }
 });
 
-test('valid explicit early Chat handoffs remain allowed without fabricating 10→11 boundaries',()=>{
+test('valid explicit early Chat handoffs remain allowed without fabricating 8→9 boundaries',()=>{
   const f=fixture();try{
     for(let n=1;n<=6;n++)f.observe(n,n===1||n===6);
     const report=inspectGoalChromeTenToElevenHistory(f.store,f.goalId);

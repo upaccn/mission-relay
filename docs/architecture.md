@@ -49,7 +49,7 @@ evidence verifier, not a PI dispatcher. It creates an exact Git SHA release
 target only after the approved plan's Work Items and their criteria all have
 PI-*reported* PASS; that report never counts as independent acceptance.
 Eleven current-Goal release gates cover check, privacy, full tests, build,
-Ubuntu/macOS/Windows CI, live 10→11, maintenance recovery,
+Ubuntu/macOS/Windows CI, live 8→9 rollover (legacy internal 10→11 label), maintenance recovery,
 tab retirement and GMK readback. Every work criterion adds its own independent
 evidence requirement. A verified receipt records source, original proof
 digest, reference, target SHA, observed time and bounded freshness. Every
@@ -72,7 +72,7 @@ probes are deliberately restricted to independently observed evidence. The
 first-party `gmk-production-readback` adapter now checks the installed
 Worker/compiled manifest, original enrolled Scheduled Task, SQLite and pinned
 Chrome read-only, but it remains **unverified in production** until a safe
-exact-SHA checkpoint. The first-party Chrome 10→11 and same-Mission Relay tab-retirement probes
+exact-SHA checkpoint. The first-party Chrome 8→9 and same-Mission Relay tab-retirement probes
 capture two stable, hashed physical Target/Chat transcripts **before** old-tab
 cleanup, then compare the enabled physical Target inventory before and after
 closure, without reading unrelated tab contents. Original witnesses are
@@ -178,7 +178,7 @@ is runnable. On resume it independently verifies the precise linked Chat
 URL, original prompt SHA, complete assistant SHA and PI decision. Reserved
 or uncertain Sends globally prohibit switching, though independent Goal
 intake remains available. Request keys, conversation locks, one-shot Retry,
-ten-Send Chat rollover and durable original prompt snapshots are unchanged.
+eight-Send Chat rollover and durable original prompt snapshots are enforced.
 Only one browser Worker, one SQLite and one inbox/queue are used.
 
 Per-path operator permissions use
@@ -193,11 +193,11 @@ synthetic A→B→A→B tests do not establish real deployed Goal DONE.
 
 ### Goal work Prompt isolation (WP3)
 
-The first new owner-requested, Goal-bound Chat retains the full Goal **only as read-only discovery context**. `browserGoalPlanningPrompt` removes any write/deploy authorization from the first Send even when the Goal's eventual workspace is writable, and asks for bounded work packages, evidence gaps and recovery checks. Its answer is planning evidence, never an executed work item or independent PASS. PI must approve a durable Goal Plan and select one Work Item before the second, executable Send. For a **bound, active Goal** with an approved plan and exactly one dependency-ready `IN_PROGRESS`/`REVIEW` Work Item, `goalWorkPrompt` projects just the work title/key, description, numbered acceptance criteria, current PI-selected instruction, minimal approved workspace/read-only scope and the output marker contract. It excludes owner-wide Goal text, original overall acceptance, PI planning summary/decision policy, browser Send limits, previous model answers and handoff excerpts. This applies to ordinary same-Chat work, 10→11 new Chat, and an inherited 32→successor Mission first Send; unbound legacy PI Missions continue using their **unchanged** older prompt builders.
+The first new owner-requested, Goal-bound Chat retains the full Goal **only as read-only discovery context**. `browserGoalPlanningPrompt` removes any write/deploy authorization from the first Send even when the Goal's eventual workspace is writable, and asks for bounded work packages, evidence gaps and recovery checks. Its answer is planning evidence, never an executed work item or independent PASS. PI must approve a durable Goal Plan and select one Work Item before the second, executable Send. For a **bound, active Goal** with an approved plan and exactly one dependency-ready `IN_PROGRESS`/`REVIEW` Work Item, `goalWorkPrompt` projects just the work title/key, description, numbered acceptance criteria, current PI-selected instruction, minimal approved workspace/read-only scope and the output marker contract. It excludes owner-wide Goal text, original overall acceptance, PI planning summary/decision policy, browser Send limits, previous model answers and handoff excerpts. This applies to ordinary same-Chat work, 8→9 new Chat, and an inherited legacy finite-limit successor Mission first Send; unbound legacy PI Missions continue using their **unchanged** older prompt builders.
 
 The existing `executeBrowserTurn` and `executeBrowserRollover` reserve the `goal-work-v1` text and SHA in the **same SQLite transaction** as the original browser request, after checking current approved Goal/Plan/Work version, PI decision digest and pending owner notes. Its append-only `chatgpt.browser_reserved` event includes the format, Goal/Plan/Work IDs and work/PI versions/hashes, not the prompt body. The full exact prompt snapshot lives only in the private SQLite meta key keyed by original Mission/request. Changes during the preflight fail *before* Send; after an uncertain Send, later Goal changes cannot alter its original bytes.
 
-The explicit, existing `browser-recover-rollover` recovery command reads the immutable versioned snapshot and validates its original reserved SHA. A present malformed/mismatched snapshot **fails closed**, never falls back. For a new Goal-bound *first* reservation without a snapshot, recovery determines Goal ownership from SQLite and tries the new planning-only prompt, then the pre-upgrade fresh-task format, against its frozen SHA. Unbound first-Send and later compact/legacy reconstruction stay backward-compatible; mismatch refuses recovery. No recovery path authorizes a second Send or Retry. Isolated fixtures cannot prove production 10→11 or GMK acceptance. Legacy 32→successor evidence is no longer required for new release targets.
+The explicit, existing `browser-recover-rollover` recovery command reads the immutable versioned snapshot and validates its original reserved SHA. A present malformed/mismatched snapshot **fails closed**, never falls back. For a new Goal-bound *first* reservation without a snapshot, recovery determines Goal ownership from SQLite and tries the new planning-only prompt, then the pre-upgrade fresh-task format, against its frozen SHA. Unbound first-Send and later compact/legacy reconstruction stay backward-compatible; mismatch refuses recovery. No recovery path authorizes an unsanctioned duplicate Send or Retry. The narrow native maximum-length exception permits exactly one first Send of the SHA-matched unsent draft with a separate durable intent; it never replays a sent draft. Isolated fixtures cannot prove production 8→9 or GMK acceptance. Legacy 32→successor evidence is no longer required for new release targets.
 
 ### PI Goal management (WP2)
 
@@ -216,7 +216,7 @@ independent root for the **same** Goal. Preexisting Missions are not
 backfilled, and finite-limit historical successors keep their inherited
 association without any request replay.
 
-After the first **fully observed** browser answer, the existing `reviewPiRound` dispatches a Goal-bound Mission to the project's PI planning/review methods. PI proposes a bounded dependency-DAG plan, which is validated and persisted; the plan is approved before a work item may leave PENDING. The highest-priority eligible item is selected, and its work directive becomes the `NEXT` instruction under the original PI `commitPiPlan` and browser Controller. Subsequent answers are reviewed as `PASS/PARTIAL/FAIL/REPLAN/BLOCKED`: PASS records a *PI-reported* acceptance and chooses the next eligible item; PARTIAL/FAIL keep the same item in scope; REPLAN supersedes the prior plan without discarding history; BLOCKED retains evidence and uses the existing PI terminal action. When no work remains, the existing PI action is BLOCKED pending independent release verification, not Goal DONE. A PI-requested context rollover maps to HANDOFF, obeying the ten-Send-per-Chat limit; old finite-limit Missions and original append-only browser history remains intact.
+After the first **fully observed** browser answer, the existing `reviewPiRound` dispatches a Goal-bound Mission to the project's PI planning/review methods. PI proposes a bounded dependency-DAG plan, which is validated and persisted; the plan is approved before a work item may leave PENDING. The highest-priority eligible item is selected, and its work directive becomes the `NEXT` instruction under the original PI `commitPiPlan` and browser Controller. Subsequent answers are reviewed as `PASS/PARTIAL/FAIL/REPLAN/BLOCKED`: PASS records a *PI-reported* acceptance and chooses the next eligible item; PARTIAL/FAIL keep the same item in scope; REPLAN supersedes the prior plan without discarding history; BLOCKED retains evidence and uses the existing PI terminal action. When no work remains, the existing PI action is BLOCKED pending independent release verification, not Goal DONE. A PI-requested context rollover maps to HANDOFF, obeying the eight-Send-per-Chat limit; old finite-limit Missions and original append-only browser history remain intact.
 
 Goal planning and plan approval are internal PI/controller operations, with no user-visible stage, review or activation ceremony. Work review receives prior verdicts for the **same active item** from the append-only PI ledger. After repeated PARTIAL/FAIL, PI is directed to seek real evidence or REPLAN a missing prerequisite rather than request another editorial rewrite; this does not automatically pass work, replace missing evidence or allow a second Send. The controller owns all persistence and execution authority.
 

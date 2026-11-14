@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import {inspectGoalRequestLedger} from './request-ledger.js';
 import {inspectPiEvidence} from './pi-evidence.js';
-import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
+import {MAX_RELAY_CHAT_TURNS,LEGACY_RELAY_CHAT_TURNS} from './chat-limits.js';
 import type {Store} from './store.js';
 import type {MissionEvent} from './types.js';
 
@@ -11,7 +11,9 @@ const data=(event:MissionEvent|undefined):Record<string,unknown>=>
   event?.payload&&typeof event.payload==='object'&&!Array.isArray(event.payload)
     ?event.payload as Record<string,unknown>:{};
 
-/** Read-only index of already-settled, Goal-bound 5->6 boundaries.
+/** Read-only index of already-settled, Goal-bound current 8->9 and legacy
+ * 10->11 boundaries. The exported name remains compatible with historical
+ * release-evidence clients; new writes never gain a 10-Send allowance.
  * This reconstructs controller request/answer/PI/URL custody, with physical
  * Target fingerprints only where the original event actually recorded them.
  * It NEVER claims independent Chrome DOM/Target proof or a Gate PASS. */
@@ -38,7 +40,8 @@ export function inspectGoalChromeTenToElevenHistory(store:Store,goalId:string){
     const missionRequests=custody.requests.filter(r=>r.missionId===missionId);
     for(let i=1;i<report.rounds.length;i++){
       const previous=report.rounds[i-1]!,current=report.rounds[i]!;
-      if(previous.chatTurn!==MAX_RELAY_CHAT_TURNS||current.chatTurn!==1)continue;
+      if(![MAX_RELAY_CHAT_TURNS,LEGACY_RELAY_CHAT_TURNS].includes(previous.chatTurn)||
+        current.chatTurn!==1)continue;
       const violations:string[]=[];
       const fail=(issue:string)=>{if(!violations.includes(issue))violations.push(issue);};
       const prior=missionRequests.find(r=>r.observationEventId===previous.observedEventId);
@@ -75,10 +78,11 @@ export function inspectGoalChromeTenToElevenHistory(store:Store,goalId:string){
         data(e).requestKey===requestKey);
       if(!report.ledgerConsistent||!custody.ledgerConsistent)
         fail('original_goal_or_mission_ledger_inconsistent');
-      if(previous.chatTurn!==MAX_RELAY_CHAT_TURNS||current.chatTurn!==1||
+      if(![MAX_RELAY_CHAT_TURNS,LEGACY_RELAY_CHAT_TURNS].includes(previous.chatTurn)||
+        current.chatTurn!==1||
         current.chatSegment!==previous.chatSegment+1||
         current.round!==previous.round+1)
-        fail('ten_to_eleven_turn_boundary_invalid');
+        fail('chat_rollover_turn_boundary_invalid');
       if(!prior||!next||prior.status!=='observed'||next.status!=='observed'||
         prior.round!==previous.round||next.round!==current.round||
         prior.reservationEventId!==previous.reservedEventId||

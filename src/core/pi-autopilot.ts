@@ -356,8 +356,11 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
     const requestKey=`${requestPrefix}-${i+1}`;
     const payload={store,missionId,revision,requestKey,
       telegramBatch:{lastAuthorizedTurn:false,piManaged:true}};
+    // Recovery may enter at i=0 after a fully observed eighth message.
+    // Check the durable per-Chat count, not loop position or adoption:
+    // otherwise a resumed Mission attempts an illegal ninth old-chat Send.
     const rotateChat=nextPlan?.action==='HANDOFF'||
-      ((i>0||adopted)&&store.piChatObservedTurns(missionId)>=MAX_PI_CHAT_TURNS);
+      store.piChatObservedTurns(missionId)>=MAX_PI_CHAT_TURNS;
     const goalWork=(i>0||adopted)&&nextPlan&&
       new GoalLedger(store).missionGoalId(missionId)
       ?goalWorkPrompt(store,missionId,nextPlan,writeWorkspace,Boolean(rotateChat)):null;

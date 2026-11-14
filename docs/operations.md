@@ -55,6 +55,30 @@ new-chat state and verify pending code/CI/deployment effects before
 authorizing **distinct** further work; an automatically migrated context
 cannot be inferred from the button label.
 
+**Native prefilled draft (after a verified upgrade only).** The platform
+may open a new unsent ChatGPT origin containing the last full command. The
+original unsent text is an immutable Goal-bound prompt snapshot in private
+SQLite. Do not fill, edit, or re-create it. Read-only preflight confirms
+exactly one origin in the approved Chrome profile, no visible submitted
+user/assistant turns, and an identical SHA-256 of the entire unsent textbox
+on two separate reads. Once the existing native Start click and original
+PI/Goal/repository authorization are confirmed, execute:
+
+```sh
+node dist/cli.js browser-send-native-draft <mission-id> --revision <current-revision> --acknowledge-side-effects
+```
+
+The command records one original-request-bound Send intent **before** one
+click. A failed/ambiguous click consumes its allowance; never repeat the
+command to click again. The existing enrolled Worker only inspects a single
+distinct Chat URL with the same exact submitted prompt, waits for a complete
+stable terminal-marked response, and atomically migrates that *original*
+uncertain receipt. It does not assume that a new draft is a completed Send.
+Only the verified recovered checkpoint may go to PI; unavailable or
+ambiguous browser evidence leaves the Mission stopped. Future Chat rollover
+uses **8** observed Relay Sends per Chat; archived 10-turn evidence remains
+historical, not the current source ceiling.
+
 ## Metered CI and native verification
 
 Before pushing iterative changes to a private repository, inspect its `.github/workflows/` triggers. A push to a watched branch may automatically start a complete metered matrix. Prefer local deterministic checks and the already approved native testing host (for Android, the established device/emulator/Google Play readiness workflow); batch remote pushes at meaningful acceptance boundaries. Run hosted CI when the actual owner acceptance or high-risk release gate needs independent coverage. The native Play readiness check is not a Play submission or a replacement for mandatory independently evidenced remote release CI. Mission Relay's prompt policy cannot disable GitHub workflows in unrelated repositories; optimize those workflows separately when authorized.
@@ -578,7 +602,8 @@ the existing user-bound interactive task, not a service-launched browser.
 proven `page.goto` timeout **before** any composer fill or Send click in a
 fresh ChatGPT tab. It requires the unchanged original uncertain new-chat
 reservation, its immutable prompt snapshot, source URL lock, and a prior
-PI-reviewed Chat segment containing exactly **10 observed Relay Sends**.
+PI-reviewed Chat segment containing exactly **8 observed Relay Sends**
+(or the original ten-Send historical boundary for pre-upgrade reservations).
 Owner pause, maintenance drain, revoked scope, live owner, other navigation
 errors and any potentially already-clicked Send forbid this path.
 
@@ -760,7 +785,7 @@ The Telegram worker has a 30-second unreferenced in-process watchdog. After five
 
 The cross-Mission controller extension creates one linked READY successor only for a legacy finite-limit PI Mission at a fully observed 32/32-turn checkpoint with a durable `LIMIT` event. New PI Missions have no Mission-level turn ceiling and continue in the same Mission. An idempotent recovery scan fills a missing legacy child after a worker restart, while the child's first Send requires a stable parent-tab exact prompt/answer hash comparison. The first child Send opens a new conversation and remains subject to the existing URL lock and no-replay semantics. `/status` shows predecessor/successor IDs; a legacy `LIMIT` notification with a successor is a *progress* report, never owner-goal completion. No change to the existing Windows Scheduled Task, PI SSH permissions, Playwriter profile or local SQLite path is required. Do not promote or restart the Telegram task while its currently executing `/build` Mission is RUNNING or has a reserved browser Send; wait for a safe idle maintenance gate, then use the existing drain/task. Cross-Mission live acceptance and independent external-code validation remain separate from software release qualification.
 
-The controller's ten-Send rollover check is backed by the same SQLite transaction that reserves a request key: an eleventh request directed at the unchanged conversation fails **before** an external Send. An explicit new-tab reservation records its intent, and an observed answer cannot be credited until that reservation migrates to a different direct ChatGPT URL. After a crash or browser disconnect, do not bypass the ceiling by issuing a raw `browser-send` into the old conversation or by reconstructing a different prompt for an uncertain new-tab Send. Inspect the original reservation and use exact-prompt supported recovery only.
+The controller's **eight-Send** rollover check is backed by the same SQLite transaction that reserves a request key: a ninth request directed at the unchanged conversation fails **before** an external Send. An explicit new-tab reservation records its intent, and an observed answer cannot be credited until that reservation migrates to a different direct ChatGPT URL. Historical ten-Send rows are accepted as old audit evidence, never as authority for further same-Chat Sends. After a crash or browser disconnect, do not bypass the ceiling by issuing a raw `browser-send` into the old conversation or by reconstructing a different prompt for an uncertain new-tab Send. Inspect the original reservation and use exact-prompt supported recovery only.
 
 **Relay-owned tab retirement after successful handoff:** Playwriter's connection deliberately sets `closeTabsOnEnd:false`; otherwise connection cleanup could close a verified active destination or a user tab. To reduce the cost of repeated long-task handoffs, the continuous PI and browser-drive controllers separately remember only new tabs they themselves opened. Following a *later* fully observed, atomically committed destination, a bounded best-effort cleanup closes the previously created superseded tab, provided its URL still matches the old approved ChatGPT conversation. Never close the user's initial tab, the newly active tab, or a page whose URL changed. A browser-close exception is logged without changing the durable answer or authorizing a resend. No global tab sweeper, profile takeover, or cross-process ownership inference exists. Test coverage uses distinct synthetic tabs, consecutive handoffs, thrown close, and changed URL. A previous GMK Chat rollover was observed, but this is not evidence for a current 10→11 release; **Chrome memory reduction remains unmeasured**, and a stored tab-retirement receipt alone is not physical closure evidence.
 

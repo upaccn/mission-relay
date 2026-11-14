@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.2.11 — 2026-11-14
+
+- Lower the operational per-ChatGPT-conversation Relay Send ceiling from 10
+  to **8** (automatic 8→9 new-chat handoff). The unbounded Mission budget and
+  preserved historical SQLite request/CI evidence are unchanged.
+- Support ChatGPT's native maximum-length **prefilled, unsent** new Chat: find
+  the unique empty origin in the approved Chrome profile, double-check the
+  complete drafted prompt against the original durable SHA-256, and record a
+  single original-request-bound Send intent **before** clicking Send. No
+  duplicate composer fill or repeated Send is permitted after ambiguity.
+- In unpaused Missions, the single enrolled Worker automatically follows
+  its verified native Start-new-chat click with this one-time exact-draft Send.
+  An owner pause blocks background Send; the operator may explicitly
+  authorize the original draft after guarded deployment.
+- Independently verify a complete final-marked reply in the unique distinct
+  Chat URL, atomically credit and migrate the original uncertain request, and
+  then pass the recovered checkpoint to PI. On unverifiable output keep
+  original uncertain state and refuse additional Sends.
+- Preserve cooperative pause, workflow isolation, private request data,
+  maintenance gates and exact-SHA release/production attestation. Add
+  synthetic UI, SQLite, interrupted-click and recovery regression tests.
+
 ## 1.2.10 — 2026-11-14
 
 - Detect ChatGPT's actual maximum-conversation-length banner and unique

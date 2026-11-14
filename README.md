@@ -79,6 +79,16 @@ verified upgrade. The original unanswered Send remains uncredited and locked;
 opening the native new-chat UI alone is **not** verified context migration
 or permission to repeat a potentially executed work package.
 
+The maximum per-Chat Relay Send count is **8**; the ninth Send must start
+a verified separate Chat. After the native `Start new chat` action,
+ChatGPT can place the exact previous prompt in a new unsent draft. For an
+unpaused Mission, the enrolled Worker automatically verifies and submits it
+once. For an owner-paused incident, the revision-gated operator command
+`browser-send-native-draft` verifies the original prompt SHA and unique
+new Chat origin before **one** first Send.
+The Worker may later credit only a complete independently reobserved
+new-Chat answer; it must never replay an ambiguous click.
+
 For a cooperatively paused request that ended in an uncertain original ChatGPT delivery, the operator can use the revision-gated `browser-resume-pending-retry` command **after** an audited maintenance upgrade. It only releases the paused original message for inspection by the enrolled Worker; any UI Retry consumes the same durable one-shot budget and never replays a composer Send.
 
 For Windows scheduled-task deployment, SQLite maintenance, backup and rollback, see [Operations](docs/operations.md). For CI and software release qualification, run:

@@ -179,7 +179,7 @@ test('opt-in Goal PI uses the real existing browser controller and does not trus
   }finally{f.cleanup();}
 });
 
-test('Goal-bound ten-to-eleven browser rollover sends only the current work package in a fresh Chat',async()=>{
+test('Goal-bound eight-to-nine browser rollover sends only the current work package in a fresh Chat',async()=>{
   const f=fixture();
   try{
     const created=f.store.create({goal:'Owner long-term five-chat goal, never repeat this to executor',
@@ -200,7 +200,7 @@ test('Goal-bound ten-to-eleven browser rollover sends only the current work pack
     const ready=ledger.setWorkStatus(goal.id,first.id,first.version,'READY',[],'ready-goal-five');
     ledger.setWorkStatus(goal.id,first.id,ready.version,'IN_PROGRESS',[],'start-goal-five');
     const sha=(s:string)=>createHash('sha256').update(s).digest('hex');
-    for(let n=1;n<=10;n++){
+    for(let n=1;n<=8;n++){
       f.store.reserveChatBrowserTurn(created.id,f.store.get(created.id).version,
         `simulated-verified-${n}`,sha('Prior anchor user turn'));
       f.store.finishChatBrowserTurn(created.id,`simulated-verified-${n}`,{
@@ -211,7 +211,7 @@ test('Goal-bound ten-to-eleven browser rollover sends only the current work pack
         action:'NEXT',summary:'PI still validating the active work',
         nextPrompt:'Validate the specific device-search work package'});
     }
-    assert.equal(f.store.piChatObservedTurns(created.id),10);
+    assert.equal(f.store.piChatObservedTurns(created.id),8);
     let reviews=0;
     const planner:PiPlanner={
       decide:async()=>{throw new Error('Goal PI must not use legacy planning');},
@@ -221,19 +221,19 @@ test('Goal-bound ten-to-eleven browser rollover sends only the current work pack
     };
     await drivePiAutopilot({store:f.store,planner,missionId:created.id,
       revision:f.store.get(created.id).version,requestPrefix:'goal-five',page:f.anchor,url:SOURCE});
-    assert.equal(f.results().sends,1,'Only the eleventh Send is real in this fixture');
+    assert.equal(f.results().sends,1,'Only the ninth Send is real in this fixture');
     assert.equal(f.results().newPages,1);
     assert.equal(reviews,1);
-    const snapshot=f.store.reservedBrowserPrompt(created.id,'goal-five-11');
+    const snapshot=f.store.reservedBrowserPrompt(created.id,'goal-five-9');
     assert.equal(snapshot?.format,'goal-work-v1');
     assert.equal(snapshot?.prompt,f.results().latestPrompt);
     assert.match(snapshot!.prompt,/Start this work package in a new conversation/);
     assert.match(snapshot!.prompt,/Check concrete VRF evidence/);
     assert.ok(!snapshot!.prompt.includes(created.goal));
     assert.ok(!snapshot!.prompt.includes('PI still validating'));
-    assert.equal(f.store.get(created.id).turnCount,11);
+    assert.equal(f.store.get(created.id).turnCount,9);
     assert.equal(f.store.events(created.id)
-      .filter(e=>e.type==='chatgpt.browser_reserved').length,11);
+      .filter(e=>e.type==='chatgpt.browser_reserved').length,9);
     assert.equal(f.store.piPlan(created.id)?.action,'BLOCKED',
       'PI claimed PASS is not final owner Goal DONE');
   }finally{f.cleanup();}
@@ -648,7 +648,7 @@ test('a PI NEXT after ten observed sends starts exactly one fresh chat and prese
     assert.equal(m.turnCount,12);
     assert.equal(f.results().sends,12);
     assert.equal(f.results().newPages,2);
-    assert.equal(f.store.piChatObservedTurns(m.id),2);
+    assert.equal(f.store.piChatObservedTurns(m.id),4);
     assert.equal(f.store.chatLink(m.id),DEST2);
     assert.equal(f.store.events(m.id).filter(x=>x.type==='chatgpt.browser_migrated').length,2);
     assert.equal(f.store.events(m.id).filter(x=>x.type==='chatgpt.browser_reserved').length,12);
@@ -656,7 +656,7 @@ test('a PI NEXT after ten observed sends starts exactly one fresh chat and prese
   }finally{f.cleanup();}
 });
 
-test('ten-to-eleven PI rollover rechecks the exact source after its initial DOM preflight and before reserving a Send',async()=>{
+test('eight-to-nine PI rollover rechecks the exact source after its initial DOM preflight and before reserving a Send',async()=>{
   const f=fixture();try{
     const m=f.store.create({goal:'Verify safe rollover at five turns',
       acceptance:['Never append a sixth Send to a changed conversation'],workspace:'',
@@ -666,7 +666,7 @@ test('ten-to-eleven PI rollover rechecks the exact source after its initial DOM 
     f.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
     const answer='First NetBox research answer\n[MISSION_RELAY:DONE]';
     const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
-    for(let round=1;round<=10;round++){
+    for(let round=1;round<=8;round++){
       const request=`pi-race-five-${round}`;
       f.store.reserveChatBrowserTurn(m.id,f.store.get(m.id).version,
         request,sha('Previously submitted user prompt'),
@@ -678,7 +678,7 @@ test('ten-to-eleven PI rollover rechecks the exact source after its initial DOM 
         action:'NEXT',summary:`Verified stage ${round}`,
         nextPrompt:'Check the remaining evidence'});
     }
-    assert.equal(f.store.piChatObservedTurns(m.id),10);
+    assert.equal(f.store.piChatObservedTurns(m.id),8);
     f.primeRecovered();
     let assistantReads=0;
     const source={...f.fresh,locator:(selector:string)=>{
@@ -698,9 +698,9 @@ test('ten-to-eleven PI rollover rechecks the exact source after its initial DOM 
     assert.equal(assistantReads,2,'The rollover must inspect the source again');
     assert.equal(f.results().sends,0);
     assert.equal(f.results().newPages,0);
-    assert.equal(f.store.get(m.id).turnCount,10);
+    assert.equal(f.store.get(m.id).turnCount,8);
     assert.equal(f.store.chatBrowserTurn(m.id)?.status,'observed');
-    assert.equal(f.store.events(m.id).filter(e=>e.type==='chatgpt.browser_reserved').length,10);
+    assert.equal(f.store.events(m.id).filter(e=>e.type==='chatgpt.browser_reserved').length,8);
   }finally{f.cleanup();}
 });
 
@@ -745,7 +745,7 @@ test('ordinary PI NEXT rechecks the exact source at the second preflight without
   }finally{f.cleanup();}
 });
 
-test('after a crash at ten observed turns, PI recovers the exact checkpoint and sends the eleventh only in a new chat',async()=>{
+test('after a crash at eight observed turns, PI recovers the exact checkpoint and sends the ninth only in a new chat',async()=>{
   const f=fixture();try{
     const created=f.store.create({goal:'Long-running recovery at the five-turn boundary',
       acceptance:['No old-chat sixth send or duplicate request'],workspace:'',
@@ -754,34 +754,34 @@ test('after a crash at ten observed turns, PI recovers the exact checkpoint and 
     const bound=f.store.bindChatBrowser(linked.id,'install:Chrome:fake',linked.version).mission;
     let interruptOnce=true;
     const planner:PiPlanner={decide:async context=>{
-      if(context.turnCount===10&&interruptOnce){
+      if(context.turnCount===8&&interruptOnce){
         interruptOnce=false;
         throw new Error('Synthetic PI crash after the fifth observed answer');
       }
-      return context.turnCount===11
-        ?{action:'DONE',summary:'Eleventh answer independently reviewed',nextPrompt:''}
+      return context.turnCount===9
+        ?{action:'DONE',summary:'Ninth answer independently reviewed',nextPrompt:''}
         :{action:'NEXT',summary:'Checkpoint retained',nextPrompt:'Continue evidence check'};
     }};
     await assert.rejects(drivePiAutopilot({store:f.store,planner,missionId:bound.id,
       revision:bound.version,requestPrefix:'pi-five-crash',page:f.anchor,url:SOURCE}),
     /Synthetic PI crash/);
-    assert.equal(f.store.get(bound.id).turnCount,10);
+    assert.equal(f.store.get(bound.id).turnCount,8);
     assert.equal(f.store.chatBrowserTurn(bound.id)?.status,'observed');
-    assert.equal(f.store.piChatObservedTurns(bound.id),10);
-    assert.equal(f.results().sends,10);
+    assert.equal(f.store.piChatObservedTurns(bound.id),8);
+    assert.equal(f.results().sends,8);
     assert.equal(f.results().newPages,1);
     const previous=f.store.chatBrowserTurn(bound.id)!;
-    const lastAssistant='NetBox research with VRF evidence, observed round 10\n[MISSION_RELAY:DONE]';
+    const lastAssistant='NetBox research with VRF evidence, observed round 8\n[MISSION_RELAY:DONE]';
     assert.equal(createHash('sha256').update(lastAssistant).digest('hex'),previous.assistantSha256);
     await drivePiAutopilot({store:f.store,planner,missionId:bound.id,
       revision:f.store.get(bound.id).version,requestPrefix:'pi-five-crash',
       page:f.fresh,url:DEST,
       recoveredAnswer:{responseSha256:previous.assistantSha256!,lastAssistant}});
-    assert.equal(f.store.get(bound.id).turnCount,11);
+    assert.equal(f.store.get(bound.id).turnCount,9);
     assert.equal(f.store.piChatObservedTurns(bound.id),1);
-    assert.equal(f.results().sends,11);
+    assert.equal(f.results().sends,9);
     assert.equal(f.results().newPages,2);
-    assert.equal(f.store.events(bound.id).filter(e=>e.type==='chatgpt.browser_reserved').length,11);
+    assert.equal(f.store.events(bound.id).filter(e=>e.type==='chatgpt.browser_reserved').length,9);
     assert.equal(f.store.events(bound.id).filter(e=>e.type==='chatgpt.browser_migrated').length,2);
     assert.equal(f.store.piPlan(bound.id)?.action,'DONE');
   }finally{f.cleanup();}

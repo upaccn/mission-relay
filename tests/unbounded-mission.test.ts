@@ -5,6 +5,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Store} from '../src/core/store.js';
+import {MAX_RELAY_CHAT_TURNS} from '../src/core/chat-limits.js';
 import {inspectPiEvidence} from '../src/core/pi-evidence.js';
 import {formatMissionTurns,missionTurnLimitReached,missionTurnsRemaining} from '../src/core/mission-turns.js';
 
@@ -28,11 +29,11 @@ test('unbounded PI Mission safely crosses round 32 and 33 without creating a suc
       const requestKey=`unbounded-${round}`;
       const promptSha256=sha(`Owner-authorized exact prompt ${round}`);
       const answer=`Observed complete answer ${round}\n[MISSION_RELAY:NEXT]`;
-      const rotate=round>1&&(round-1)%10===0;
+      const rotate=round>1&&(round-1)%MAX_RELAY_CHAT_TURNS===0;
       if(rotate){
         assert.throws(()=>store.reserveChatBrowserTurn(m.id,store.get(m.id).version,
           `illegal-old-tab-${round}`,promptSha256),
-          /10 observed|new conversation|already has/i);
+          /8 observed|new conversation|already has/i);
       }
       store.reserveChatBrowserTurn(m.id,store.get(m.id).version,
         requestKey,promptSha256,rotate?{newConversation:true}:{});
@@ -54,8 +55,8 @@ test('unbounded PI Mission safely crosses round 32 and 33 without creating a suc
     assert.equal(report.ledgerConsistent,true,report.violations.join(','));
     assert.equal(report.observedTurns,36);
     assert.equal(report.decisionsVerified,36);
-    assert.equal(report.maxObservedTurnsInOneChat,10);
-    assert.equal(report.chatSegments,4);
+    assert.equal(report.maxObservedTurnsInOneChat,8);
+    assert.equal(report.chatSegments,5);
     assert.equal(store.piHealth().missions.some(x=>x.id===m.id),true);
   }finally{
     store.close();

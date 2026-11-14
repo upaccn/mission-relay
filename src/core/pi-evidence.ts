@@ -1,6 +1,6 @@
 import type {Store} from './store.js';
 import type {MissionEvent} from './types.js';
-import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
+import {MAX_RELAY_CHAT_TURNS,LEGACY_RELAY_CHAT_TURNS} from './chat-limits.js';
 
 type EvidencePayload = {requestKey?:unknown;round?:unknown;assistantSha256?:unknown;
   responseSha256?:unknown;action?:unknown;independentlyInspected?:unknown;
@@ -94,6 +94,7 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     throw new Error('PI evidence audit requires a PI-enabled Mission');
   const events=store.events(id);
   const reserved=new Map<string,number>(),used=new Set<string>();
+  const reservationLimit=new Map<string,number>();
   const decisions=new Map<number,MissionEvent>();
   const allDecisions=new Map<number,MissionEvent[]>();
   const corrections=new Map<number,MissionEvent>();
@@ -123,7 +124,13 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     if(e.type==='chatgpt.browser_reserved'){
       if(typeof p.requestKey!=='string'||!p.requestKey.trim())warn('invalid_browser_reservation');
       else if(reserved.has(p.requestKey))warn('duplicate_browser_reservation_key');
-      else reserved.set(p.requestKey,e.id);
+      else {
+        reserved.set(p.requestKey,e.id);
+        const limit=(p as EvidencePayload&{perChatLimit?:unknown}).perChatLimit;
+        if(limit===undefined)reservationLimit.set(p.requestKey,LEGACY_RELAY_CHAT_TURNS);
+        else if(limit===MAX_RELAY_CHAT_TURNS)reservationLimit.set(p.requestKey,MAX_RELAY_CHAT_TURNS);
+        else warn('invalid_versioned_chat_send_limit');
+      }
     }
     if(e.type==='chatgpt.browser_migrated'){
       // An arbitrary migration marker must not reset the per-Chat Send counter.
@@ -270,7 +277,12 @@ export function inspectPiEvidence(store:Store,id:string):PiEvidenceReport {
     if(chatSegment===0)chatSegment=1; // An adopted human chat is segment one.
     chatTurn++;
     maxPerChat=Math.max(maxPerChat,chatTurn);
-    if(chatTurn>MAX_RELAY_CHAT_TURNS)warn('chat_send_limit_exceeded');
+    // Immutable older reservations used a 10-send policy. Source upgrades
+    // cannot retroactively turn their already-observed historic answers
+    // into policy violations; new reservations always declare limit=8.
+    if(chatTurn>(typeof key==='string'?
+      reservationLimit.get(key)??MAX_RELAY_CHAT_TURNS:MAX_RELAY_CHAT_TURNS))
+      warn('chat_send_limit_exceeded');
     if(round!==observations.length+1)warn('nonsequential_observed_round');
     if(kind!=='normal'&&p.independentlyInspected!==true)
       warn('recovery_lacks_independent_inspection');

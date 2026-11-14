@@ -54,7 +54,7 @@ handles any PI-approved continuation.
   maintenance drain defers the click. A stopped uncertain original request
   requires the narrowly scoped, revision-checked recovery described in
   [Operations](operations.md); the release command itself never clicks.
-- Each ChatGPT conversation permits at most **10 observed Relay Sends**.
+- Each ChatGPT conversation permits at most **8 observed Relay Sends**.
   Further work uses a distinct, independently verified Chat URL after a
   bounded handoff. A newly created tab is retained until the destination
   request/answer is committed. Only proven superseded Relay-owned tabs may

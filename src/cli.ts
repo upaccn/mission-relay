@@ -31,7 +31,7 @@ import { stateHome } from './core/paths.js';
 import {verifiedRuntimeProvenance} from './core/runtime-provenance.js';
 import { renderChatGPTHandoff, normalizeChatGPTUrl } from './core/chatgpt-handoff.js';
 import {setTelegramChatAnchor} from './core/chat-anchor.js';
-import { connectChatPage, inspectChatPage, matchesSubmittedUserPrompt, matchesReservedPromptHash, lastVisibleUserPromptSha256, listConnectedChatCandidates, prepareNewChatOrigin, submitNewChatTurn, withBrowserSession,visibleConversationLengthLimit,clickConversationLengthStartOnce } from './plugins/chatgpt-browser.js';
+import { connectChatPage, inspectChatPage, matchesSubmittedUserPrompt, matchesReservedPromptHash, lastVisibleUserPromptSha256, listConnectedChatCandidates, prepareNewChatOrigin, submitNewChatTurn, withBrowserSession,visibleConversationLengthLimit,clickConversationLengthStartOnce,connectNativePrefilledDraft,nativePrefilledDraftSha256,clickNativePrefilledSendOnce } from './plugins/chatgpt-browser.js';
 import { executeBrowserTurn, driveChatConversation, browserDecision, exactReservedRolloverPrompt, browserRolloverPiPlan } from './core/browser-controller.js';
 import {SshPiPlanner,validatePictlRemoteConfig,validateRemoteProjectPath} from './core/pi-planner.js';
 import {approveBuildRepository,revokeBuildRepository,approvedBuildRepositories} from './core/build-scopes.js';
@@ -168,6 +168,9 @@ Commands:
   browser-start-new-chat <id> --revision <n> --acknowledge-side-effects
          Click the exact native maximum-length Start new chat button ONCE after maintenance;
          preserve the uncredited original Send and its lock; never replay the composer
+  browser-send-native-draft <id> --revision <n> --acknowledge-side-effects
+         AFTER production upgrade, send exactly once from the native prefilled,
+         SHA-matched unsent new-chat origin; leave original receipt uncertain
          existing-message UI Retry; never perform Retry or composer Send here
   browser-retry-pre-send-rollover <id> --revision <n> --acknowledge-side-effects
          ONE original-reservation first Send only after the exact old page.goto
@@ -927,6 +930,42 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
           nativeStartClicked:true,composerSend:false,originalAnswerCredited:false,
           originalReservationPreserved:true,
           note:'Native Start new chat was clicked once. Original uncredited Send remains uncertain and locked; new-chat context and any continued work require separate verified settlement, never an automatic duplicate Send.'};
+      });
+    }
+    else if(command==='browser-send-native-draft'&&id){
+      const f=flags(rest);
+      if(f['--acknowledge-side-effects']?.[0]!=='true')
+        throw new Error('Explicit --acknowledge-side-effects required for the first native draft Send');
+      const revision=Number(option(f,'revision'));
+      if(!Number.isSafeInteger(revision)||revision<0)
+        throw new Error('Valid original Mission revision required');
+      const m=store.get(id),r=store.chatBrowserTurn(id);
+      const browserId=store.chatBrowserBinding(id);
+      if(m.version!==revision||m.state!=='NEEDS_RECONCILIATION'||
+        !m.stopRequested||!r||r.status!=='uncertain'||!browserId)
+        throw new Error('Native draft Send requires the original stopped, unchanged uncertain Mission');
+      const snapshot=store.reservedBrowserPrompt(id,r.requestKey);
+      if(!snapshot||createHash('sha256').update(snapshot.prompt.trim()).digest('hex')!==r.promptSha256)
+        throw new Error('Native prefilled draft does not have an immutable original request snapshot');
+      // The exact draft, not the UI URL alone, identifies the authorized
+      // native tab. Do not navigate to or fill an unknown ChatGPT origin.
+      const session=await withReadOnlyDeadline(
+        connectNativePrefilledDraft(browserId,r.promptSha256),30_000,
+        late=>late.close());
+      result=await withBrowserSession(session,async page=>{
+        const check=async()=>await withReadOnlyDeadline(
+          nativePrefilledDraftSha256(page))===r.promptSha256;
+        if(!await check())throw new Error('Native draft changed during initial readback');
+        await new Promise(resolve=>setTimeout(resolve,1500));
+        if(!await check())throw new Error('Native draft changed between independent reads');
+        const clicked=await clickNativePrefilledSendOnce(page,r.promptSha256,
+          ()=>store.claimNativePrefilledSendIntent(id,revision,r.requestKey,r.promptSha256),
+          ()=>store.recordNativePrefilledSendClicked(id,r.requestKey,r.promptSha256));
+        if(!clicked)throw new Error('Native draft missing, Send not ready, or one-shot intent already spent; no repeated Send');
+        return {missionId:id,originalRequestKey:r.requestKey,
+          nativeDraftSendClicked:true,originalPromptSha256:r.promptSha256,
+          originalAnswerCredited:false,originalReservationPreserved:true,
+          note:'One native prefilled draft Send was clicked. The original request is still uncertain; the enrolled Worker must independently inspect the new direct conversation and completed reply before PI continuation. Never click Send again on an ambiguous outcome.'};
       });
     }
     else if (command === 'browser-recover-rollover' && id) {

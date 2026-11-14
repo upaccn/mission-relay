@@ -906,6 +906,72 @@ export class Store {
         originalRequestPreserved:true});
     });
   }
+  /** Owner-authorized, one-time FIRST Send of the *existing unsent draft*
+   * carried by ChatGPT's native maximum-length button. This is not a
+   * retry of the old chat: the old failed request is credited only if a
+   * distinct new conversation later yields independent, stable evidence.
+   * The browser caller must prove a unique empty origin and SHA-matched
+   * draft twice, and must commit this intent BEFORE the UI Send click. */
+  claimNativePrefilledSendIntent(id:string,revision:number,
+    requestKey:string,promptSha256:string,unpausedWorker=false):boolean {
+    return this.transaction(()=>{
+      const m=this.get(id),r=this.chatBrowserTurn(id),url=this.chatLink(id);
+      const events=this.events(id),plan=this.piPlan(id);
+      if(m.version!==revision||m.state!=='NEEDS_RECONCILIATION'||
+        (unpausedWorker?m.stopRequested:!m.stopRequested)||
+        m.ownerPid!==null||this.channelDrainRequested('telegram')||
+        r?.status!=='uncertain'||r.newConversation===true||
+        r.requestKey!==requestKey||r.promptSha256!==promptSha256||
+        ![MAX_CONVERSATION_LENGTH_ERROR,
+          'ChatGPT response observation timed out; submission outcome is ambiguous'].includes(m.lastError??'')||
+        m.lastError!==r.error||!url||
+        r.urlHash!==createHash('sha256').update(url).digest('hex')||
+        !this.chatBrowserBinding(id)||m.turnCount<1||
+        this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
+        plan?.round!==m.turnCount||!['NEXT','HANDOFF'].includes(plan.action)||
+        this.pendingPiOwnerDirectives(id).length>0||
+        !this.goalContinuationEligible(id)||
+        missionTurnLimitReached(m.maxTurns,m.turnCount)||
+        (m.sandbox==='workspace-write'&&
+          (!hasIsolatedRepositoryGrant(this,m.workspace)||
+            !declaredSourceMatchesScope(m.goal,m.workspace)))||
+        !events.some(e=>e.type==='chatgpt.browser_length_start_clicked'&&
+          (e.payload as {requestKey?:string}).requestKey===requestKey)||
+        events.filter(e=>e.type==='chatgpt.browser_length_start_intent'&&
+          (e.payload as {requestKey?:string}).requestKey===requestKey).length!==1)
+        throw new Error('Native draft Send requires owner-paused original request, matching PI plan, scope and one verified Start new chat');
+      const snapshot=this.reservedBrowserPrompt(id,requestKey);
+      if(!snapshot||createHash('sha256').update(snapshot.prompt.trim()).digest('hex')!==promptSha256)
+        throw new Error('Native draft Send requires the unchanged versioned original prompt snapshot');
+      this.requireUnspentBrowserReservation(id,r);
+      const key=`chatgpt.browser.native_prefilled_send.${id}.${requestKey}`;
+      if(this.getMeta(key)!==null)return false;
+      this.setMeta(key,JSON.stringify({requestKey,promptSha256,at:new Date().toISOString()}));
+      this.event(id,'chatgpt.browser_native_prefilled_send_intent',{
+        requestKey,promptSha256,round:m.turnCount+1,
+        nativeDraft:true,oneShot:true,unpausedWorker,
+        originalReservationPreserved:true,
+        originalAnswerCredited:false});
+      return true;
+    });
+  }
+  /** A completed click is NOT a completed ChatGPT reply. On ambiguous UI
+   * outcome the existing intent blocks all further Send attempts. */
+  recordNativePrefilledSendClicked(id:string,requestKey:string,promptSha256:string):void {
+    this.transaction(()=>{
+      const raw=this.getMeta(`chatgpt.browser.native_prefilled_send.${id}.${requestKey}`);
+      let intent:{requestKey?:string;promptSha256?:string}|null=null;
+      try{intent=raw?JSON.parse(raw) as {requestKey?:string;promptSha256?:string}:null;}
+      catch{/* deny */}
+      if(intent?.requestKey!==requestKey||intent.promptSha256!==promptSha256)
+        throw new Error('Native draft Send lacks matching pre-committed one-shot intent');
+      if(this.events(id).some(e=>e.type==='chatgpt.browser_native_prefilled_send_clicked'&&
+        (e.payload as {requestKey?:string}).requestKey===requestKey))return;
+      this.event(id,'chatgpt.browser_native_prefilled_send_clicked',{
+        requestKey,composerSendOnce:true,newConversationNotYetVerified:true,
+        originalAnswerCredited:false});
+    });
+  }
   /** A dead local Send owner may have submitted its reserved request before
    * exiting. This predicate authorizes only independent inspection, NEVER a
    * retry, lock removal or automatic credit. A foreign/unknown or live owner
@@ -963,9 +1029,10 @@ export class Store {
         (plan?.round===m.turnCount&&['DONE','BLOCKED'].includes(plan.action)))
         throw new Error('PI resume requires an owner-paused, settled, nonterminal browser checkpoint');
       if(m.sandbox==='workspace-write'&&
-        (this.getMeta('telegram.build.project')!==m.workspace||
-         this.getMeta('telegram.pi.project')!==m.workspace))
-        throw new Error('PI build approval changed or was revoked; cannot resume');
+        (!isApprovedBuildRepository(this,m.workspace)||
+         !hasIsolatedRepositoryGrant(this,m.workspace)||
+         !declaredSourceMatchesScope(m.goal,m.workspace)))
+        throw new Error('PI repository approval was revoked or no longer matches its isolated Goal scope');
       const parentId=this.piChainParent(id);
       if(parentId&&this.get(parentId).stopRequested)
         throw new Error('PI successor parent remains paused; resume the authorized lineage first');
@@ -1383,6 +1450,7 @@ export class Store {
       this.db.prepare('UPDATE missions SET state=?,owner_pid=?,owner_host=?,version=version+1,updated_at=? WHERE id=? AND version=?')
         .run('RUNNING',process.pid,hostname(),record.createdAt,id,m.version);
       this.event(id,'chatgpt.browser_reserved',{requestKey,promptSha256,
+        perChatLimit:MAX_RELAY_CHAT_TURNS,
         ...(snapshot?{promptFormat:snapshot.format,
           goalId:options.goalBinding!.goalId,
           planId:options.goalBinding!.planId,
@@ -1728,9 +1796,14 @@ export class Store {
         this.channelDrainRequested('telegram')||
         !this.goalContinuationEligible(id))
         throw new Error('One-shot pre-Send recovery requires the exact old navigation timeout and an active, settled PI continuation');
-      // One-shot recovery is limited to the current ten-Send rollover.
-      // Immutable historical events remain in SQLite; no replay or rewrite.
-      if(this.piChatObservedTurns(id)!==MAX_RELAY_CHAT_TURNS)
+      // Preserve the original exhausted Chat limit for pre-upgrade
+      // reservations without permitting any NEW same-Chat sends past eight.
+      const initialReservation=events.find(e=>e.type==='chatgpt.browser_reserved'&&
+        (e.payload as {requestKey?:string}).requestKey===r.requestKey);
+      const storedLimit=(initialReservation?.payload as {perChatLimit?:number}|undefined)?.perChatLimit;
+      const expectedLimit=storedLimit??10;
+      if((storedLimit!==undefined&&storedLimit!==MAX_RELAY_CHAT_TURNS)||
+        this.piChatObservedTurns(id)!==expectedLimit)
         throw new Error('Pre-Send new-chat recovery requires the exhausted original ChatGPT segment');
       this.requireUnspentBrowserReservation(id,r);
       const uncertain=events.filter(e=>e.type==='chatgpt.browser_uncertain'&&

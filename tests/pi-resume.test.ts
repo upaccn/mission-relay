@@ -7,6 +7,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Engine} from '../src/core/engine.js';
 import {Store} from '../src/core/store.js';
+import {revokeBuildRepository} from '../src/core/build-scopes.js';
 import type {AgentAdapter} from '../src/core/types.js';
 
 const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
@@ -180,9 +181,9 @@ test('PI resume refuses unpaused, terminal, erroneous or revoked-write checkpoin
   const write=fixture(true);try{
     write.pause();
     write.finish();
-    write.store.setMeta('telegram.build.project','');
+    revokeBuildRepository(write.store,write.workspace);
     assert.throws(()=>write.store.resumePausedPiCheckpoint(write.id,
-      write.store.get(write.id).version),/approval changed or was revoked/);
+      write.store.get(write.id).version),/approval was revoked/);
     assert.equal(write.store.get(write.id).stopRequested,true);
     assert.equal(write.store.events(write.id).filter(e=>e.type==='pi.pause_released').length,0);
   }finally{write.cleanup();}

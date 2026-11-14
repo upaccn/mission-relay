@@ -6,7 +6,7 @@ import type {Store} from './store.js';
 import {InsufficientReleaseEvidenceError,type ReleaseProbe,type EvidenceReadback} from './goal-release.js';
 import {inspectGoalRequestLedger} from './request-ledger.js';
 import {inspectGoalChromeTenToElevenHistory} from './goal-release-chrome-history.js';
-import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
+import {MAX_RELAY_CHAT_TURNS,LEGACY_RELAY_CHAT_TURNS} from './chat-limits.js';
 import {inspectPiEvidence} from './pi-evidence.js';
 import {GoalLedger} from './goal-store.js';
 import {requireSettledReleaseCustody} from './goal-release.js';
@@ -29,6 +29,8 @@ export type TrustedChromeTabObservation={
   assistantTurnSha256:string|null;userCount:number;assistantCount:number;
 };
 type BoundaryWitness={
+  /** Historical on-disk kind retained for exact old-proof compatibility.
+   * The captured current boundary is 8->9, not an allowed ninth same-chat Send. */
   kind:'ten-to-eleven';version:1;goalId:string;missionId:string;sourceSha:string;
   observedAt:string;sourceObservationEventId:number;sourceDecisionEventId:number;
   destinationReservationEventId:number;destinationMigrationEventId:number;
@@ -144,12 +146,12 @@ export async function captureGoalChromeBoundary(input:{
   const report=inspectPiEvidence(store,missionId);
   const latest=report.rounds.at(-1),prior=report.rounds.at(-2);
   if(!report.ledgerConsistent||!latest||!prior||
-    prior.chatTurn!==MAX_RELAY_CHAT_TURNS||
+    ![MAX_RELAY_CHAT_TURNS,LEGACY_RELAY_CHAT_TURNS].includes(prior.chatTurn)||
     latest.chatTurn!==1||latest.round!==prior.round+1||
     !prior.decisionShaMatches||prior.decisionEventId===null||
     latest.decisionEventId!==null||latest.reservedEventId===null||
     store.get(missionId).state!=='PAUSED')
-    throw new Error('No pending PI-reviewed ten-to-eleven Chrome boundary to capture');
+    throw new Error('No pending PI-reviewed chat rollover boundary to capture');
   const ledger=inspectGoalRequestLedger(store,goalId);
   if(!ledger.ledgerConsistent||!ledger.missionIds.includes(missionId)||
     ledger.quarantineEventIds.length||ledger.unattributedEventIds.length)

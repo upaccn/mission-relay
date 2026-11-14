@@ -45,8 +45,8 @@ function fixture(){
     if(review)store.commitPiPlan(bound.id,sha(answer(n)),[],{
       action:'NEXT',summary:'Continue',nextPrompt:'Another synthetic task'});
   };
-  const firstTen=()=>{for(let n=1;n<=10;n++)observe(n,n===1);};
-  return {dir,store,goalId:goal.id,missionId:bound.id,observe,firstTen,
+  const firstEight=()=>{for(let n=1;n<=8;n++)observe(n,n===1);};
+  return {dir,store,goalId:goal.id,missionId:bound.id,observe,firstEight,
     close:()=>{store.close();rmSync(dir,{recursive:true,force:true});}};
 }
 type Fake=Page&{_test:{setPrompt:(s:string)=>void;setAnswer:(s:string)=>void;closed:()=>boolean}};
@@ -78,43 +78,43 @@ function physicalPages(){
   return {make,pages};
 }
 async function witness(f:ReturnType<typeof fixture>,pages=physicalPages()){
-  const source=pages.make(target(1),url(2),prompt(10),answer(10));
-  const destination=pages.make(target(11),url(12),prompt(11),answer(11));
+  const source=pages.make(target(1),url(2),prompt(8),answer(8));
+  const destination=pages.make(target(9),url(10),prompt(9),answer(9));
   const digest=await captureGoalChromeBoundary({store:f.store,goalId:f.goalId,
     missionId:f.missionId,sourcePage:source,destinationPage:destination,
-    sourceUrl:url(2),destinationUrl:url(12),sourceSha:SOURCE,privateRoot:f.dir});
+    sourceUrl:url(2),destinationUrl:url(10),sourceSha:SOURCE,privateRoot:f.dir});
   const file=join(f.dir,'chrome-custody',f.goalId,`ten-to-eleven-${digest}.json`);
   return {source,destination,digest,file,
     content:JSON.parse(readFileSync(file,'utf8')) as Parameters<typeof validateChromeWitness>[3]};
 }
 
-test('ten Sends share one conversation; the eleventh requires a new URL and PI review',async()=>{
+test('eight Sends share one conversation; the ninth requires a new URL and PI review',async()=>{
   const f=fixture();try{
-    f.firstTen();
-    assert.equal(inspectPiEvidence(f.store,f.missionId).maxObservedTurnsInOneChat,10);
+    f.firstEight();
+    assert.equal(inspectPiEvidence(f.store,f.missionId).maxObservedTurnsInOneChat,8);
     assert.throws(()=>f.store.reserveChatBrowserTurn(f.missionId,f.store.get(f.missionId).version,
-      'illegal-11',sha('illegal')),/10 observed|new conversation/);
-    f.observe(11,true,false);
+      'illegal-9',sha('illegal')),/8 observed|new conversation/);
+    f.observe(9,true,false);
     const p=await witness(f);
     assert.throws(()=>validateChromeWitness(f.store,f.goalId,SOURCE,p.content),/unreviewed/);
-    f.store.commitPiPlan(f.missionId,sha(answer(11)),[],{
-      action:'NEXT',summary:'Observed eleventh',nextPrompt:'Continue'});
+    f.store.commitPiPlan(f.missionId,sha(answer(9)),[],{
+      action:'NEXT',summary:'Observed ninth',nextPrompt:'Continue'});
     assert.doesNotThrow(()=>validateChromeWitness(f.store,f.goalId,SOURCE,p.content));
     const receipt=inspectStoredChromeWitnesses(f.store,f.goalId,f.dir,'chrome-10-to-11',SOURCE);
     assert.equal(receipt.state,'PASS');
-    assert.equal(f.store.get(f.missionId).turnCount,11);
+    assert.equal(f.store.get(f.missionId).turnCount,9);
     assert.equal(inspectPiEvidence(f.store,f.missionId).chatSegments,2);
   }finally{f.close();}
 });
 
 test('physical evidence is content-addressed, cannot be forged or substituted by a model claim',async()=>{
   const f=fixture();try{
-    f.firstTen();f.observe(11,true,false);
+    f.firstEight();f.observe(9,true,false);
     const pages=physicalPages(),p=await witness(f,pages);
     p.source._test.setAnswer('Tampered assistant text');
     assert.throws(()=>validateChromeWitness(f.store,f.goalId,SOURCE,{
       ...p.content,source:{...p.content.source,assistantTurnSha256:sha('tampered')}}));
-    f.store.commitPiPlan(f.missionId,sha(answer(11)),[],{
+    f.store.commitPiPlan(f.missionId,sha(answer(9)),[],{
       action:'NEXT',summary:'PI reviewed',nextPrompt:'Continue'});
     // Original captured content remains immutable even if live tab prose
     // changes later. This test must not mutate the owner/retirement journal.
@@ -124,19 +124,19 @@ test('physical evidence is content-addressed, cannot be forged or substituted by
     writeFileSync(p.file,original.replace(SOURCE,'f'.repeat(40)));
     assert.throws(()=>inspectStoredChromeWitnesses(f.store,f.goalId,f.dir,
       'chrome-10-to-11',SOURCE),/digest mismatch/);
-    assert.equal(f.store.get(f.missionId).turnCount,11);
+    assert.equal(f.store.get(f.missionId).turnCount,9);
   }finally{f.close();}
 });
 
 test('physical tab retirement preserves owner tabs and requires its own independent witness',async()=>{
   const f=fixture();try{
-    f.firstTen();f.observe(11,true,false);
+    f.firstEight();f.observe(9,true,false);
     const pages=physicalPages(),p=await witness(f,pages);
     const owner=pages.make('OWNER-PRESERVE','https://example.org','owner','owner');
     assert.equal(await retireGoalOwnedTab({store:f.store,goalId:f.goalId,
       missionId:f.missionId,sourcePage:p.source,destinationPage:p.destination,
-      sourceUrl:url(2),destinationUrl:url(12),sourceSha:SOURCE,privateRoot:f.dir}),true);
-    f.store.commitPiPlan(f.missionId,sha(answer(11)),[],{
+      sourceUrl:url(2),destinationUrl:url(10),sourceSha:SOURCE,privateRoot:f.dir}),true);
+    f.store.commitPiPlan(f.missionId,sha(answer(9)),[],{
       action:'NEXT',summary:'PI reviewed',nextPrompt:'Continue'});
     assert.equal(p.source._test.closed(),true);
     assert.equal(p.destination._test.closed(),false);
@@ -150,13 +150,13 @@ test('physical tab retirement preserves owner tabs and requires its own independ
   }finally{f.close();}
 });
 
-test('an unreviewed or unsettled eleventh request never grants a Chrome ReleaseProbe PASS',async()=>{
+test('an unreviewed or unsettled ninth request never grants a Chrome ReleaseProbe PASS',async()=>{
   const f=fixture();try{
-    f.firstTen();
+    f.firstEight();
     f.store.reserveChatBrowserTurn(f.missionId,f.store.get(f.missionId).version,
       'pending-new-chat',sha('new prompt'),{newConversation:true});
     assert.throws(()=>inspectStoredChromeWitnesses(f.store,f.goalId,f.dir,
       'chrome-10-to-11',SOURCE),/settled|unreviewed/);
-    assert.equal(f.store.get(f.missionId).turnCount,10);
+    assert.equal(f.store.get(f.missionId).turnCount,8);
   }finally{f.close();}
 });

@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.2.10`.
+- Current source package version: `1.2.11`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -24,7 +24,7 @@
   remain independently queued/active, but a browser Send or uncertain original
   request prevents dispatch to another Goal until a safe checkpoint.
 - New PI Missions are unbounded (`max_turns=0`); each ChatGPT conversation
-  permits at most **10 observed Relay Sends**, then requires a distinct,
+  permits at most **8 observed Relay Sends**, then requires a distinct,
   verified conversation. Existing finite-limit Missions keep their stored
   historical successor rules without rewriting requests or audit records.
 - Each writable Goal requires an explicitly approved, non-overlapping
@@ -49,6 +49,18 @@
   unanswered turn, invents a new linked Chat URL or unlocks the original
   reservation. A new chat is not proof that task context migrated; continue
   only after independent new-conversation evidence and recovery authorization.
+- The native Start-new-chat action may leave the **exact original prompt as an
+  unsent draft** in a separate origin tab. A revision- and scope-gated
+  `browser-send-native-draft` checks the unique origin, empty transcript and
+  twice-stable original SHA before one persisted Send intent and one click.
+  The single Worker later independently observes the new direct conversation,
+  credits the original uncertain request only after a complete SHA-matched
+  terminal reply, then recovers the PI checkpoint. A click, draft or partial
+  reply never counts as a completed turn. New reservations record their
+  eight-Send policy; older ten-Send event history stays read-only and valid.
+  For future unpaused capacity incidents, the single Worker automatically
+  submits the exact prefilled draft once. Owner pause always blocks that
+  background action until separately authorized.
 - New or repaired production Workers require a **zero-in-flight**, read-only
   restart preflight, atomic maintenance drain, verified private SQLite backup
   and independent restore, byte-checked compiled rollback image, exact fetched

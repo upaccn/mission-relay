@@ -600,7 +600,7 @@ test('authenticated Telegram status exposes bounded in-flight PI phase without s
     f.transport.updates=[f.message(739,`/status ${f.m.id}`)];
     await f.bridge.pollOnce(0);
     const output=f.transport.sent.join('\n');
-    assert.match(output,/Current Chat: 0 of 10 messages/);
+    assert.match(output,/Current Chat: 0 of 8 messages/);
     assert.match(output,/Waiting for the current ChatGPT reply/);
     assert.match(output,/do not resend/);
     assert.doesNotMatch(output,/browser_answer_pending|UUID|private-reservation/);

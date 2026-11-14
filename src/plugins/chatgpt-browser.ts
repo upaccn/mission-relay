@@ -34,6 +34,61 @@ async function composerLocator(page:Page) {
   if(await legacy.count()===1) return legacy;
   return page.getByRole('textbox',{name:'Ask ChatGPT',exact:true});
 }
+/** The native maximum-length action carries the exact unsent original
+ * prompt into a new ChatGPT origin. Observe its *authored* textbox content;
+ * never fill or replace that draft and never trust a substring match. */
+export async function nativePrefilledDraftSha256(page:Page):Promise<string|null>{
+  if(!['https://chatgpt.com/','https://chatgpt.com'].includes(page.url()))return null;
+  if(await page.locator(USER_SELECTOR).count()||await userHeadings(page).count()||
+    await page.locator(ASSISTANT_SELECTOR).count()||await assistantHeadings(page).count())return null;
+  const box=await composerLocator(page);
+  if(await box.count()!==1||!await box.isVisible())return null;
+  const draft=await box.innerText({timeout:5000});
+  return draft.trim()
+    ?createHash('sha256').update(draft.trim()).digest('hex'):null;
+}
+
+/** Attach to exactly one Playwriter-exposed, native-prefilled *unsent*
+ * origin in the pinned Chrome profile. No navigation or Send in discovery. */
+export async function connectNativePrefilledDraft(browserId:string,
+  promptSha256:string):Promise<BrowserSession> {
+  if(!/^[A-Za-z0-9:._-]{1,200}$/.test(browserId)||
+    !/^[a-f0-9]{64}$/.test(promptSha256))
+    throw new Error('A pinned Chrome profile and exact original request SHA are required');
+  process.env.PLAYWRITER_AUTO_ENABLE='false';
+  process.env.PLAYWRITER_TELEMETRY ??='0';
+  const {connectViaExtension}=await import('playwriter');
+  const connection=await connectViaExtension({closeTabsOnEnd:false,tabGroup:'mission-relay',
+    selectBrowser:browsers=>browsers.find(browser=>browser.id===browserId)});
+  try{
+    const matches:Page[]=[];
+    for(const page of connection.browser.contexts().flatMap(context=>context.pages())){
+      if(page.isClosed()||!['https://chatgpt.com/','https://chatgpt.com'].includes(page.url()))continue;
+      if(await nativePrefilledDraftSha256(page)===promptSha256)matches.push(page);
+    }
+    if(matches.length!==1)
+      throw new Error(`Expected exactly one unsent native draft in the approved Chrome profile; found ${matches.length}`);
+    return {page:matches[0]!,close:()=>connection.close()};
+  }catch(error){
+    await closeWithoutMaskingFailure(()=>connection.close());
+    throw error;
+  }
+}
+
+/** The only Send allowed after native Start new chat. Persist one-shot intent
+ * before the click; return without waiting for an assistant reply. A crash or
+ * ambiguous click must be recovered by inspecting the NEW conversation,
+ * NEVER by a second click or composer fill. */
+export async function clickNativePrefilledSendOnce(page:Page,promptSha256:string,
+  claim:()=>boolean,clicked:()=>void):Promise<boolean>{
+  if(await nativePrefilledDraftSha256(page)!==promptSha256)return false;
+  const send=await sendLocator(page);
+  if(await send.count()!==1||!await send.isVisible()||!await send.isEnabled())return false;
+  if(!claim())return false;
+  await send.click({timeout:10000});
+  clicked();
+  return true;
+}
 async function sendLocator(page:Page) {
   const legacy=page.locator(SEND_SELECTOR);
   if(await legacy.count()) return legacy.first();
