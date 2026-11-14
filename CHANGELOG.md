@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.5 — 2026-11-14
+
+- Repair the owner-local `telegram-build-project --allow <path>` and `--revoke <path>` CLI branches: one required flag value was incorrectly rejected as an extra argument. The documented multi-repository approval and revocation commands were unusable despite lower-level tests passing.
+- Add end-to-end subprocess/SQLite tests for explicit sibling repository grants, duplicated grants, overlapping/aliased paths, exact revocation/reapproval and invalid argument counts. Never touch Mission/Goal requests during a local grant change.
+
+
 ## 1.2.4 — 2026-11-14
 
 - Require an explicit `--repo <approved-root>` on **every** `/goal-build`, including the first Goal: the global legacy `/build` default is not a multi-project authorization. Keep existing `/build` behavior for single-project tasks.

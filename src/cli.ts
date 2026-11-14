@@ -339,12 +339,12 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       store.setMeta('telegram.build.project','');
       result={configured:false,note:'No future /build command may start until locally re-approved.'};
     } else if (command === 'telegram-build-project' && id === '--allow') {
-      if(rest.length!==0||!store.getMeta('telegram.pi.sshHost'))
+      if(rest.length!==1||!store.getMeta('telegram.pi.sshHost'))
         throw new Error('A configured PI route and exactly one --allow path are required');
       result={approved:approveBuildRepository(store,option(flags(argv.slice(1)),'allow')),
         repositories:approvedBuildRepositories(store)};
     } else if (command === 'telegram-build-project' && id === '--revoke') {
-      if(rest.length!==0)throw new Error('Supply exactly one --revoke path');
+      if(rest.length!==1)throw new Error('Supply exactly one --revoke path');
       const project=validateRemoteProjectPath(option(flags(argv.slice(1)),'revoke'));
       revokeBuildRepository(store,project);
       result={revoked:project,repositories:approvedBuildRepositories(store),
