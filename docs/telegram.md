@@ -83,9 +83,9 @@ The existing Node controller checks ordinary control-loop progress every 30 seco
 ### Goal-driven owner commands (WP4)
 
 The authenticated Owner can send `/goal <objective>` for read-only work,
-`/goal-build <objective>` for the legacy default approved write repository,
-or `/goal-build --repo /approved/absolute/path <objective>` for another
-independently approved repository. Locally approve and inspect these exact
+or `/goal-build --repo /approved/absolute/path <objective>` for an
+independently approved repository. A write-enabled Goal **must** name its own
+repository: it cannot inherit the legacy `/build` default. Locally approve and inspect these exact
 paths with:
 
 ```sh
@@ -99,6 +99,8 @@ PI inference's configured SSH project is a tool-free route, not an
 automatic code-write permission for every Goal. Approved repository
 paths are rechecked at the final browser reservation. This controls
 prompts and Relay authorization, not the OS sandbox for ChatGPT tools.
+Parent/child repository path grants are refused; existing overlapping
+grants fail closed even after an earlier version recorded them.
 Independent Goal B intake is persisted while Goal A is running or an
 original Send is unresolved; B is not an instruction to A. The existing
 single Worker rotates at *observed Send plus committed PI decision*

@@ -216,20 +216,22 @@ test('WP4 /goal-build requires existing explicit local repository approval; fail
     const objective='Build the validated private product from a long-term owner goal';
     f.setUpdates([f.message(3201,`/goal-build ${objective}`)]);
     await f.bridge.pollOnce(0);
-    assert.ok(f.sent.some(x=>/locally approved project/.test(x)));
+    assert.ok(f.sent.some(x=>/requires \/goal-build --repo/.test(x)));
     assert.equal(new GoalLedger(f.store).listGoals().length,0);
     assert.equal(f.engine.list().length,1,'The original ChatGPT anchor must be preserved');
     assert.equal(f.state().sends,0);
     f.store.setMeta('telegram.pi.project',APPROVED_PROJECT);
     f.store.setMeta('telegram.build.project',APPROVED_PROJECT);
-    f.setUpdates([f.message(3202,`/goal-build ${objective}`)]);
+    f.setUpdates([f.message(3202,`/goal-build --repo ${APPROVED_PROJECT} ${objective}`)]);
     await f.bridge.pollOnce(0);
     const goal=new GoalLedger(f.store).listGoals()[0]!;
     assert.equal(goal.objective,objective);
     const mission=f.engine.list().find(x=>x.goal===objective)!;
     assert.equal(mission.sandbox,'workspace-write');
     assert.equal(mission.workspace,APPROVED_PROJECT);
-    assert.ok(f.sent.some(x=>x.includes('Long-term goal tracking is enabled.')));
+    assert.ok(f.sent.some(x=>x.includes('Task accepted')));
+    await (f.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>})
+      .recoverObservedPiCheckpoint();
     for(let i=0;i<150&&!f.state().closed;i++)await new Promise(r=>setTimeout(r,50));
     assert.equal(f.state().closed,true);
     assert.ok(f.state().sentPrompts[0]?.includes(APPROVED_PROJECT));
@@ -1366,7 +1368,7 @@ test('A new Goal is durably queued beside an owner-paused in-flight Send, but ne
     f.engine.pause(old.id);
     const oldEventsWhileReserved=f.store.events(old.id);
     const objective='Fresh independently scoped Mission Relay Goal';
-    f.setUpdates([f.message(3401,`/goal-build ${objective}`)]);
+    f.setUpdates([f.message(3401,`/goal-build --repo ${APPROVED_PROJECT} ${objective}`)]);
     await f.bridge.pollOnce(0);
     assert.equal(ledger.listGoals().length,2,'Goal intake must not be blocked by the old in-flight Send');
     assert.equal(f.state().sends,0);

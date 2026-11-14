@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.4 — 2026-11-14
+
+- Require an explicit `--repo <approved-root>` on **every** `/goal-build`, including the first Goal: the global legacy `/build` default is not a multi-project authorization. Keep existing `/build` behavior for single-project tasks.
+- Refuse overlapping (parent/child) repository grants, including legacy overlaps already present in SQLite; recheck exact scope and declared source identity before recovery, dispatch and the atomic final browser Send reservation. No silent rebind, implicit access expansion, historical replay or new daemon.
+- Existing X-to-Markdown-Copier and Field Companion are distinct Git roots on the approved operator host; prior X Mission's *authorization metadata*, not the source tree, was mismatched. It remains protected, never reassigned to another repository automatically.
+
 ## 1.2.3 — 2026-11-14
 
 - Recover an existing-chat continuation whose original Send outlived the one-hour browser observer and later produced a complete answer **without** showing a Retry button. A previously verified PI NEXT/HANDOFF checkpoint, unchanged last user-prompt SHA, exact pinned conversation, a distinct terminal-marked reply and two stable inspections are required before the original request is credited. No composer Send or Retry click is performed.

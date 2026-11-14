@@ -7,7 +7,7 @@ import type { CreateMission, Mission, MissionEvent, MissionState, VerificationCh
 import { normalizeChatGPTUrl } from './chatgpt-handoff.js';
 import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 import {missionTurnsRemaining,missionTurnLimitReached} from './mission-turns.js';
-import {isApprovedBuildRepository,declaredSourceMatchesScope} from './build-scopes.js';
+import {isApprovedBuildRepository,declaredSourceMatchesScope,hasIsolatedRepositoryGrant} from './build-scopes.js';
 import type {RuntimeProvenance} from './runtime-provenance.js';
 
 type MissionRow = {
@@ -1189,7 +1189,7 @@ export class Store {
       if(!options.newConversation&&this.piChatObservedTurns(id)>=MAX_RELAY_CHAT_TURNS)
         throw new Error(`ChatGPT conversation already has ${MAX_RELAY_CHAT_TURNS} observed Relay Sends; start a new conversation before another Send`);
       if(m.sandbox==='workspace-write'&&this.getMeta(`pi.autopilot.enabled.${id}`)==='1'&&
-        !isApprovedBuildRepository(this,m.workspace))
+        !hasIsolatedRepositoryGrant(this,m.workspace))
         throw new Error('Approved PI build workspace changed or was revoked before Send');
       if(m.sandbox==='workspace-write'&&this.getMeta(`pi.autopilot.enabled.${id}`)==='1'&&
         !declaredSourceMatchesScope(m.goal,m.workspace))

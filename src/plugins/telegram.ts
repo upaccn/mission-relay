@@ -19,7 +19,7 @@ import {drivePiAutopilot,pauseFailedPiPlanning,
   deferTransientPiBrowserRecovery} from '../core/pi-autopilot.js';
 import {SshPiPlanner,validateRemoteProjectPath,type PiPlanner} from '../core/pi-planner.js';
 import {GoalLedger} from '../core/goal-store.js';
-import {isApprovedBuildRepository,declaredSourceMatchesScope} from '../core/build-scopes.js';
+import {hasIsolatedRepositoryGrant,declaredSourceMatchesScope} from '../core/build-scopes.js';
 import {telegramChatAnchor} from '../core/chat-anchor.js';
 import {GoalReleaseGate} from '../core/goal-release.js';
 import type {RuntimeProvenance} from '../core/runtime-provenance.js';
@@ -503,7 +503,8 @@ export class TelegramBridge {
     // read-only recovery, but cannot trigger a side-effecting UI Retry
     // that would continue work inside the wrong approved repository.
     const scopeConsistent=candidate.sandbox!=='workspace-write'||
-      declaredSourceMatchesScope(candidate.goal,candidate.workspace);
+      (declaredSourceMatchesScope(candidate.goal,candidate.workspace)&&
+        hasIsolatedRepositoryGrant(this.store,candidate.workspace));
     const r=this.store.chatBrowserTurn(candidate.id)!;
     const url=this.store.chatLink(candidate.id),browserId=this.store.chatBrowserBinding(candidate.id);
     if(!url||!browserId)return;
@@ -703,8 +704,10 @@ export class TelegramBridge {
     const last=this.store.getMeta('pi.scheduler.lastMission');
     const pivot=candidates.findIndex(m=>m.id===last);
     const m=candidates[(pivot+1)%candidates.length]!;
-    if(m.sandbox==='workspace-write'&&!declaredSourceMatchesScope(m.goal,m.workspace)){
-      const reason='Goal source repository differs from its immutable approved write scope; no further Send permitted';
+    if(m.sandbox==='workspace-write'&&
+      (!declaredSourceMatchesScope(m.goal,m.workspace)||
+        !hasIsolatedRepositoryGrant(this.store,m.workspace))){
+      const reason='Goal repository isolation failed: declared source, approved path or overlapping grants; no further Send permitted';
       if(m.state==='READY')
         this.store.update(m.id,m.version,{state:'BLOCKED',lastError:reason},
           'pi.autopilot_interrupted',{reason});
@@ -875,12 +878,11 @@ export class TelegramBridge {
    * Initial browser/PI preflight is performed later by the ONE leased worker. */
   private enqueueGoal(task:string,commandId:string,write:boolean):string {
     const specified=write?/^--repo\s+(\S+)\s+([\s\S]+)$/.exec(task.trim()):null;
-    if(write&&task.trim().startsWith('--repo')&&!specified)
-      throw new Error('Use /goal-build --repo /approved/absolute/path <objective>');
+    if(write&&!specified)
+      throw new Error('Every writable Goal requires /goal-build --repo /approved/absolute/path <objective>; the default /build directory cannot be inherited');
     const objective=(specified?specified[2]!:task).trim();
-    const project=write?(specified?validateRemoteProjectPath(specified[1]!):
-      this.store.getMeta('telegram.build.project')):null;
-    if(write&&(!project||!isApprovedBuildRepository(this.store,project)))
+    const project=write?validateRemoteProjectPath(specified![1]!):null;
+    if(write&&(!project||!hasIsolatedRepositoryGrant(this.store,project)))
       throw new Error('Write-enabled Goal needs a locally approved repository; use telegram-build-project --allow <path>');
     if(project&&!declaredSourceMatchesScope(objective,project))
       throw new Error('Goal names a different source repository; use /goal-build --repo <approved path> <objective> with an exact local repository approval');
@@ -892,7 +894,7 @@ export class TelegramBridge {
     const created=this.store.atomic(()=>{
       if(this.store.channelDrainRequested(this.source))
         throw new Error('Telegram maintenance drain active; no Goal was accepted');
-      if(project&&!isApprovedBuildRepository(this.store,project))
+      if(project&&!hasIsolatedRepositoryGrant(this.store,project))
         throw new Error('Approved build repository was revoked during Goal intake');
       const key=`telegram-goal-${commandId}`;
       const previous=this.engine.list().find(m=>m.requestKey===key);
@@ -952,6 +954,8 @@ export class TelegramBridge {
     // always independent, even if the first is PAUSED or its Send is uncertain.
     // The leased run() loop, not an arbitrary pollOnce caller, schedules the
     // queued Goal at a safe checkpoint.
+    if(goalDriven&&write&&!/^--repo\s+\S+\s+\S/.test(task.trim()))
+      throw new Error('Every writable Goal requires /goal-build --repo /approved/absolute/path <objective>; no implicit project default');
     const otherActive=goalDriven&&this.engine.list().some(m=>{
       if(this.store.getMeta(`pi.autopilot.enabled.${m.id}`)!=='1')return false;
       const status=this.store.chatBrowserTurn(m.id)?.status;
@@ -964,7 +968,7 @@ export class TelegramBridge {
     });
     const alreadyEnrolled=goalDriven&&this.engine.list().some(m=>
       m.requestKey===`telegram-goal-${commandId}`);
-    const exactScope=write?(task.trim().startsWith('--repo ')?
+    const exactScope=write?(goalDriven?
       /^--repo\s+(\S+)\s+/.exec(task.trim())?.[1]??'':
       this.store.getMeta('telegram.build.project')??''):'';
     const desiredObjective=goalDriven?(write&&task.trim().startsWith('--repo ')?
@@ -1251,7 +1255,7 @@ export class TelegramBridge {
       'The assistant continues until finished or blocked; each Chat allows 10 messages.',
       '/build <task> — implement in your approved repository',
       '/goal <objective> — track a persistent goal',
-      '/goal-build [--repo /approved/path] <objective> — independent write-enabled Goal',
+      '/goal-build --repo /approved/path <objective> — isolated write-enabled Goal',
       '/list — tasks requiring attention',
       '/status — current task (or /status 2 after /list)',
       '/pause — stop the current task',

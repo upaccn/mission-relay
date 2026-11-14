@@ -14,8 +14,7 @@ queue, second agent scheduler or separate service is necessary.
 | Ordinary Telegram message | Start a read-only PI-coordinated task in a new Chat |
 | `/build <task>` | Start a write-capable task in the previously approved repository |
 | `/goal <objective>` | Persist a long-term goal and let PI create/approve its work plan |
-| `/goal-build <objective>` | Persist an independent Goal in the legacy approved default repository |
-| `/goal-build --repo /approved/path <objective>` | Persist a separate Goal with its own explicitly approved repository, work and ChatGPT conversation |
+| `/goal-build --repo /approved/path <objective>` | Persist an independent Goal with its own explicitly approved non-overlapping repository, work and ChatGPT conversation; the repository argument is mandatory |
 | `/list` | Show tasks requiring attention, with history accessible from the inbox |
 | `/status` or `/status 2` | Show the current task or select a numbered task from `/list` |
 | `/pause` or `/pause 2` | Stop the current or selected Goal at the next safe checkpoint |

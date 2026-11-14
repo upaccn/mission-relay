@@ -8,8 +8,20 @@ function scopeKey(project:string):string {
   return `telegram.build.allow.${createHash('sha256').update(project).digest('hex')}`;
 }
 
+/** Two different approved project roots cannot overlap, even when the
+ * operator accidentally authorizes a nested checkout. A path grant is never
+ * an authorization for a parent/child repository. */
+export function repositoriesOverlap(a:string,b:string):boolean {
+  const left=validateRemoteProjectPath(a),right=validateRemoteProjectPath(b);
+  return left===right||left.startsWith(right+'/')||right.startsWith(left+'/');
+}
+
 export function approveBuildRepository(store:Store,project:string):string {
   const path=validateRemoteProjectPath(project);
+  for(const existing of approvedBuildRepositories(store)){
+    if(existing!==path&&repositoriesOverlap(existing,path))
+      throw new Error('Repository isolation refused: approved source roots cannot contain one another');
+  }
   store.setMeta(scopeKey(path),path);
   return path;
 }
@@ -30,6 +42,15 @@ export function isApprovedBuildRepository(store:Store,project:string):boolean {
   // execution-repository grant for newly approved, independent Goals.
   return store.getMeta('telegram.build.project')===path&&
     store.getMeta('telegram.pi.project')===path;
+}
+
+/** Fail closed if an older SQLite deployment already contains overlapping
+ * grants. Repeat at every Send reservation, not only at initial approval. */
+export function hasIsolatedRepositoryGrant(store:Store,project:string):boolean {
+  const path=validateRemoteProjectPath(project);
+  return isApprovedBuildRepository(store,path)&&
+    approvedBuildRepositories(store).every(other=>
+      other===path||!repositoriesOverlap(other,path));
 }
 
 /** A Goal's explicitly labeled source directory cannot be silently replaced

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
+import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import type {Page} from 'playwriter';
@@ -8,7 +9,8 @@ import {Store} from '../src/core/store.js';
 import {Engine} from '../src/core/engine.js';
 import {GoalLedger} from '../src/core/goal-store.js';
 import {approveBuildRepository,isApprovedBuildRepository,revokeBuildRepository,
-  approvedBuildRepositories,declaredSourceMatchesScope} from '../src/core/build-scopes.js';
+  approvedBuildRepositories,declaredSourceMatchesScope,
+  hasIsolatedRepositoryGrant,repositoriesOverlap} from '../src/core/build-scopes.js';
 import {TelegramBridge,type TelegramUpdate,type TelegramTransport} from '../src/plugins/telegram.js';
 import type {PiPlanner} from '../src/core/pi-planner.js';
 import type {AgentAdapter} from '../src/core/types.js';
@@ -36,13 +38,52 @@ test('an explicitly declared Goal source cannot inherit a different approved /bu
     r.setUpdates([r.message(799,`/goal-build ${objective}`)]);
     await r.bridge.pollOnce(0);
     assert.equal(new GoalLedger(r.store).listGoals().length,0);
+    assert.ok(r.replies.some(reply=>reply.includes('requires /goal-build --repo')));
+    r.setUpdates([r.message(801,`/goal-build --repo ${REPO_A} ${objective}`)]);
+    await r.bridge.pollOnce(0);
+    assert.equal(new GoalLedger(r.store).listGoals().length,0);
     assert.ok(r.replies.some(reply=>reply.includes('different source repository')));
-    r.setUpdates([r.message(800,`/goal-build --repo ${REPO_B} ${objective}`)]);
+    r.setUpdates([r.message(802,`/goal-build --repo ${REPO_B} ${objective}`)]);
     await r.bridge.pollOnce(0);
     assert.equal(new GoalLedger(r.store).listGoals().length,1);
     const mission=r.engine.list().find(m=>m.goal===objective)!;
     assert.equal(mission.workspace,REPO_B);
   }finally{await r.idle();r.close();}
+});
+
+test('repository grants forbid parent/child overlaps but allow unrelated sibling checkouts',()=>{
+  const r=multiRig();try{
+    assert.equal(repositoriesOverlap(REPO_A,REPO_A+'/nested'),true);
+    assert.equal(repositoriesOverlap(REPO_A,REPO_B),false);
+    assert.equal(repositoriesOverlap(REPO_A,REPO_A+'-another'),false);
+    assert.throws(()=>approveBuildRepository(r.store,REPO_A+'/nested'),
+      /source roots cannot contain/);
+    assert.throws(()=>approveBuildRepository(r.store,'/srv/projects'),
+      /source roots cannot contain/);
+    assert.equal(hasIsolatedRepositoryGrant(r.store,REPO_A),true);
+    assert.equal(hasIsolatedRepositoryGrant(r.store,REPO_B),true);
+    assert.deepEqual(approvedBuildRepositories(r.store),[REPO_A,REPO_B]);
+  }finally{r.close();}
+});
+
+test('historical overlapping grants fail the final SQLite Send fence without changing the request',()=>{
+  const r=multiRig();try{
+    // Simulate a legacy SQLite grant created before overlapping grants were forbidden.
+    const nested=REPO_A+'/nested';
+    const key='telegram.build.allow.'+createHash('sha256').update(nested).digest('hex');
+    r.store.setMeta(key,nested);
+    assert.equal(hasIsolatedRepositoryGrant(r.store,REPO_A),false);
+    const m=r.store.create({goal:'Repository checkout isolation',acceptance:['No mixed write'],
+      workspace:REPO_A,sandbox:'workspace-write',mode:'supervised',
+      maxTurns:0,requestKey:'legacy-overlap',checks:[]});
+    const linked=r.store.linkChat(m.id,ORIGIN,m.version).mission;
+    const bound=r.store.bindChatBrowser(m.id,browserId,linked.version).mission;
+    r.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
+    assert.throws(()=>r.store.reserveChatBrowserTurn(m.id,bound.version,
+      'forbidden-cross-checkout','a'.repeat(64)),/Approved PI build workspace/);
+    assert.equal(r.store.chatBrowserTurn(m.id),null);
+    assert.equal(r.store.get(m.id).turnCount,0);
+  }finally{r.close();}
 });
 
 test('a legacy misbound Goal is blocked before recovery opens Chrome or reserves another Send',async()=>{
@@ -63,7 +104,7 @@ test('a legacy misbound Goal is blocked before recovery opens Chrome or reserves
     await (r.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>})
       .recoverObservedPiCheckpoint();
     assert.equal(r.store.get(m.id).state,'BLOCKED');
-    assert.match(r.store.get(m.id).lastError??'',/source repository differs/);
+    assert.match(r.store.get(m.id).lastError??'',/Goal repository isolation failed/);
     assert.equal(r.store.chatBrowserTurn(m.id),null);
     assert.equal(r.connectionAttempts.length,0,'No Chrome connector was opened');
     assert.equal(r.sends.length,0);
@@ -183,8 +224,10 @@ function multiRig(){
 test('two durable write Goals rotate A→B→A→B on one Worker with separate repos and Chat URLs',async()=>{
   const r=multiRig();
   try{
-    r.setUpdates([r.message(701,`/goal-build Goal A: add source checks`)]);
+    r.setUpdates([r.message(701,`/goal-build --repo ${REPO_A} Goal A: add source checks`)]);
     await r.bridge.pollOnce(0);
+    await (r.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>})
+      .recoverObservedPiCheckpoint();
     assert.ok((r.bridge as unknown as {activeTask:Promise<void>|null}).activeTask);
     r.setUpdates([r.message(702,`/goal-build --repo ${REPO_B} Goal B: repair second product`)]);
     await r.bridge.pollOnce(0);
