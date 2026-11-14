@@ -164,7 +164,7 @@ Commands:
   browser-recover-rollover <id> --revision <n> --new-url <exact new chat URL>
          --acknowledge-side-effects  Read-only inspect old/new chats, then atomic observed recovery
   browser-resume-pending-retry <id> --revision <n> --acknowledge-side-effects
-         Release an owner-paused, uncertain new-chat message for ONE enrolled-Worker
+         Release an owner-paused, uncertain original existing/new-chat message for ONE enrolled-Worker
          existing-message UI Retry; never perform Retry or composer Send here
   browser-retry-pre-send-rollover <id> --revision <n> --acknowledge-side-effects
          ONE original-reservation first Send only after the exact old page.goto
@@ -881,10 +881,13 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       const revision=Number(option(f,'revision'));
       if(!Number.isSafeInteger(revision)||revision<0)
         throw new Error('Valid Mission revision required');
-      const m=store.resumeUncertainNewChatRetry(id,revision);
+      const record=store.chatBrowserTurn(id);
+      const m=record?.newConversation===true
+        ?store.resumeUncertainNewChatRetry(id,revision)
+        :store.resumeUncertainExistingChatRetry(id,revision);
       result={missionId:id,revision:m.version,state:m.state,
         stopRequested:m.stopRequested,
-        note:'Original new-chat request is preserved; only the enrolled Worker may inspect and perform one same-message UI Retry. No Send or Retry was executed by this command.'};
+        note:'Original request is preserved; only the enrolled Worker may inspect and perform one same-message UI Retry. No Send or Retry was executed by this command.'};
     }
     else if (command === 'browser-recover-rollover' && id) {
       const f=flags(rest);

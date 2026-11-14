@@ -80,6 +80,15 @@ test('PI input distinctly tags untrusted browser content and includes every queu
   assert.match(prompt,/Full visible answer SHA-256:/);
 });
 
+test('PI decision policy conserves metered CI without removing mandatory release gates',()=>{
+  const prompt=piDecisionPrompt({goal:'Release app',acceptance:['Test real Android device'],
+    turnCount:5,maxTurns:0,responseSha256:'c'.repeat(64),lastAssistant:'A review',
+    sandbox:'workspace-write',workspace:'/srv/projects/app',ownerDirectives:[]});
+  assert.match(prompt,/do not demand a fresh remote CI run after every fix/);
+  assert.match(prompt,/inspect each repository workflow trigger/i);
+  assert.match(prompt,/Never waive an explicit mandatory CI acceptance criterion/);
+});
+
 test('PI receives evidence buried in a 50000-character browser answer, not just the Telegram excerpt',()=>{
   const evidence='CRITICAL_MIDDLE_EVIDENCE=all_170_tests_passed';
   const answer='A'.repeat(25000)+evidence+'B'.repeat(25000);

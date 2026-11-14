@@ -1,5 +1,19 @@
 # Operations
 
+## Metered CI and native verification
+
+Before pushing iterative changes to a private repository, inspect its `.github/workflows/` triggers. A push to a watched branch may automatically start a complete metered matrix. Prefer local deterministic checks and the already approved native testing host (for Android, the established device/emulator/Google Play readiness workflow); batch remote pushes at meaningful acceptance boundaries. Run hosted CI when the actual owner acceptance or high-risk release gate needs independent coverage. The native Play readiness check is not a Play submission or a replacement for mandatory independently evidenced remote release CI. Mission Relay's prompt policy cannot disable GitHub workflows in unrelated repositories; optimize those workflows separately when authorized.
+
+## Paused original-message Retry after maintenance
+
+Owner pause is a stop fence, not permission to click Retry. If an already-submitted original existing-chat request becomes uncertain while an owner pause is in force, keep its immutable browser reservation, prompt hash, tab binding and single Retry allowance. When the read-only maintenance preflight confirms no active Send or pending notifications, perform the normal fenced pull-only upgrade. **After** the newly deployed Worker is independently attested, obtain the current Mission revision and explicitly release only that one original request:
+
+```text
+node dist/cli.js browser-resume-pending-retry <mission-id> --revision <current-revision> --acknowledge-side-effects
+```
+
+The command performs no Send, UI Retry or browser mutation. The enrolled Worker checks the same tab and exact latest user prompt, the actual delivery/stream-error Retry control, original PI chain and repository authorization, then persists at most one UI Retry intent before clicking. An earlier paused-claim failure is eligible only when its append-only pause predates the original uncertain event; unrelated errors or already-spent intents remain blocked. A complete reply is independently checked twice before PI proceeds. The operator should not repeat the command, clear its receipt or manually send the prompt.
+
 ## Timed-out new-chat recovery after a software upgrade
 
 The new-chat origin can already contain the one original Send even when the

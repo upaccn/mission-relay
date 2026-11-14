@@ -97,8 +97,8 @@ test('uncertain new-chat Retry requires owner release; recovers its one original
     await bridge.recoverUncertainDeliveryOnce();
     assert.equal(page.clicks,0);
     m=f.store.get(f.id);
-    assert.throws(()=>f.store.claimDeliveryRetryIntent(f.id,'original',hash(prompt)),
-      /original active or timed-out/);
+    assert.equal(f.store.claimDeliveryRetryIntent(f.id,'original',hash(prompt)),false,
+      'Cooperative pause defers UI Retry without consuming the intent');
     const released=f.store.resumeUncertainNewChatRetry(f.id,m.version);
     assert.equal(released.stopRequested,false);
     assert.equal(released.state,'NEEDS_RECONCILIATION');
@@ -189,6 +189,71 @@ test('timed-out original message gets one UI Retry, then independently recovers 
     await bridge.recoverUncertainDeliveryOnce();
     assert.equal(page.clicks,1);
     assert.equal(f.store.get(f.id).turnCount,1);
+  }finally{f.cleanup();}
+});
+
+test('cooperative pause defers an in-flight Retry, then owner release restores ONE existing-message Retry',async()=>{
+  const f=fixture();try{
+    const prior='Verified prior PI answer\n[MISSION_RELAY:NEXT]';
+    f.store.finishChatBrowserTurn(f.id,'original',{
+      kind:'observed',assistantSha256:hash(prior),summary:prior,
+    });
+    f.store.commitPiPlan(f.id,hash(prior),[],{
+      action:'NEXT',summary:'Continue approved work',nextPrompt:prompt,
+    });
+    f.store.reserveChatBrowserTurn(f.id,f.store.get(f.id).version,'continued',hash(prompt));
+    let m=f.store.get(f.id);
+    f.store.update(f.id,m.version,{stopRequested:true},'mission.pause_requested');
+    assert.equal(f.store.claimDeliveryRetryIntent(f.id,'continued',hash(prompt)),false,
+      'Pause must defer the Retry without throwing or consuming its allowance');
+    f.store.finishChatBrowserTurn(f.id,'continued',{
+      kind:'uncertain',
+      error:'Delivery Retry requires the original active or timed-out request',
+    });
+    const page=new RetryPage();
+    const bridge=new TelegramBridge(f.store,f.engine,{
+      getUpdates:async()=>[],sendMessage:async()=>{},
+    },1,2,undefined,async()=>({page:page as unknown as Page,close:async()=>{}}));
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(page.clicks,0);
+    m=f.store.get(f.id);
+    assert.equal(m.stopRequested,true);
+    assert.equal(m.state,'NEEDS_RECONCILIATION');
+    const released=f.store.resumeUncertainExistingChatRetry(f.id,m.version);
+    assert.equal(released.stopRequested,false);
+    assert.equal(released.state,'NEEDS_RECONCILIATION');
+    assert.throws(()=>f.store.resumeUncertainExistingChatRetry(f.id,m.version),
+      /stopped|State conflict/);
+    (bridge as unknown as {lastDeliveryRetryRecoveryAt:number}).lastDeliveryRetryRecoveryAt=0;
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(page.clicks,1);
+    (bridge as unknown as {lastDeliveryRetryRecoveryAt:number}).lastDeliveryRetryRecoveryAt=0;
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(f.store.get(f.id).turnCount,2);
+    assert.equal(f.store.chatBrowserTurn(f.id)?.status,'reconciled');
+    assert.equal(f.store.events(f.id).filter(e=>
+      e.type==='chatgpt.browser_delivery_retry_intent').length,1);
+    assert.equal(f.store.events(f.id).filter(e=>
+      e.type==='chatgpt.browser_delivery_retry_clicked').length,1);
+    assert.equal(f.store.events(f.id).filter(e=>
+      e.type==='chatgpt.browser_existing_chat_retry_authorized').length,1);
+    assert.equal(f.store.events(f.id).filter(e=>
+      e.type==='chatgpt.browser_reserved').length,2);
+  }finally{f.cleanup();}
+});
+
+test('paused original failure without matching PI plan or pause-before-failure is not retry-releasable',()=>{
+  const f=fixture();try{
+    f.store.finishChatBrowserTurn(f.id,'original',{
+      kind:'uncertain',
+      error:'Delivery Retry requires the original active or timed-out request',
+    });
+    let m=f.store.get(f.id);
+    f.store.update(f.id,m.version,{stopRequested:true},'mission.pause_requested');
+    m=f.store.get(f.id);
+    assert.throws(()=>f.store.resumeUncertainExistingChatRetry(f.id,m.version),
+      /stopped, unchanged existing-chat timeout/);
+    assert.equal(f.store.get(f.id).stopRequested,true);
   }finally{f.cleanup();}
 });
 

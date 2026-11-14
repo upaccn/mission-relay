@@ -3,7 +3,7 @@ import {missionTurnsRemaining,missionTurnLimitReached} from '../core/mission-tur
 import type { PluginManifest } from '../core/plugins.js';
 import {createHash} from 'node:crypto';
 import { Engine } from '../core/engine.js';
-import { Store,PI_SUCCESSOR_CHECKPOINT_MISMATCH } from '../core/store.js';
+import { Store,PI_SUCCESSOR_CHECKPOINT_MISMATCH,PAUSED_DELIVERY_RETRY_ERROR } from '../core/store.js';
 import type {PreflightResult} from '../core/executor-plugins.js';
 import { renderChatGPTHandoff } from '../core/chatgpt-handoff.js';
 import {connectChatPage,inspectChatPage,lastVisibleUserPromptSha256,listConnectedChatCandidates,
@@ -492,7 +492,12 @@ export class TelegramBridge {
     const candidate=this.engine.list().find(m=>{
       const r=this.store.chatBrowserTurn(m.id);
       return m.state==='NEEDS_RECONCILIATION'&&!m.stopRequested&&
-        ((m.lastError==='ChatGPT response observation timed out; submission outcome is ambiguous'&&
+        (((m.lastError==='ChatGPT response observation timed out; submission outcome is ambiguous'||
+           (m.lastError===PAUSED_DELIVERY_RETRY_ERROR&&r&&
+             this.store.events(m.id).some(e=>
+               e.type==='chatgpt.browser_existing_chat_retry_authorized'&&
+               (e.payload as {requestKey?:string;promptSha256?:string}).requestKey===r.requestKey&&
+               (e.payload as {promptSha256?:string}).promptSha256===r.promptSha256)))&&
           r?.status==='uncertain'&&r.newConversation!==true)||
          (m.lastError==='New ChatGPT reply observation timed out; creation outcome is ambiguous'&&
           r?.status==='uncertain'&&r.newConversation===true))&&

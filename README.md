@@ -13,6 +13,7 @@ Mission Relay coordinates long-running AI work across independently scoped proje
 - **Conversation handoff:** after 10 verified Relay sends in one ChatGPT conversation, further work uses a new conversation while retaining the Mission's durable context.
 - **Safe delivery and recovery:** exact request IDs, prompt and answer hashes, browser/tab binding, at-most-once sends, bounded existing-message UI Retry, owner pause/resume and recovery of verified replies.
 - **Operational controls:** SQLite-backed audit events, GitHub CI qualification, maintenance-gated Windows upgrades, recoverable database backups and runtime SHA verification.
+- **CI-conscious autonomy:** routine iterations prefer local/approved native-host validation and batch metered CI pushes; private-repository workflow triggers are checked before pushes. Required release CI is still independently verified, not replaced by local-only assertions.
 - **Optional executor plugins:** add trusted native executors without bundling vendor SDKs or credentials into Core.
 
 ## Install
@@ -64,6 +65,8 @@ node dist/cli.js channel-status
 ```
 
 Mission Relay retains the original request if ChatGPT delivery is ambiguous; it never submits a fresh copy simply because a response timed out. A Playwriter tab count of zero means no tabs are currently attached to the extension, not necessarily that Chrome tabs have closed.
+
+For a cooperatively paused request that ended in an uncertain original ChatGPT delivery, the operator can use the revision-gated `browser-resume-pending-retry` command **after** an audited maintenance upgrade. It only releases the paused original message for inspection by the enrolled Worker; any UI Retry consumes the same durable one-shot budget and never replays a composer Send.
 
 For Windows scheduled-task deployment, SQLite maintenance, backup and rollback, see [Operations](docs/operations.md). For CI and software release qualification, run:
 

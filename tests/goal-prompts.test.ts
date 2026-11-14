@@ -105,6 +105,8 @@ test('Goal-bound same-chat and new-chat prompts contain ONLY current work, scope
       assert.match(p,/Build the persistence adapter/);
       assert.match(p,/Prove a stable SHA-256 test fixture/);
       assert.match(p,/Confirm no unexpected browser Send/);
+      assert.doesNotMatch(p,/CI budget: avoid metered GitHub Actions/,
+        'Read-only investigation does not need a write-oriented CI spending policy');
       assert.match(p,/Scope: read-only investigation/);
       assert.match(p,/Validate the persistence adapter and provide checkable results/);
       assert.ok(p.startsWith(fresh?'Start this work package in a new conversation.':

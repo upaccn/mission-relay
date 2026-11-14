@@ -2,6 +2,7 @@ import type {Store,PiPlan} from './store.js';
 import {createHash} from 'node:crypto';
 import {GoalLedger} from './goal-store.js';
 import {validateRemoteProjectPath} from './pi-planner.js';
+import {CI_EXECUTOR_POLICY} from './ci-policy.js';
 
 /** WP3 executor-only projection. Owner goals, PI policies, browser budgets,
  * handoff summaries and prior model answers remain in the trusted controller,
@@ -50,6 +51,7 @@ export function goalWorkPrompt(store:Store,missionId:string,plan:PiPlan,
     ...acceptance.map((x,i)=>`${i+1}. ${x.criterion}`),
     'Current instruction:',
     plan.nextPrompt.trim(),
+    ...(writeWorkspace?CI_EXECUTOR_POLICY:[]),
     'Execute only this package. Check actual outcomes and report evidence, unresolved work and blockers.',
     'End with one standalone [MISSION_RELAY:NEXT], [MISSION_RELAY:HANDOFF], [MISSION_RELAY:DONE] or [MISSION_RELAY:BLOCKED].',
   ].join('\n');

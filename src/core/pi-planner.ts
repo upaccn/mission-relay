@@ -1,3 +1,4 @@
+import {CI_PI_POLICY} from './ci-policy.js';
 import {spawn} from 'node:child_process';
 import {createHash} from 'node:crypto';
 import {childEnvironment} from './child-env.js';
@@ -150,6 +151,7 @@ export function piDecisionPrompt(input:PiTurnContext):string {
       'ChatGPT may use its independently available tools to edit this repository, run tests, commit, push its own GitHub repository and verify deployment when the requested goal requires it.',
       'PI itself has no tools and cannot grant further permissions. Do not stop merely because the goal requires ordinary authorized repository writes.',
       'Check tool evidence and Git/CI readbacks; do not equate the assistant DONE marker or a claim of tests with independently verified delivery.',
+      ...CI_PI_POLICY,
       'If executable tool access is absent, or actions leave the named repository or involve secrets, payments or account privileges, choose BLOCKED.',
     ]:[
       'No account, file, website, network or external writes are allowed by this Telegram workflow.',

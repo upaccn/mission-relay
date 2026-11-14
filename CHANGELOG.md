@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.8 — 2026-11-14
+
+- Default to economical execution for metered/private GitHub Actions. PI and approved browser work-package prompts now check repository workflow triggers, prefer local or approved native-host tests for intermediate work, batch pushes at meaningful milestones, and reserve paid CI for explicit critical/release gates. Explicit acceptance requirements and release verification remain binding; this does not modify other repositories' workflows or automatically disable their push triggers.
+- When an owner pauses an in-flight Send, defer its existing-message UI Retry without consuming the one-shot intent or converting the pause into a misleading exception. Add narrowly scoped, revision-gated owner release for an already-uncertain existing-chat Retry, including historical paused-claim failures, while preserving original prompt/URL identity, repository approvals, maintenance fencing and no-composer-resend semantics.
+- Keep legacy reserved browser prompt reconstruction byte-compatible; add regression coverage for paused existing/new-chat Retry and CI prompt behavior.
+
 ## 1.2.7 — 2026-11-14
 
 - Refresh the public README to document current Goal, repository isolation, PI, browser execution, recovery and deployment features without incident history or private production state. No changes to scheduler, credentials, browser requests or the SQLite schema.

@@ -1,3 +1,4 @@
+import {CI_EXECUTOR_POLICY} from './ci-policy.js';
 import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 import {missionTurnLimitReached} from './mission-turns.js';
 import {createHash} from 'node:crypto';
@@ -147,7 +148,7 @@ export function browserContinuationPrompt(goal:string,acceptance:string[],first:
 
 /** A new owner-requested chat needs no old-conversation handoff or verbose
  * continuation history. Keep the user's actual instruction intact. */
-export function browserTaskPolicy(writeWorkspace:string|null=null):string[] {
+export function browserTaskPolicy(writeWorkspace:string|null=null,includeCiPolicy=true):string[] {
   if(!writeWorkspace)return [
     'Task scope: read-only. Research and analysis are allowed; modifying files,',
     'websites or accounts, sending external messages and spending money are not.',
@@ -157,6 +158,7 @@ export function browserTaskPolicy(writeWorkspace:string|null=null):string[] {
   return [
     `Task scope: implement and test code in ${project}.`,
     'Use available tools to inspect and edit this repository, run tests, commit and push its own GitHub repository and verify requested deployments.',
+    ...(includeCiPolicy?CI_EXECUTOR_POLICY:[]),
     'Deliver tested changes, not only plans. Keep the canonical source and pull-only runtime separate.',
     'Do not make unrelated project changes, financial operations, credential changes or privilege changes.',
     'If necessary tools are unavailable, report the specific blocker rather than claiming completion.',
@@ -238,7 +240,10 @@ export function browserNewChatPrompt(goal:string,acceptance:string[],handoff:str
   const before=[
     'Continue this task in a new conversation.',
     `Goal: ${executorTaskGoal(goal)}`,'Acceptance criteria:',...acceptance.map((x,i)=>`${i+1}. ${x}`),
-    ...browserTaskPolicy(writeWorkspace),
+    ...browserTaskPolicy(writeWorkspace,false),
+    ...(!legacy&&writeWorkspace?[
+      'Metered CI: use local/GMK checks during iteration; inspect push triggers and reserve GitHub Actions for explicit critical or release gates.',
+    ]:[]),
     'Previous conversation checkpoint (verify unsubstantiated claims):',
     handoff.slice(legacy?-2400:-1000),
     ...(checkpoint&&!legacy?[`PI-reviewed browser receipt: round ${checkpoint.round}; full answer SHA-256 ${checkpoint.responseSha256}.`,
