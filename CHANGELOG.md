@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.2.3 — 2026-11-14
+
+- Recover an existing-chat continuation whose original Send outlived the one-hour browser observer and later produced a complete answer **without** showing a Retry button. A previously verified PI NEXT/HANDOFF checkpoint, unchanged last user-prompt SHA, exact pinned conversation, a distinct terminal-marked reply and two stable inspections are required before the original request is credited. No composer Send or Retry click is performed.
+- Preserve the existing one-shot Retry flow for actual delivery/stream errors and keep first-turn/new-chat recovery conservative. Tests reject stale prior assistant rerenders and first-turn recovery without prior PI custody.
+- The previously repaired Windows midnight scheduling termination is not this incident: the observed production task remained running with `StopAtDurationEnd=false`; a separate browser observer reached its one-hour deadline. When the approved Chrome profile exposes no Playwriter-enabled ChatGPT tab, recovery still requires restoring the original conversation binding; neither source release nor a worker restart can fabricate that evidence.
+- Reject new write-enabled Goals when their explicitly declared source repository differs from the approved destination; also fail closed at checkpoint scheduling and inside the atomic Send reservation for existing misbound Goals. Do not alter historic Goal/SQLite identity or grant another repository implicitly.
+
 ## 1.2.2 — 2026-11-13
 
 - Repair recovery for an original **new-chat** browser Send that completed navigation but timed out before its final reply was observed. A unique Playwriter-enabled destination must match the original immutable user-message SHA; the predecessor Chat and PI decision remain independently checked. No second composer Send is ever authorized.

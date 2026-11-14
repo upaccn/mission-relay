@@ -32,6 +32,16 @@ export function isApprovedBuildRepository(store:Store,project:string):boolean {
     store.getMeta('telegram.pi.project')===path;
 }
 
+/** A Goal's explicitly labeled source directory cannot be silently replaced
+ * by the older global /build default. Unlabeled paths elsewhere in the Goal
+ * (links, test inputs, exclusions) are not repository declarations. */
+export function declaredSourceMatchesScope(goal:string,scope:string):boolean {
+  const declarations=[...goal.matchAll(
+    /^\s*(?:源码工作目录|Canonical source|Source repository|Repository)\s*[:：]\s*[`"']?(\/[a-zA-Z0-9_./-]+)/gim,
+  )].map(match=>match[1]!);
+  return declarations.every(path=>path===scope);
+}
+
 export function approvedBuildRepositories(store:Store):string[] {
   const rows=store.db.prepare(
     "SELECT value FROM meta WHERE key LIKE 'telegram.build.allow.%' AND value!='' ORDER BY value"

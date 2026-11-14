@@ -192,6 +192,58 @@ test('timed-out original message gets one UI Retry, then independently recovers 
   }finally{f.cleanup();}
 });
 
+test('original continuation completed after timeout recovers without a Retry click or intent',async()=>{
+  const f=fixture();try{
+    const prior='Verified previous answer\n[MISSION_RELAY:NEXT]';
+    f.store.finishChatBrowserTurn(f.id,'original',{
+      kind:'observed',assistantSha256:hash(prior),summary:prior,
+    });
+    f.store.commitPiPlan(f.id,hash(prior),[],{
+      action:'NEXT',summary:'Continue the same chat',nextPrompt:prompt,
+    });
+    f.store.reserveChatBrowserTurn(f.id,f.store.get(f.id).version,'continuation',hash(prompt));
+    f.store.finishChatBrowserTurn(f.id,'continuation',{kind:'uncertain',error:timeout});
+    const page=new RetryPage();page.banner=false;
+    page.assistant=prior;
+    const bridge=new TelegramBridge(f.store,f.engine,{
+      getUpdates:async()=>[],sendMessage:async()=>{},
+    },1,2,undefined,async()=>({page:page as unknown as Page,close:async()=>{}}));
+
+    // A re-render of the previous response is not the next reply.
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(f.store.get(f.id).state,'NEEDS_RECONCILIATION');
+    assert.equal(f.store.get(f.id).turnCount,1);
+    page.assistant=reply;
+    (bridge as unknown as {lastDeliveryRetryRecoveryAt:number}).lastDeliveryRetryRecoveryAt=0;
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(f.store.get(f.id).state,'PAUSED');
+    assert.equal(f.store.get(f.id).turnCount,2);
+    assert.equal(page.clicks,0);
+    assert.equal(f.store.hasDeliveryRetryIntent(f.id,'continuation',hash(prompt)),false);
+    assert.equal(f.store.events(f.id).filter(e=>
+      e.type==='chatgpt.browser_turn_recovered').length,1);
+    assert.equal(f.store.events(f.id).filter(e=>
+      e.type==='chatgpt.browser_reserved').length,2);
+    (bridge as unknown as {lastDeliveryRetryRecoveryAt:number}).lastDeliveryRetryRecoveryAt=0;
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(f.store.get(f.id).turnCount,2);
+  }finally{f.cleanup();}
+});
+
+test('unretried timeout does not auto-credit a first-turn response without prior PI custody',async()=>{
+  const f=fixture();try{
+    f.store.finishChatBrowserTurn(f.id,'original',{kind:'uncertain',error:timeout});
+    const page=new RetryPage();page.banner=false;page.assistant=reply;
+    const bridge=new TelegramBridge(f.store,f.engine,{
+      getUpdates:async()=>[],sendMessage:async()=>{},
+    },1,2,undefined,async()=>({page:page as unknown as Page,close:async()=>{}}));
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(f.store.get(f.id).state,'NEEDS_RECONCILIATION');
+    assert.equal(f.store.get(f.id).turnCount,0);
+    assert.equal(page.clicks,0);
+  }finally{f.cleanup();}
+});
+
 test('timed-out stream error retries once and survives a different subsequent Retry banner',async()=>{
   const f=fixture();try{
     f.store.finishChatBrowserTurn(f.id,'original',{kind:'uncertain',error:timeout});

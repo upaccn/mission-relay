@@ -19,7 +19,7 @@ import {drivePiAutopilot,pauseFailedPiPlanning,
   deferTransientPiBrowserRecovery} from '../core/pi-autopilot.js';
 import {SshPiPlanner,validateRemoteProjectPath,type PiPlanner} from '../core/pi-planner.js';
 import {GoalLedger} from '../core/goal-store.js';
-import {isApprovedBuildRepository} from '../core/build-scopes.js';
+import {isApprovedBuildRepository,declaredSourceMatchesScope} from '../core/build-scopes.js';
 import {telegramChatAnchor} from '../core/chat-anchor.js';
 import {GoalReleaseGate} from '../core/goal-release.js';
 import type {RuntimeProvenance} from '../core/runtime-provenance.js';
@@ -499,6 +499,11 @@ export class TelegramBridge {
         this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1';
     });
     if(!candidate)return;
+    // A stored Goal with an erroneous legacy default is still allowed
+    // read-only recovery, but cannot trigger a side-effecting UI Retry
+    // that would continue work inside the wrong approved repository.
+    const scopeConsistent=candidate.sandbox!=='workspace-write'||
+      declaredSourceMatchesScope(candidate.goal,candidate.workspace);
     const r=this.store.chatBrowserTurn(candidate.id)!;
     const url=this.store.chatLink(candidate.id),browserId=this.store.chatBrowserBinding(candidate.id);
     if(!url||!browserId)return;
@@ -535,7 +540,7 @@ export class TelegramBridge {
         await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))!==r.promptSha256)return;
       const already=this.store.hasDeliveryRetryIntent(candidate.id,r.requestKey,r.promptSha256);
       const banner=await withReadOnlyDeadline(visibleLongTaskBanner(page,snapshot.lastAssistant));
-      if(!already && !snapshot.generating &&
+      if(scopeConsistent&&!already && !snapshot.generating &&
         (banner==='delivery-timeout'||banner==='stream-error')) {
         const clicked=await clickDeliveryRetryOnce(page,destination,true,false,
           async(reason)=>{
@@ -548,7 +553,24 @@ export class TelegramBridge {
         }
         return;
       }
-      if(!already||snapshot.generating||banner!==null||
+      // A response can finish normally after the observer's deadline. A
+      // Retry intent proves only that a UI Retry was attempted, not that a
+      // completed original answer is authentic. For an unretried existing-chat
+      // continuation, use the prior independently committed PI checkpoint
+      // instead. First-turn/adopted and new-chat recovery keep their stricter
+      // original custody requirements.
+      if(!already){
+        const plan=this.store.piPlan(candidate.id);
+        if(r.newConversation===true||candidate.turnCount<1||!plan||
+          plan.round!==candidate.turnCount||
+          !['NEXT','HANDOFF'].includes(plan.action)||
+          !this.store.events(candidate.id).some(e=>
+            ['chatgpt.browser_observed','chatgpt.browser_turn_recovered',
+              'chatgpt.browser_rollover_recovered'].includes(e.type)&&
+            (e.payload as {round?:number;assistantSha256?:string}).round===candidate.turnCount&&
+            (e.payload as {assistantSha256?:string}).assistantSha256===plan.responseSha256))return;
+      }
+      if(snapshot.generating||banner!==null||
         !/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]\s*$/.test(snapshot.lastAssistant.trim()))
         return;
       // Never credit a stale earlier answer, a mid-stream UI refresh, or a
@@ -681,6 +703,14 @@ export class TelegramBridge {
     const last=this.store.getMeta('pi.scheduler.lastMission');
     const pivot=candidates.findIndex(m=>m.id===last);
     const m=candidates[(pivot+1)%candidates.length]!;
+    if(m.sandbox==='workspace-write'&&!declaredSourceMatchesScope(m.goal,m.workspace)){
+      const reason='Goal source repository differs from its immutable approved write scope; no further Send permitted';
+      if(m.state==='READY')
+        this.store.update(m.id,m.version,{state:'BLOCKED',lastError:reason},
+          'pi.autopilot_interrupted',{reason});
+      else pauseFailedPiPlanning(this.store,m.id,reason);
+      return;
+    }
     const url=this.store.chatLink(m.id),browserId=this.store.chatBrowserBinding(m.id);
     if(!url||!browserId){
       pauseFailedPiPlanning(this.store,m.id,'PI recovery source URL or bound Chrome profile is absent');
@@ -852,6 +882,8 @@ export class TelegramBridge {
       this.store.getMeta('telegram.build.project')):null;
     if(write&&(!project||!isApprovedBuildRepository(this.store,project)))
       throw new Error('Write-enabled Goal needs a locally approved repository; use telegram-build-project --allow <path>');
+    if(project&&!declaredSourceMatchesScope(objective,project))
+      throw new Error('Goal names a different source repository; use /goal-build --repo <approved path> <objective> with an exact local repository approval');
     browserFreshTaskPrompt(objective,project);
     const anchor=telegramChatAnchor(this.store);
     if(!anchor)throw new Error('No approved ChatGPT profile; configure telegram-anchor locally');
@@ -937,6 +969,11 @@ export class TelegramBridge {
       this.store.getMeta('telegram.build.project')??''):'';
     const desiredObjective=goalDriven?(write&&task.trim().startsWith('--repo ')?
       task.trim().replace(/^--repo\s+\S+\s+/,'').trim():task.trim()):'';
+    // The first Goal's legacy direct-launch path must enforce the same
+    // source identity as subsequent queued Goals before Chrome or PI runs.
+    if(goalDriven&&write&&exactScope&&
+      !declaredSourceMatchesScope(desiredObjective,exactScope))
+      throw new Error('Goal names a different source repository; use /goal-build --repo <approved path> <objective> with an exact local repository approval');
     const repeatedLiveGoal=goalDriven&&this.engine.list().some(m=>{
       if(m.goal.trim()!==desiredObjective||m.workspace!==exactScope||
         m.sandbox!==(write?'workspace-write':'read-only'))return false;

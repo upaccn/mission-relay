@@ -7,7 +7,7 @@ import type { CreateMission, Mission, MissionEvent, MissionState, VerificationCh
 import { normalizeChatGPTUrl } from './chatgpt-handoff.js';
 import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
 import {missionTurnsRemaining,missionTurnLimitReached} from './mission-turns.js';
-import {isApprovedBuildRepository} from './build-scopes.js';
+import {isApprovedBuildRepository,declaredSourceMatchesScope} from './build-scopes.js';
 import type {RuntimeProvenance} from './runtime-provenance.js';
 
 type MissionRow = {
@@ -1191,6 +1191,9 @@ export class Store {
       if(m.sandbox==='workspace-write'&&this.getMeta(`pi.autopilot.enabled.${id}`)==='1'&&
         !isApprovedBuildRepository(this,m.workspace))
         throw new Error('Approved PI build workspace changed or was revoked before Send');
+      if(m.sandbox==='workspace-write'&&this.getMeta(`pi.autopilot.enabled.${id}`)==='1'&&
+        !declaredSourceMatchesScope(m.goal,m.workspace))
+        throw new Error('Goal source repository and approved write scope differ; refusing browser Send');
       if(options.goalBinding){
         const binding=options.goalBinding;
         let cursor:string|null=id,linked:string|null=null;

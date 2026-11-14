@@ -8,7 +8,7 @@ import {Store} from '../src/core/store.js';
 import {Engine} from '../src/core/engine.js';
 import {GoalLedger} from '../src/core/goal-store.js';
 import {approveBuildRepository,isApprovedBuildRepository,revokeBuildRepository,
-  approvedBuildRepositories} from '../src/core/build-scopes.js';
+  approvedBuildRepositories,declaredSourceMatchesScope} from '../src/core/build-scopes.js';
 import {TelegramBridge,type TelegramUpdate,type TelegramTransport} from '../src/plugins/telegram.js';
 import type {PiPlanner} from '../src/core/pi-planner.js';
 import type {AgentAdapter} from '../src/core/types.js';
@@ -21,6 +21,55 @@ const never:AgentAdapter={
   async execute(){throw new Error('No native executor may run');},
   async verify(){throw new Error('No native verifier may run');},
 };
+
+test('an explicitly declared Goal source cannot inherit a different approved /build default',async()=>{
+  const r=multiRig();try{
+    assert.equal(declaredSourceMatchesScope(
+      `Build X\n源码工作目录：${REPO_B}（测试项目）`,REPO_A),false);
+    assert.equal(declaredSourceMatchesScope(
+      `Ship Android\nCanonical source: ${REPO_A} (AIOS)`,REPO_A),true);
+    assert.equal(declaredSourceMatchesScope(
+      `Ship Android\nCanonical source: ${REPO_A}\nRepository: ${REPO_B}`,REPO_A),false);
+    assert.equal(declaredSourceMatchesScope(
+      `Ship Android\nNot this excluded directory: ${REPO_B}`,REPO_A),true);
+    const objective=`Build X\n源码工作目录：${REPO_B}（测试项目）`;
+    r.setUpdates([r.message(799,`/goal-build ${objective}`)]);
+    await r.bridge.pollOnce(0);
+    assert.equal(new GoalLedger(r.store).listGoals().length,0);
+    assert.ok(r.replies.some(reply=>reply.includes('different source repository')));
+    r.setUpdates([r.message(800,`/goal-build --repo ${REPO_B} ${objective}`)]);
+    await r.bridge.pollOnce(0);
+    assert.equal(new GoalLedger(r.store).listGoals().length,1);
+    const mission=r.engine.list().find(m=>m.goal===objective)!;
+    assert.equal(mission.workspace,REPO_B);
+  }finally{await r.idle();r.close();}
+});
+
+test('a legacy misbound Goal is blocked before recovery opens Chrome or reserves another Send',async()=>{
+  const r=multiRig();try{
+    const objective=`Build X\n源码工作目录：${REPO_B}（实际目标）`;
+    const m=r.engine.create({goal:objective,acceptance:['Never use wrong repository'],
+      workspace:REPO_A,sandbox:'workspace-write',mode:'supervised',
+      maxTurns:0,requestKey:'legacy-misbound',checks:[]});
+    const linked=r.store.linkChat(m.id,ORIGIN,m.version).mission;
+    const bound=r.store.bindChatBrowser(m.id,browserId,linked.version).mission;
+    r.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
+    const ledger=new GoalLedger(r.store);
+    const g=ledger.createGoal({requestKey:'legacy-misbound',
+      objective,priority:50});
+    ledger.bindPiMission(g.id,m.id,bound.version,'legacy-misbound-bind');
+    assert.throws(()=>r.store.reserveChatBrowserTurn(m.id,bound.version,
+      'prohibited-original', 'a'.repeat(64)),/source repository.*write scope differ/);
+    await (r.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>})
+      .recoverObservedPiCheckpoint();
+    assert.equal(r.store.get(m.id).state,'BLOCKED');
+    assert.match(r.store.get(m.id).lastError??'',/source repository differs/);
+    assert.equal(r.store.chatBrowserTurn(m.id),null);
+    assert.equal(r.connectionAttempts.length,0,'No Chrome connector was opened');
+    assert.equal(r.sends.length,0);
+    assert.equal(r.store.events(m.id).filter(e=>e.type==='pi.autopilot_interrupted').length,1);
+  }finally{r.close();}
+});
 
 function multiRig(){
   const dir=mkdtempSync(join(tmpdir(),'relay-multi-goal-'));
