@@ -1,9 +1,7 @@
 # Trusted ReleaseProbes — reproducible source contract
 
-This is the **current source implementation** contract, not an assertion of
-production acceptance. The older `v1-release-contract.md` is a dated baseline:
-its rows calling these probes "MISSING" describe that baseline and must not be
-used as a present-day source inventory. Do not create or restage a Goal to run
+This describes source-level tests and evidence requirements, **not** an
+assertion of production acceptance. Do not create or restage a Goal to run
 these tests. Do not point test fixtures at the production GMK SQLite database,
 the owner's Playwriter profile or an original browser reservation.
 
@@ -122,7 +120,7 @@ no fabricated successful receipt; the read-only diagnostic instead reports
 A production PASS additionally requires the actual installed exact SHA,
 settled original request custody, independent current Chrome and Worker
 observations, the approved Goal/PI state and the required private receipts.
-Even all source tests passing does **not** prove a live 10→11 or 32→child
+Even all source tests passing does **not** prove a live 10→11 or legacy 32→child
 transition, completed maintenance, browser custody or criterion acceptance.
-The previously interrupted protected Mission must remain PAUSED at 10/32;
-its failed original round-11 Send must never be retried to produce evidence.
+Original uncertain requests and owner pauses always retain their recorded
+SQLite state; release probes must never retry or rewrite them to create proof.

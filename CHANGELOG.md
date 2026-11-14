@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.9 — 2026-11-14
+
+- Remove an unrelated third-party browser-extension archive from the source
+  checkout without deleting the original bytes. Current public documentation
+  now describes the supported browser interface rather than dated exploratory
+  experiments; obsolete historical Mission instructions and outdated Chat/SQLite
+  limits are no longer presented as current rules.
+- Add a read-only source consistency gate: enforce package/lock/STATE/CHANGELOG
+  version alignment, validate local Markdown links, refuse unexpected top-level
+  cross-project files, and ensure CI continues to run its safety checks.
+  Include regression tests and execute the gate as part of `npm run check`.
+- Keep all runtime state, protected reservations, legacy compatibility
+  modules, local GMK copy and recovery assets unchanged. A source commit/CI
+  does not itself deploy a new Windows Worker.
+
 ## 1.2.8 — 2026-11-14
 
 - Default to economical execution for metered/private GitHub Actions. PI and approved browser work-package prompts now check repository workflow triggers, prefer local or approved native-host tests for intermediate work, batch pushes at meaningful milestones, and reserve paid CI for explicit critical/release gates. Explicit acceptance requirements and release verification remain binding; this does not modify other repositories' workflows or automatically disable their push triggers.

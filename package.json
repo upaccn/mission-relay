@@ -1,6 +1,6 @@
 {
   "name": "mission-relay",
-  "version": "1.2.8",
+  "version": "1.2.9",
   "private": false,
   "type": "module",
   "description": "Local-first, open-source mission control for long-running AI agents",
@@ -12,7 +12,8 @@
     "node": ">=24"
   },
   "scripts": {
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && node scripts/check-project-state.mjs",
+    "state-check": "node scripts/check-project-state.mjs",
     "privacy-check": "node scripts/check-public-boundaries.mjs",
     "build": "tsc && node scripts/write-build-provenance.mjs",
     "test": "node --import tsx --test tests/*.test.ts",

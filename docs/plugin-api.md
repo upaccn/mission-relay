@@ -4,9 +4,9 @@ This is an **early protocol draft**. `apiVersion: 1` is the current internal ada
 
 The core exposes namespaced, semver-manifested plugins with declared capabilities. `PluginRegistry` validates explicitly registered implementations. **It does not fetch or automatically execute arbitrary third-party packages**. This is intentional while the trust and isolation model is being tested.
 
-The default build no longer imports a specific coding-agent SDK. Native executors are optional locally registered modules, and ChatGPT browser + PI + Telegram do not need one. The experimental Telegram channel uses the native task store's durable command inbox and never owns the Mission itself.
+The default build does not import a coding-agent SDK. Native executors are optional locally registered modules, and ChatGPT browser + PI + Telegram do not need one. The Telegram channel uses the native task store's durable command inbox and never owns the Mission itself.
 
-## Optional native executor contract (v0.2 development)
+## Optional native executor contract
 
 An executor module exports `manifest` (namespaced `id`, semver `version`, `apiVersion: 1`, `kind: 'executor'`, `execute-turn` and `verify-read-only` capabilities), `createExecutor()` returning an `AgentAdapter` with `execute()`/`verify()`, and optional `preflight()`. `AgentAdapter` is the stable existing internal interface; there is no native SDK or vendor-specific model in Core. Module loading is **trusted in-process code**, not a sandbox.
 

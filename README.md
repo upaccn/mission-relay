@@ -30,6 +30,11 @@ node dist/cli.js help
 
 The CLI uses Node's built-in SQLite; no external database, message broker or separate queue service is required. State lives in the OS user state directory by default and can be relocated with `MISSION_RELAY_HOME`.
 
+`npm run check` includes a read-only repository-state gate. It verifies the
+package, lockfile, [STATE](STATE.md) and changelog versions, local documentation
+links, CI checks and top-level project isolation. Run `npm run state-check` to
+check these invariants independently of TypeScript compilation.
+
 ## Configure your workflow
 
 1. Set up a private, owner-allowlisted Telegram channel and the approved PI connection using [Telegram setup](docs/telegram.md).
@@ -73,6 +78,12 @@ For Windows scheduled-task deployment, SQLite maintenance, backup and rollback, 
 ```bash
 node dist/cli.js software-release-status --sha <main-commit-sha> --run-id <github-actions-run>
 ```
+
+Source checkout, GitHub release, and installed GMK Worker are separate
+boundaries. An active or uncertain browser Send blocks maintenance; a new
+source commit does not prove it has been deployed. Compare the installed
+source SHA through `channel-status` and use the guarded Windows upgrade only
+after its independent idle preflight.
 
 ## Documentation
 

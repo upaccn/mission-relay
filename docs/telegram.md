@@ -1,27 +1,12 @@
 # Telegram (optional)
 
-**WP6.1 release evidence update:** The owner-only Goal release CLI may
-read GitHub `main` and an exact Actions run directly through the
-already-installed `gh` binary. A `--run-id` on
-`goal-release-verify` uses same-commit CI evidence for the source
-script and platform gates even when the configured operator-managed host SSH identity
-cannot read the private workspace. No new authentication or Telegram
-command is introduced. Browser, business and GMK release gates remain
-independent and cannot be marked PASS by GitHub CI evidence.
-
-**WP5 release status:** Owner `/goal-status <UUID>` shows whether independent
-release verification is targeted, how many separately verified requirements
-exist, and current blockers. The underlying CLI
-`goal-release-status <UUID>` reads this evidence without performing a
-browser Send or upgrading an old database. Source/CI release attestation
-commands remain local-operator-only and require the existing approved
-repository; Telegram is not a free-form PASS/DONE certification channel.
-Real GMK/Chrome proof remains a separate WP6 production release gate.
-WP6 corrects the Windows/Linux boundary for operator-only release
-commands: the already approved PI SSH alias and operator-managed host project are used
-for fixed source/CI checks. No new login or SSH credentials are collected;
-inaccessible remote directories fail closed rather than altering host
-permissions or trusting a model-provided test result.
+Owner `/goal-status` reports independent Goal release progress and blockers
+without authorizing browser Sends or claiming business acceptance.
+`goal-release-status` and `goal-release-verify` are separate operator-only
+commands: verified GitHub CI on an exact SHA can satisfy source/CI gates,
+but never substitutes for live GMK, Chrome or business evidence. Existing
+validated SSH and GitHub identities are reused; unavailable permissions
+fail closed rather than being silently elevated.
 
 The Telegram adapter is a single-user **foreground process**. It uses the official Bot API's long polling and requires no public webhook or inbound port. It is not enabled by default. Telegram Bot chats are not end-to-end encrypted; do not send tokens, customer records, browser sessions or confidential model output to this channel.
 
@@ -74,13 +59,13 @@ Native coding-agent plugins configure their own network and authentication. The 
 
 The bridge is opt-in and intended for an owner-controlled interactive Windows session. Its enrolled Scheduled Task can keep the single Worker running while that user is logged on; it is not a Session 0 service and does not run when the owner is logged off.
 
-### In-process idle-stall recovery (v0.2)
+### In-process idle-stall recovery
 
 The existing Node controller checks ordinary control-loop progress every 30 seconds. After five minutes without progress it exits code 75 **only** when its own SQLite lease is current, there are no RUNNING/VERIFYING Missions, reserved browser Sends, pending Telegram replies or notifications, and no maintenance drain. The enrolled repeating Windows Scheduled Task then restarts this same single controller; no additional task, watcher or daemon is installed. Bounded transport-error retries and active long ChatGPT turns do not qualify. This does not fix an entirely blocked JavaScript event loop, which cannot execute its own timer. The fail-closed logic has synthetic tests; naturally occurring production stalls remain unverified.
 
 ## Supported commands
 
-### Goal-driven owner commands (WP4)
+### Goal-driven owner commands
 
 The authenticated Owner can send `/goal <objective>` for read-only work,
 or `/goal-build --repo /approved/absolute/path <objective>` for an
@@ -134,7 +119,7 @@ updates are idempotent; repeated update IDs do not create competing Goals.
 The channel does not backfill old `/auto`, `/build`, plain-text or
 one-turn `/new` requests. Current model-reported Work Item PASS or a
 terminal Mission is **not** independent business verification or Goal DONE.
-WP5/6 release gates and real GMK smoke testing remain separate.
+Independent Goal release gates and native-host smoke testing remain separate.
 
 The vendor-neutral optional native route is `/agent <task>` or `Agent: <task>`, and requires an independently installed executor plugin plus a locally approved `telegram-agent-workspace`. Plain text and `ChatGPT:` remain browser-first without native executor selection. Vendor-specific aliases (`/codex`, `Codex:`) are **not** supported by the new CLI; they were used in earlier prototypes. See [plugin API](plugin-api.md).
 
@@ -172,7 +157,7 @@ Configure a separate operator-managed host PI inference route locally, reusing t
 node .\dist\cli.js telegram-pi-config --ssh-host operator --project /srv/projects/mission-relay
 ```
 
-The route is persisted **only in local SQLite** and can be revoked with `node .\dist\cli.js telegram-pi-config --clear`. These host/path values are examples for the owner's environment, **not public repository defaults**. Mission Relay invokes only `ssh -T <approved-host> sudo -n /usr/local/bin/pictl infer --stdin --json` with a fixed bounded argument vector and the model task passed as stdin. operator-managed host `pictl infer` runs without filesystem, browser, web, extension, subagent, or other tools; it returns a JSON decision rather than taking actions. The remote SSH login/sudo permission must already exist and should be restricted to this operation for higher-assurance environments; this pilot currently reuses a more privileged existing operator SSH account. No generic remote-command or arbitrary Pi tool API is exposed to Telegram.
+The route is persisted **only in local SQLite** and can be revoked with `node .\dist\cli.js telegram-pi-config --clear`. These host/path values are examples, **not public repository defaults**. Mission Relay invokes only a bounded fixed SSH `sudo -n /usr/local/bin/pictl infer` command with `--project`, `--stdin`, `--timeout` and `--json`, omitting explicit model/provider/effort overrides. The model task is passed on stdin, not interpolated into shell command text. The PI inference route is tool-free and returns a JSON decision rather than taking actions; remote SSH/sudo permission must already exist. No arbitrary remote-command API is exposed to Telegram.
 
 For **real project implementation**, the local operator can additionally approve exactly the same PI project path:
 
@@ -184,7 +169,7 @@ Then the authenticated Telegram owner sends `/build <specific implementation tas
 
 The first browser dispatch also requires a successful bounded, non-model `pictl doctor --json` preflight over the same SSH path. This checks health but **does not** certify the subsequent model call or every future network request. Each PI inference is separately bounded (120-second remote inference, 135-second SSH deadline). PI is a coordinator, not an independent tool-based verifier of external business outcomes.
 
-### Optional Chrome-profile adoption watch (v0.2 development)
+### Optional Chrome-profile adoption watch
 
 The operator may locally authorize all **Playwriter-enabled ChatGPT tabs in one exact Chrome profile**, without any Chrome tab-group or tag requirement:
 

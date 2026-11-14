@@ -72,7 +72,7 @@ probes are deliberately restricted to independently observed evidence. The
 first-party `gmk-production-readback` adapter now checks the installed
 Worker/compiled manifest, original enrolled Scheduled Task, SQLite and pinned
 Chrome read-only, but it remains **unverified in production** until a safe
-exact-SHA checkpoint. The first-party Chrome 10→11 (current 10→11) and same-Mission Relay tab-retirement probes now
+exact-SHA checkpoint. The first-party Chrome 10→11 and same-Mission Relay tab-retirement probes
 capture two stable, hashed physical Target/Chat transcripts **before** old-tab
 cleanup, then compare the enabled physical Target inventory before and after
 closure, without reading unrelated tab contents. Original witnesses are
@@ -88,8 +88,8 @@ release check also refuses any additional Goal-bound logical retirement
 without its own independent physical witness. The separate first-party
 **Legacy 32→successor** probe preserves a stable physical snapshot of both the
 parent's final reply and the child's first fully observed reply before either
-tab can be discarded. It validates the complete 32/32 parent ledger, five
-Sends per parent Chat, one reciprocal zero-turn successor, exact Goal/work
+tab can be discarded. It validates the complete 32/32 parent ledger, at most
+ten observed Sends per parent Chat, one reciprocal zero-turn successor, exact Goal/work
 binding, the child's first reserved prompt, different Chat URLs and Chrome
 Targets, and the first matching child PI decision. Witnesses are private,
 content-addressed and source-SHA-bound; a missing original physical Target,
@@ -163,7 +163,7 @@ All state-changing operations use `Store.atomic()` and durable idempotency keys.
 
 **Evidence boundary:** `PASS` and `PASSED` are persisted *PI-reported statuses*, not independent business completion. Goal creation and status are now available through authenticated Telegram owner commands, but only the separate SHA-bound `GoalReleaseGate` can certify immutable DONE, after all independent requirements pass. Neither a Goal API nor synthetic tests prove a software release or business completion. Never migrate an active GMK database outside the original SQLite idle/drain, backup and pull-only upgrade gates.
 
-### Multiple independent Goals, one browser Worker (v1.2.0)
+### Multiple independent Goals, one browser Worker
 
 An authenticated `/goal-build` creates a **new** Goal, request-keyed
 Mission, approved per-repository write scope and Chrome-profile binding in
@@ -224,7 +224,10 @@ The Goal state changes, PI plan approval/review event, full browser answer SHA, 
 
 ## Adapters
 
-The built-in engine and experimental Telegram channel retain evidence from the historical 2026-11-04 read-only Codex pilot, but Codex is now an optional separate plugin. Future adapters implement versioned contracts without modifying core state transitions:
+The built-in engine and Telegram channel share the current SQLite Mission
+state. Codex is an optional separately installed executor plugin, not a core
+dependency. Future adapters must use versioned contracts without bypassing
+core state transitions:
 
 - `Executor`: initialize/resume a session, run a turn, receive events.
 - `MissionProvider`: retrieve, watch and command native or external missions.

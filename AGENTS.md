@@ -47,6 +47,7 @@ Read this file and [STATE.md](STATE.md) before editing. Current code, tests, pri
 ## Verification and code hygiene
 
 - Inspect existing code, AGENTS, STATE, Git, CI and current GMK before modifications. Run targeted tests, then npm run check, npm run privacy-check, npm test, npm run build and git diff --check. Keep TypeScript noUnusedLocals/noUnusedParameters enabled.
+- `npm run check` also runs the read-only repository-state consistency gate. Keep `package.json`, `package-lock.json`, current `STATE.md` and `CHANGELOG.md` aligned; maintain valid relative documentation links and avoid unrelated top-level project folders or third-party archives in this repository.
 - Tests must use fake executors, synthetic Playwriter pages and isolated SQLite. Never run Send, browser Retry, owner task restart, credential enrollment or a production upgrade as a side effect of ordinary tests.
 - Prefer small typed functions and existing adapters. No extra daemon, database, background scheduler, vendor SDK or component framework without a measured need. Keep legacy branches only when current production/historical data can require them; prove obsolescence before removal.
 - Update durable docs when behavior changes, not by appending a new dated status paragraph to README or AGENTS. Put **only latest state** in STATE; Git retains older milestones. Review and update obsolete documentation claims with each affected change.

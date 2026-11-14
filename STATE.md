@@ -1,29 +1,72 @@
-# Mission Relay — public maintainer state
+# Mission Relay — current public source state
 
-## Release boundaries
+## Release and verification boundaries
 
-- Current source package version: `1.2.8`. The source version, independently qualified GitHub release, GMK runtime deployment and Goal acceptance are separate states; never infer one from another. Do not claim deployment of a newer SHA without an exact-SHA runtime attestation and audited maintenance admission.
-- GitHub `main` is the published software source boundary. Run `software-release-status --sha <exact-main-SHA> --run-id <CI-run>` to independently qualify the three-platform Node.js CI **without a Goal, PI or local SQLite database**.
-- A successful CI qualification alone does not deploy software. Runtime promotion separately requires a clean target checkout, zero in-flight requests, an atomic maintenance drain, independently restored database backup, previous compiled rollback image, verified single Worker and source SHA, and drain release.
-- Goal work is an independent business acceptance process. PI automatically reviews each answer and validates plans and work items; the user does not approve staged Goal checkpoints. Separate `goal-release-*` probes remain operator-only for independent business evidence, not a software-build prerequisite.
-- Only operator-private files and host-side audit receipts may contain production identity, request details, private paths and checkpoint evidence; do not place them in this public repository.
+- Current source package version: `1.2.9`.
+- The canonical authoring checkout and GitHub `main` own source history.
+  GitHub Releases are immutable release targets; only exact-main-SHA,
+  completed, independently qualified CI can establish a software release.
+  Run `software-release-status --sha <sha> --run-id <id>` to validate the
+  required Ubuntu, macOS and Windows checks.
+- GMK Windows is a **pull-only production runtime**, not another authoring
+  checkout. A package version, source commit or green CI does **not** prove
+  deployment. Read the actual `channel-status.runtimeProvenance.sourceSha`,
+  healthy single Worker, enrolled task, SQLite state and maintenance receipt
+  before asserting that a specific SHA runs in production.
+- Goal/PI acceptance and commercial or external project release are separate
+  from Mission Relay's software CI and runtime promotion. Never interpret a
+  model's DONE marker as independent business acceptance.
 
-## Operational invariants
+## Active operating contract
 
-- One Windows interactive-user Worker with Playwriter/Chrome access and a user-scoped, optionally hidden Telegram Scheduled Task. A session-0 service cannot substitute for an interactive Chrome Worker.
-- The two-minute daily Windows recovery trigger MUST set `Repetition.StopAtDurationEnd=false`; the default `true` killed the running Worker at the repetition boundary even when execution time was unlimited. `UpgradeSchedule` must correct legacy existing triggers without restarting the active Worker.
-- New PI Missions have no turn ceiling (stored `max_turns=0`); each Chat permits ten observed Relay Sends and rotates before an eleventh. Never resend an uncertain original request. Owner pauses survive restart.
-- Multiple Goal-bound Missions are independently bound to their original repositories, work plans and Chrome conversations in the existing SQLite. One leased Worker rotates at settled PI checkpoints; a reserved/uncertain Send prevents all new browser dispatch but does not prevent independently scoped Goal intake. Local operator approvals are per repository. The PI inference host/project remains a separate tool-free route.
-- Every writable Goal requires `/goal-build --repo <explicit approved root> <objective>`; it cannot inherit the legacy `/build` default. Roots must not be nested with other approved repositories. An explicitly labeled canonical source path must match its immutable approved repository in intake, PI dispatch and final SQLite Send reservation. An existing misbound Goal or overlapping legacy grant is quarantined without rewriting original identity or guessing a replacement scope. The repository authorization binds Relay requests; it does not grant an OS-level sandbox.
-- Original existing-chat delivery timeouts allow one SQLite-audited UI Retry of the **same already submitted message**, with intent durably committed before the click. A timed-out, uncertain original same-chat request may be automatically inspected by the single Worker; a complete, twice-verified reply can be reconciled and PI-reviewed without a new Send. Unrelated uncertainty, changed prompt/tab or revoked scope remains blocked.
-- Pausing during an original Send defers any UI Retry without consuming intent. A pre-upgrade paused-claim error stays uncertain and stopped until an explicitly revision-gated `browser-resume-pending-retry` releases the original existing-chat request after maintenance. The operator command never clicks; only the enrolled Worker may verify its exact prompt, tab, prior PI decision, repository grant and single shared Retry allowance.
-- Autonomous private-repository development treats metered Actions as a scarce release resource: check push/PR triggers before pushing, prefer approved local/native-host verification during iteration, and reserve independently evidenced hosted CI for explicit owner-critical or release gates. This policy does not suppress existing private-repository GitHub workflow triggers by itself.
-- Even when ChatGPT completes a timed-out existing-chat continuation without showing Retry, the Worker may credit it after independent double observation only if the exact existing request, original pinned URL and user SHA match a previously verified PI NEXT/HANDOFF checkpoint and the final answer is distinct from the prior reply. No Retry intent is required for a reply that never needed Retry; no new Send is permitted.
-- An uncertain original **new-chat** Send may be inspected by the enrolled Worker only when an exact, unique Playwriter tab's latest user SHA matches the original reserved prompt and its prior Chat/PI history matches. Owner pause is never bypassed. A stopped request requires explicit `browser-resume-pending-retry <id> --revision <n> --acknowledge-side-effects` **after** maintenance; the command only releases a guarded pause, never clicks Retry or resends. The one-shot Retry and final rollover reconciliation happen under the original request and original worker lease.
-- The same one-shot Retry budget now also covers the actual ChatGPT `Error in message stream` control adjacent to its unique Retry button. New-chat first Sends gain the same durable intent protection while still owned; unbound new-chat uncertainty is not automatically adopted or replayed.
-- Telegram's normal messages show task names, readable progress, and an `All Done` task summary without UUIDs, internal event names or controller revisions; `/status`, `/list`, `/goal-status` and unambiguous `/pause` require no IDs. Internal audit identity and the separate approved Chrome launch URL/profile remain stable.
-- One-time pre-production `ResetProjects -ConfirmResetProjects` safely replaces old business records after a verified backup and maintenance drain, preserving connection configuration and the Bot API cursor. Production data is never reset as a side effect of upgrading source.
-- The remote PI adapter inherits its operator-configured default model, provider and thinking settings. Its SSH project and host are configured privately rather than embedded in source.
-- Source-controlled old audit snapshots are retired from the public tree. The authoritative private production database and its recovery materials are not deleted as part of a Git history cleanup.
+- One SQLite state machine, one owner-enrolled interactive-user Windows
+  Telegram Worker and one leased browser dispatcher. Multiple Goals may
+  remain independently queued/active, but a browser Send or uncertain original
+  request prevents dispatch to another Goal until a safe checkpoint.
+- New PI Missions are unbounded (`max_turns=0`); each ChatGPT conversation
+  permits at most **10 observed Relay Sends**, then requires a distinct,
+  verified conversation. Existing finite-limit Missions keep their stored
+  historical successor rules without rewriting requests or audit records.
+- Each writable Goal requires an explicitly approved, non-overlapping
+  `/goal-build --repo` source path, checked again on every reservation. The
+  PI adapter inherits the operator-managed default model/provider/effort and
+  remains tool-free; repository approval is not an OS sandbox.
+- All original Send requests use immutable identity, prompt SHA, pinned
+  browser URL/profile and SQLite-at-most-once reservation. Browser polling
+  normally occurs every 60 seconds. A genuine connection interruption waits
+  for the original answer; the delivery-timeout or stream-error **UI Retry**
+  has one durably persisted allowance per original message and is never a
+  second composer Send. Owner pauses defer the click; recovery of a stopped
+  uncertain request is revision-gated and owner-authorized. A complete answer
+  must be independently correlated before PI proceeds.
+- New or repaired production Workers require a **zero-in-flight**, read-only
+  restart preflight, atomic maintenance drain, verified private SQLite backup
+  and independent restore, byte-checked compiled rollback image, exact fetched
+  source SHA, one correctly enrolled Worker and verified final drain release.
+  No forced promotion of an active/uncertain browser Send. The Windows daily
+  repeating recovery trigger must keep
+  `Repetition.StopAtDurationEnd=false`; source updates never modify it by
+  themselves.
 
-Read [operations](docs/operations.md), [architecture](docs/architecture.md) and [contributor rules](AGENTS.md) for the current supported behavior.
+## Source hygiene and drift controls
+
+- `npm run check` performs TypeScript checks **and** a repository-state
+  consistency scan: package and lockfile versions, this STATE version, latest
+  changelog entry, local Markdown links, CI safety steps and project-root
+  ownership. `npm run state-check` runs only the source consistency scan.
+- `npm run privacy-check`, `npm test`, `npm run build` and
+  `git diff --check` remain separate verification gates. Keep third-party
+  archives, host-specific evidence, credentials, SQLite databases, rollback
+  materials and browser sessions **outside** the public source tree.
+- Routine private-repository Goals prioritize approved local/native-host
+  verification and batch metered Actions; inspect existing workflow triggers
+  before Push. Critical explicit release and security CI gates remain
+  mandatory. This prompt policy does not disable another repository's CI.
+- Public STATE describes *source contracts*, not a mutable production
+  snapshot. For actual deployed revisions, live task health, current Missions
+  and maintenance status, consult the production read-only CLI. Never copy
+  private task identities or evidence into Git.
+
+See [architecture](docs/architecture.md), [operations](docs/operations.md),
+[browser integration](docs/playwriter-evaluation.md), and
+[contributor rules](AGENTS.md).

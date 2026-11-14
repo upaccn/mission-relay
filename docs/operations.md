@@ -1,5 +1,27 @@
 # Operations
 
+## Checkout hygiene and source/runtime drift
+
+Run `npm run state-check` before committing source or changing public
+documentation. It checks the package, lock, current STATE and changelog
+version, local documentation links, CI checks and unexpected top-level
+entries. The normal `npm run check` also invokes it. Keep unrelated app
+repositories, downloaded extensions, credentials, temporary tests, private
+SQLite backups and recovery images **outside** the Mission Relay checkout.
+An unexpected binary or adjacent project is not a Core dependency.
+
+GitHub `main`, a published release and the installed GMK Worker have
+different provenance. After a source change, first qualify the **exact**
+main SHA with `software-release-status` and its completed CI run; do not
+reuse an earlier green run for a later SHA. On GMK, independently compare
+`git rev-parse HEAD` against
+`channel-status.runtimeProvenance.sourceSha` and the enrolled task's Worker
+identity. A mismatch during a source-only maintenance cycle means
+**deployment is outstanding**, not permission for an ad-hoc pull or
+restart. Only perform the registered Windows `Upgrade` when the real
+SQLite idle preflight is satisfied. An active or uncertain original Send
+must settle; never clear its reservation to eliminate version drift.
+
 ## Metered CI and native verification
 
 Before pushing iterative changes to a private repository, inspect its `.github/workflows/` triggers. A push to a watched branch may automatically start a complete metered matrix. Prefer local deterministic checks and the already approved native testing host (for Android, the established device/emulator/Google Play readiness workflow); batch remote pushes at meaningful acceptance boundaries. Run hosted CI when the actual owner acceptance or high-risk release gate needs independent coverage. The native Play readiness check is not a Play submission or a replacement for mandatory independently evidenced remote release CI. Mission Relay's prompt policy cannot disable GitHub workflows in unrelated repositories; optimize those workflows separately when authorized.
@@ -518,7 +540,24 @@ the existing user-bound interactive task, not a service-launched browser.
 
 **New-chat intent vs. observed result:** The read-only `pi-health.browserNewChatReserved`, `pi-evidence.pendingNewChatReservation` and authenticated Telegram `/status` distinguish an unresolved *new-conversation reservation* from an ordinary same-chat continuation. They never certify an actual new tab, URL migration or final answer. A browser page that appears complete while its original observer has not committed the receipt remains in-flight: do not replay, replace its request key, restart the active controller or bypass the maintenance drain.
 
-**One-shot pre-Send new-chat origin-navigation recovery:** A narrowly scoped operator-only `browser-retry-pre-send-rollover <id> --revision <exact> --acknowledge-side-effects` exists for the **specific** historic `page.goto: Timeout 30000ms exceeded` while navigating a freshly created tab to `https://chatgpt.com/` with `waitUntil: domcontentloaded`. In the reviewed `submitNewChatTurn()` source, this is the very first action: no composer fill or Send click has yet occurred. This exception does **not** apply to a Send-click timeout, response timeout, wrong source prompt, unknown navigation failure, still-owned reservation or an unseen original conversation. The original Mission must be `NEEDS_RECONCILIATION` with exactly one original `uncertain` new-chat reservation, its exact private versioned prompt snapshot and single source URL lock, one coherent preceding PI-reviewed five-turn Chat segment, unrevoked scope and no owner pause or maintenance drain. The CLI re-reads the pinned previous user/assistant SHA twice, inspects enabled Chrome tabs for an existing matching original prompt, and **first** loads an operator-owned blank ChatGPT tab read-only, checking hydration without filling the composer. If this preflight fails, close only that new unsent tab; the original uncertain receipt stays untouched and no one-shot intent is consumed. Only then atomically append `chatgpt.browser_pre_send_retry_intent` against the **original** request key and original prior observation. From this point there is **one possible** first actual Send, using the same private prompt on the already prepared blank page. If a complete terminal-marked answer appears, `recoverObservedBrowserRollover()` atomically credits the original request, retaining the original uncertain event and complete historical audit; the sole Worker must still PI-review it before another round. If the Send, observation or settlement becomes ambiguous, do **not** run this command again: the existing one-shot event forbids it. Inspect the resulting actual new URL and use the ordinary **read-only** `browser-recover-rollover` command if that original message demonstrably completed. A newly created URL is never invented or inferred from an origin load. The Chrome extension only inventories its own enabled tabs; unexposed tabs cannot be used as proof of absence. This exceptional path is not a generic Retry API and must never run automatically on a network timeout.
+**One-shot pre-Send new-chat origin-navigation recovery:** The operator-only
+`browser-retry-pre-send-rollover` command covers only a specifically
+proven `page.goto` timeout **before** any composer fill or Send click in a
+fresh ChatGPT tab. It requires the unchanged original uncertain new-chat
+reservation, its immutable prompt snapshot, source URL lock, and a prior
+PI-reviewed Chat segment containing exactly **10 observed Relay Sends**.
+Owner pause, maintenance drain, revoked scope, live owner, other navigation
+errors and any potentially already-clicked Send forbid this path.
+
+The command twice rechecks the original user/assistant SHA, rules out any
+already-submitted matching request in enabled tabs, and verifies hydration
+on a new unsent tab before committing the original-request one-shot
+`chatgpt.browser_pre_send_retry_intent`. Thereafter at most one **first**
+actual Send may occur. A failed or ambiguous attempt cannot be repeated;
+the original uncertain receipt remains intact and must instead be
+independently inspected through `browser-recover-rollover` if a complete
+response actually exists. The enrolled Worker must PI-review the credited
+reply before any later turn. This is never a generic Retry permission.
 
 **Misattributed, already-credited PI answer recovery:** If an old ChatGPT browser observation was credited to the wrong assistant turn, do **not** manually edit SQLite events, reset the current request key, rerun that prompt, or trust `pi-evidence.ledgerConsistent` alone: old paired browser/PI SHA values can agree with each other while both point to the *wrong* answer. First review the original Mission's `pi-evidence`, the exact linked Chrome conversation and the active production Send inventory. Only after a stable complete latest answer with the original reserved **latest** user prompt can be independently reproduced, run `browser-correct-attribution <id> --revision <current> --acknowledge-side-effects` on a qualified runtime. The command sends nothing and appends a one-shot `chatgpt.browser_attribution_corrected` event referencing the original observation and PI decision; it updates only the active checkpoint hash/summary and marks PI re-review pending. The original browser and PI events stay in SQLite. `pi-evidence` shows the old and corrected hashes and rejects the correction as complete until PI records `pi.decision_attribution_corrected`. After a controller restart, the PI recovery path independently re-reads the corrected full answer before any future Send. If the exact original tab, user prompt, answer or revision is unavailable, leave the Mission PAUSED and start a separately authorized fresh Mission to continue outstanding business, never forge a seventh-turn receipt. A test-passed source implementation is not a live correction or safe production deployment.
 
@@ -897,7 +936,7 @@ For the optional Codex plugin on Windows, `MISSION_RELAY_WINDOWS_SANDBOX=uneleva
 
 For an opt-in write-capable mission, explicitly supply `--checks-file /absolute/path/checks.json` when creating the mission. Format: `[ { "argv": ["node", "--test"], "timeoutMs": 30000 } ]`. Commands are executed from the mission workspace **without a shell** and with bounded timeouts. They are trusted *user input*, not generated by an AI response. They are not guaranteed read-only: project test scripts can modify files or services. Never configure production deploy, secrets manipulation or destructive tools as verification commands.
 
-Model-only completion is still allowed for `read-only` missions, but should be treated as a model review rather than a deterministic proof. A write-capable mission with zero configured checks pauses instead of reporting completion. Historical SQLite v1/v2 databases migrate to v3 on first open; maintain a copy of critical state before deploying a new release.
+Model-only completion is still allowed for `read-only` missions, but should be treated as a model review rather than a deterministic proof. A write-capable mission with zero configured checks pauses instead of reporting completion. Writable Store openings migrate supported older SQLite schemas transactionally through the current schema v5; maintain a verified private recovery copy of critical state before deploying a new release.
 
 ## Recovery
 
