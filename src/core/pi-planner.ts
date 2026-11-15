@@ -44,7 +44,9 @@ export function isPiTransientCapacityFailure(exitCode:number|null,stderr:string)
   return stderr.trim().split(/\r?\n/).some(line=>{
     try {
       const reply=JSON.parse(line) as {ok?:unknown;error?:unknown};
-      return reply?.ok===false&&reply.error==='Pi maintenance or a global task is active';
+      return reply?.ok===false&&(
+        reply.error==='Pi maintenance or a global task is active'||
+        reply.error==='Model inference timed out after 120 seconds');
     } catch {return false;}
   });
 }

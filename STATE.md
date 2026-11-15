@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.2.12`.
+- Current source package version: `1.2.13`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -31,6 +31,12 @@
   `/goal-build --repo` source path, checked again on every reservation. The
   PI adapter inherits the operator-managed default model/provider/effort and
   remains tool-free; repository approval is not an OS sandbox.
+- Exact structured PI exit-2 model timeout at 120 seconds and temporary
+  global-task capacity refusals retry only PI inference with durable
+  60-second-to-15-minute backoff after independently rereading the same
+  observed ChatGPT answer. The revision-gated `pi-recheck-timeout` operator
+  command can revalidate an older paused timeout once, without replaying Send,
+  clearing owner stops or manufacturing a PI decision.
 - All original Send requests use immutable identity, prompt SHA, pinned
   browser URL/profile and SQLite-at-most-once reservation. Browser polling
   normally occurs every 60 seconds. A genuine connection interruption waits

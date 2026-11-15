@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.13 — 2026-11-16
+
+- Classify the operator-managed PI host's exact structured 120-second model
+  inference timeout as a transient PI-only failure, with existing durable
+  request/SHA-scoped backoff. Never replay the already observed ChatGPT Send.
+- Add revision-gated `pi-recheck-timeout` for previously stopped checkpoints.
+  Independently verify the same pinned Chrome user and full assistant hashes
+  twice before clearing only the PI error; retain original events, owner
+  stop flags and browser receipts. A different error or changed tab fails closed.
+- No change to PI model/provider/thinking selection, approved SSH 120-second
+  infer timeout, single Worker, remote browser identity or deployment gates.
+
 ## 1.2.12 — 2026-11-15
 
 - Add non-destructive, hourly in-Worker housekeeping for Missions with a

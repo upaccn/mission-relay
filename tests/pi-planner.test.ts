@@ -132,6 +132,16 @@ test('PI treats locally approved repository development as executable work',()=>
 test('PI global-task capacity refusal is transient only for an exact typed exit-2 reply',()=>{
   const busy='{"ok": false, "error": "Pi maintenance or a global task is active"}\n';
   assert.equal(isPiTransientCapacityFailure(2,busy),true);
+  const timedOut='{"ok": false, "error": "Model inference timed out after 120 seconds"}\n';
+  assert.equal(isPiTransientCapacityFailure(2,timedOut),true);
+  for(const code of [0,1,255])
+    assert.equal(isPiTransientCapacityFailure(code,timedOut),false);
+  for(const text of [
+    '{"ok": true, "error": "Model inference timed out after 120 seconds"}',
+    '{"ok": false, "error": "Model inference timed out after 121 seconds"}',
+    'Model inference timed out after 120 seconds',
+    '{"ok": false, "error": "Permission denied"}',
+  ])assert.equal(isPiTransientCapacityFailure(2,text),false);
   for(const [code,stderr] of [
     [1,busy],[255,busy],[0,busy],
     [2,'{"ok": false, "error": "Permission denied"}'],

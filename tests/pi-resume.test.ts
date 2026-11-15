@@ -261,6 +261,36 @@ test('exact historic PI capacity interruption may be revalidated once without re
   }finally{f.cleanup();}
 });
 
+test('exact PI 120-second inference timeout may be revalidated once without a browser Send',()=>{
+  const f=fixture(true);try {
+    const settled=f.finish();
+    const receipt=f.store.chatBrowserTurn(f.id)!;
+    const policy={argvSha256:'a'.repeat(64),modelOverride:false as const,
+      providerOverride:false as const,thinkingOverride:false as const};
+    f.store.auditPiDefaultModelInvocation(f.id,1,sha(answer),policy);
+    const error='operator-managed host PI inference failed (SSH exit 2); no browser retry. '+
+      '{"ok": false, "error": "Model inference timed out after 120 seconds"}\n';
+    const paused=f.store.update(f.id,settled.version,{lastError:error},
+      'pi.autopilot_interrupted',{reason:error});
+    const exact={requestPromptSha256:receipt.promptSha256,
+      assistantSha256:receipt.assistantSha256!};
+    assert.throws(()=>f.store.clearHistoricPiCapacityInterruption(
+      f.id,paused.version,{...exact,assistantSha256:'f'.repeat(64)}),/exact settled/);
+    const fixed=f.store.clearHistoricPiCapacityInterruption(f.id,paused.version,exact);
+    assert.equal(fixed.state,'PAUSED');
+    assert.equal(fixed.stopRequested,false);
+    assert.equal(fixed.lastError,null);
+    assert.equal(fixed.turnCount,1);
+    assert.equal(f.store.chatBrowserTurn(f.id)?.requestKey,receipt.requestKey);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_observed').length,1);
+    assert.equal(f.store.events(f.id).filter(e=>
+      e.type==='pi.autopilot_timeout_revalidated').length,1);
+    assert.throws(()=>f.store.clearHistoricPiCapacityInterruption(
+      f.id,fixed.version,exact),/exact settled/);
+  }finally{f.cleanup();}
+});
+
 test('PI capacity repair refuses owner pause, unrelated error, and stale revision',()=>{
   const f=fixture();try{
     const settled=f.finish(),receipt=f.store.chatBrowserTurn(f.id)!;

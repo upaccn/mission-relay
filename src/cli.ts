@@ -157,6 +157,8 @@ Commands:
          never change it to READY or replay its previous Send
   pi-recheck-capacity <id> --revision <n> --acknowledge-side-effects
          Double-check the original settled reply after a known PI global-task busy error; no Send
+  pi-recheck-timeout <id> --revision <n> --acknowledge-side-effects
+         Double-check the original settled reply after exact PI 120-second model timeout; no Send
   pi-recheck-successor <id> --revision <n> --acknowledge-side-effects
          For the known parent-vs-child checkpoint bug only: verify original
          successor user/answer SHAs twice in the live pinned ChatGPT tab, then
@@ -1046,17 +1048,21 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       const revision=Number(option(f,'revision'));
       result=store.resumePausedPiCheckpoint(id,revision);
     }
-    else if ((command === 'pi-recheck-successor'||command === 'pi-recheck-capacity') && id) {
+    else if ((command === 'pi-recheck-successor'||command === 'pi-recheck-capacity'||
+      command === 'pi-recheck-timeout') && id) {
       const f=flags(rest);
       if(!f['--acknowledge-side-effects'])
         throw new Error('Explicit --acknowledge-side-effects required for PI interruption repair');
       const revision=Number(option(f,'revision'));
       const m=store.get(id),receipt=store.chatBrowserTurn(id);
-      const capacity=command==='pi-recheck-capacity';
+      const capacity=command==='pi-recheck-capacity'||command==='pi-recheck-timeout';
+      const timeout=command==='pi-recheck-timeout';
       const url=store.chatLink(id),browserId=store.chatBrowserBinding(id);
       if(m.version!==revision||m.state!=='PAUSED'||m.stopRequested||
         (!capacity&&m.lastError!==PI_SUCCESSOR_CHECKPOINT_MISMATCH)||
-        (capacity&&!m.lastError?.includes('Pi maintenance or a global task is active'))||
+        (capacity&&!m.lastError?.includes(timeout
+          ?'Model inference timed out after 120 seconds'
+          :'Pi maintenance or a global task is active'))||
         !receipt||!['observed','reconciled'].includes(receipt.status)||
         !url||!browserId||(!capacity&&!store.piChainParent(id))||
         !store.hasVerifiedPiBrowserCheckpoint(id))
@@ -1087,7 +1093,7 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       result={missionId:id,state:repaired.state,revision:repaired.version,
         round:repaired.turnCount,stopRequested:repaired.stopRequested,
         assistantSha256:independentlyRead.assistantSha256,
-        note:capacity?'Original PI capacity interruption revalidated and cleared without Send or PI decision; original Worker must independently reread the settled answer.':
+        note:capacity?'Original PI inference interruption revalidated and cleared without Send or PI decision; original Worker must independently reread the settled answer.':
           'One false parent-vs-successor checkpoint interruption cleared. No Send, owner pause release or PI decision. Original Worker must independently re-read the live browser.'};
     }
     else if (command === 'pause' && id) result = engine.pause(id);

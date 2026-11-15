@@ -526,11 +526,13 @@ interrupted historic Mission is **not** eligible. Do not clear SQLite errors or
 retry timestamps to force dispatch; a passing source test is not live GMK
 deployment or independent Goal acceptance.
 
-**PI capacity-busy interruption and recovery (source behavior; independently verify installed SHA):**
+**PI capacity-busy and bounded model-timeout recovery (source behavior; independently verify installed SHA):**
 An exact `pictl infer` SSH exit 2 whose structured error is
 `Pi maintenance or a global task is active` means the operator-managed host PI global
 execution slot was occupied, not that the ChatGPT Send failed. New controllers
-classify ONLY this exact typed response as `RetryablePiError`, deferring the
+also recognize `Model inference timed out after 120 seconds` when returned
+as the **exact** `{"ok":false,"error":"..."}` structured exit-2 error.
+Both are typed `RetryablePiError`, deferring the
 **same observed answer** through the existing SQLite-bound 60s–15min PI
 backoff; the original browser Send is never replayed. Other exit-2 messages,
 owner stops, tampered Chrome answers and lack of project approval stay blocked.
@@ -555,6 +557,18 @@ perform its own fresh browser check and then retry PI; on renewed global
 capacity contention the durable backoff handles it without manual recovery.
 A missing tab, malformed event chain, mismatched SHA, changed Goal, stale
 revision or any owner stop must fail closed and keep the original error.
+
+For an **old** fully observed PI checkpoint whose last error is the exact
+`Model inference timed out after 120 seconds` response, use
+`node dist/cli.js pi-recheck-timeout <mission-id> --revision <current>
+--acknowledge-side-effects` after a qualified version has deployed.
+It inherits the same double-live-browser-read, exact recorded event sequence,
+source SHA and owner-stop checks; it writes only
+`pi.autopilot_timeout_revalidated` and clears that one known PI inference
+failure. It **does not** retry a ChatGPT Send. The existing enrolled Worker
+then independently rereads the settled answer and retries only PI under the
+durable backoff policy. A different deadline, arbitrary stderr or unverified
+browser page is never eligible.
 
 **Atomic, explicit Windows pull-only promotion (new):** After a cooperative
 owner pause has settled its original browser Send, and after exact GitHub

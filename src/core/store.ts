@@ -57,8 +57,9 @@ export const PI_SUCCESSOR_CHECKPOINT_MISMATCH=
 export const PAUSED_DELIVERY_RETRY_ERROR=
   'Delivery Retry requires the original active or timed-out request';
 
-/** Only the old installed PI controller's exact exit-2 capacity error is
- * eligible for operator-attested checkpoint recovery. */
+/** Only exact, structured exit-2 PI capacity or model-timeout errors are
+ * eligible for operator-attested checkpoint recovery. An arbitrary model,
+ * authorization or browser error is never eligible. */
 function isHistoricPiCapacityInterruption(error:string|null):boolean {
   // Keep recognizing the original deployed controller's prefixed error even
   // after the host/provider name changes. Only the exact structured
@@ -67,7 +68,9 @@ function isHistoricPiCapacityInterruption(error:string|null):boolean {
   if(!match)return false;
   try {
     const parsed=JSON.parse(error!.slice(match[0].length)) as {ok?:unknown;error?:unknown};
-    return parsed?.ok===false&&parsed.error==='Pi maintenance or a global task is active';
+    return parsed?.ok===false&&(
+      parsed.error==='Pi maintenance or a global task is active'||
+      parsed.error==='Model inference timed out after 120 seconds');
   }catch{return false;}
 }
 
@@ -1164,7 +1167,7 @@ export class Store {
         });
     });
   }
-  /** Operator-attested one-time clearing of a LEGACY capacity interruption.
+  /** Operator-attested one-time clearing of a structured PI inference interruption.
    * The current Worker must independently read Chrome again and rerun only
    * PI inference. Neither this method nor its CLI issues a browser Send. */
   clearHistoricPiCapacityInterruption(id:string,revision:number,input:{
@@ -1200,7 +1203,8 @@ export class Store {
            this.getMeta('telegram.pi.project')!==m.workspace))
         throw new Error('PI capacity recovery requires the exact settled, unpaused original inference interruption');
       return this.update(id,revision,{lastError:null},
-        'pi.autopilot_capacity_revalidated',{
+        m.lastError!.includes('Model inference timed out after 120 seconds')
+          ?'pi.autopilot_timeout_revalidated':'pi.autopilot_capacity_revalidated',{
           interruptedEventId:interrupted.id,invocationEventId:invocation.id,
           round:m.turnCount,requestKey:receipt.requestKey,
           requestPromptSha256:receipt.promptSha256,
