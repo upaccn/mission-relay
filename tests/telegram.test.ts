@@ -327,6 +327,39 @@ test('settled Mission archive preserves audit history and refuses uncertain/acti
   }finally{f.cleanup();}
 });
 
+test('automatic archival waits 24 hours and never hides blocked, paused or uncertain work',()=>{
+  const f=fixture();try{
+    const elapsed=24*60*60*1000;
+    const now=Date.now();
+    const done=f.engine.create({goal:'Settled result',acceptance:['done'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:1,requestKey:'auto-done'});
+    f.store.update(done.id,done.version,{state:'COMPLETED'},'verification.accepted',{});
+    const blocked=f.engine.create({goal:'Owner action required',acceptance:['review'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:1,requestKey:'auto-blocked'});
+    f.store.update(blocked.id,blocked.version,{state:'PAUSED'},'pi.autopilot_stopped',{});
+    f.store.setMeta(`pi.plan.${blocked.id}`,JSON.stringify({action:'BLOCKED',round:1}));
+    const uncertain=f.engine.create({goal:'Unresolved send',acceptance:['inspect'],workspace:'',
+      sandbox:'read-only',mode:'supervised',maxTurns:1,requestKey:'auto-uncertain'});
+    f.store.update(uncertain.id,uncertain.version,{state:'NEEDS_RECONCILIATION'},
+      'chatgpt.browser_uncertain',{});
+    const auto={minAgeMs:elapsed,includeBlocked:false};
+    assert.equal(f.store.archiveSettledMissions({...auto,nowMs:now+elapsed-1000}).archived,0);
+    const result=f.store.archiveSettledMissions({...auto,nowMs:now+elapsed+1000});
+    assert.equal(result.archived,1);
+    assert.equal(f.store.isMissionArchived(done.id),true);
+    assert.equal(f.store.isMissionArchived(blocked.id),false);
+    assert.equal(f.store.isMissionArchived(uncertain.id),false);
+    assert.equal(f.store.isMissionArchived(f.m.id),false);
+    assert.equal(f.store.archiveSettledMissions({...auto,nowMs:now+elapsed+1000}).archived,0);
+    assert.equal(f.store.get(done.id).state,'COMPLETED');
+    assert.equal(f.store.events(done.id).at(-1)?.type,'mission.archived');
+    assert.throws(()=>f.store.archiveSettledMissions({minAgeMs:-1}),/Invalid archive/);
+    // An explicit operator archive still recognizes the reviewed BLOCKED PI verdict.
+    assert.equal(f.store.archiveSettledMissions().archived,1);
+    assert.equal(f.store.isMissionArchived(blocked.id),true);
+  }finally{f.cleanup();}
+});
+
 test('archive-settled never hides a PI LIMIT/NEXT while its 32-turn successor still needs work',()=>{
   const f=fixture();try{
     const sha=(text:string)=>createHash('sha256').update(text).digest('hex');

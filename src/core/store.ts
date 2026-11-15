@@ -2354,11 +2354,24 @@ export class Store {
   isMissionArchived(id:string):boolean {
     return this.getMeta(`mission.archive.${id}`)!==null;
   }
-  archiveSettledMissions():{archived:number;retained:number} {
+  archiveSettledMissions(options:{
+    /** Automatic housekeeping must not hide a fresh verdict. */
+    minAgeMs?:number;
+    /** BLOCKED is an owner-action state, not an automatic expiration. */
+    includeBlocked?:boolean;
+    nowMs?:number;
+  }={}):{archived:number;retained:number} {
+    const minAgeMs=options.minAgeMs??0,nowMs=options.nowMs??Date.now();
+    if(!Number.isSafeInteger(minAgeMs)||minAgeMs<0||
+      !Number.isFinite(nowMs)||nowMs<0)
+      throw new Error('Invalid archive retention interval or observation time');
     return this.transaction(()=>{
       let archived=0,retained=0;
       for(const m of this.list()){
         if(this.isMissionArchived(m.id))continue;
+        const updatedAtMs=Date.parse(m.updatedAt);
+        if(minAgeMs>0&&(!Number.isFinite(updatedAtMs)||
+          nowMs-updatedAtMs<minAgeMs)){retained++;continue;}
         const receipt=this.chatBrowserTurn(m.id),pi=this.piPlan(m.id);
         const safeReceipt=!receipt||['observed','reconciled'].includes(receipt.status);
         // pi.autopilot_finished also records LIMIT when a 32-turn PI NEXT
@@ -2366,6 +2379,9 @@ export class Store {
         // NEVER proves the owner's goal is settled. The durable latest PI
         // plan is terminal only on an explicit DONE/BLOCKED decision.
         const terminalPi=pi&&['DONE','BLOCKED'].includes(pi.action);
+        if(options.includeBlocked===false&&pi?.action==='BLOCKED'){
+          retained++;continue;
+        }
         const terminalBrowser=/\[MISSION_RELAY:DONE\]\s*$/.test(m.lastSummary??'');
         const settled=['COMPLETED','CANCELLED'].includes(m.state)||
           (m.state==='PAUSED'&&!m.lastError&&!m.stopRequested&&
@@ -2375,7 +2391,8 @@ export class Store {
         if(!safeReceipt||!settled){retained++;continue;}
         const at=new Date().toISOString();
         this.setMeta(`mission.archive.${m.id}`,at);
-        this.event(m.id,'mission.archived',{at,reason:'settled_history'});
+        this.event(m.id,'mission.archived',{at,
+          reason:options.minAgeMs?'settled_retention_elapsed':'settled_history'});
         archived++;
       }
       return {archived,retained};

@@ -309,6 +309,7 @@ export class TelegramBridge {
   private activeMission:string|null=null;
   private activeTask:Promise<void>|null=null;
   private lastBrowserWatchAt=0;
+  private lastArchiveSweepAt=0;
   /** An idle, already-observed PI checkpoint may outlive a Chrome restart.
    * A connector/read-only DOM outage must not poison its durable NEXT plan;
    * retry only after bounded quiet time, never by replaying a browser Send. */
@@ -449,6 +450,20 @@ export class TelegramBridge {
           await this.pollOnce();
           lastLoopProgressAt=Date.now();
           if(this.store.channelDrainRequested(this.source))continue;
+          // Housekeeping belongs to the existing leased Worker, not a new
+          // service. Preserve unresolved/paused missions and their audit
+          // trail; a BLOCKED PI verdict still needs owner attention.
+          if(!this.activeTask&&!this.activeMission&&
+            Date.now()-this.lastArchiveSweepAt>=60*60*1000){
+            this.lastArchiveSweepAt=Date.now();
+            try {
+              this.store.archiveSettledMissions({
+                minAgeMs:24*60*60*1000,includeBlocked:false,
+              });
+            }catch{
+              console.error('Settled Mission housekeeping deferred; no active request was changed');
+            }
+          }
           // Adopted ChatGPT missions may be queued by an independent local
           // CLI. Only this leased foreground controller drives PI/browser.
           if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
@@ -1405,7 +1420,7 @@ export class TelegramBridge {
       'Recovery, approvals and secrets remain local CLI operations.',
     ].join('\n'):[
       'Mission Relay — send a task as a normal message.',
-      'The assistant continues until finished or blocked; each Chat allows 10 messages.',
+      'The assistant continues until finished or blocked; each Chat allows 8 Relay sends.',
       '/build <task> — implement in your approved repository',
       '/goal <objective> — track a persistent goal',
       '/goal-build --repo /approved/path <objective> — isolated write-enabled Goal',

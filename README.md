@@ -10,9 +10,9 @@ Mission Relay coordinates long-running AI work across independently scoped proje
 - **Independent project workspaces:** each writable Goal must specify an explicitly approved `--repo` path. Different approved repository roots cannot overlap, and every browser Send rechecks the Goal's immutable repository scope.
 - **Multi-Goal scheduling:** multiple Goals remain active or queued, each with its own Mission and ChatGPT conversation. One leased Worker dispatches browser work sequentially at safe checkpoints.
 - **PI-driven execution:** the configured PI agent plans and reviews the work; ChatGPT carries out the current approved work package in the owner's Playwriter-enabled Chrome tab. PI inherits its configured default model.
-- **Conversation handoff:** after 10 verified Relay sends in one ChatGPT conversation, further work uses a new conversation while retaining the Mission's durable context.
+- **Conversation handoff:** after 8 verified Relay sends in one ChatGPT conversation, further work uses a new conversation while retaining the Mission's durable context.
 - **Safe delivery and recovery:** exact request IDs, prompt and answer hashes, browser/tab binding, at-most-once sends, bounded existing-message UI Retry, owner pause/resume and recovery of verified replies.
-- **Operational controls:** SQLite-backed audit events, GitHub CI qualification, maintenance-gated Windows upgrades, recoverable database backups and runtime SHA verification.
+- **Operational controls:** SQLite-backed audit events, non-destructive automatic archival of settled history, GitHub CI qualification, maintenance-gated Windows upgrades, recoverable database backups and runtime SHA verification.
 - **CI-conscious autonomy:** routine iterations prefer local/approved native-host validation and batch metered CI pushes; private-repository workflow triggers are checked before pushes. Required release CI is still independently verified, not replaced by local-only assertions.
 - **Optional executor plugins:** add trusted native executors without bundling vendor SDKs or credentials into Core.
 

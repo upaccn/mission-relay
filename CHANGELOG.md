@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.12 — 2026-11-15
+
+- Add non-destructive, hourly in-Worker housekeeping for Missions with a
+  confirmed settled result older than 24 hours. Retain complete SQLite
+  records, original browser receipts and immutable audit events.
+- Automatic archival excludes PI BLOCKED owner-action checkpoints, active
+  Goals, unfinished NEXT/HANDOFF/LIMIT work, explicit owner pauses and
+  uncertain or reserved browser Sends. The existing local `archive-settled`
+  command remains available for operator-reviewed terminal BLOCKED history.
+- Make archival idempotent, isolated from Telegram polling failures and
+  disabled during maintenance; keep the single enrolled Worker and existing
+  Windows restart schedule. Correct the 8-send policy in owner-visible help
+  and public README without modifying any historical Mission.
+
 ## 1.2.11 — 2026-11-14
 
 - Lower the operational per-ChatGPT-conversation Relay Send ceiling from 10

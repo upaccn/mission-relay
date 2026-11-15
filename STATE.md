@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.2.11`.
+- Current source package version: `1.2.12`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -69,6 +69,11 @@
   repeating recovery trigger must keep
   `Repetition.StopAtDurationEnd=false`; source updates never modify it by
   themselves.
+- The single Worker archives verified settled Mission history after 24 hours
+  with an hourly idle-only check; no extra scheduler or DB deletion is added.
+  Owner-action BLOCKED, unfinished, explicitly paused and ambiguous Sends
+  remain visible. Full /history, evidence and immutable original receipts
+  survive archival.
 
 ## Source hygiene and drift controls
 
