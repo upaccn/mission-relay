@@ -22,7 +22,7 @@ const never:AgentAdapter={
   async verify(){throw new Error('Native verifier must not execute PI ChatGPT Missions');},
 };
 function rig(planner:PiPlanner,options:{failFirstRecoveryConnect?:boolean;
-  recoveryConnectError?:string}={}){
+  recoveryConnectError?:string;failAfterFirstPiNextRead?:boolean}={}){
   const dir=mkdtempSync(join(tmpdir(),'relay-telegram-pi-'));
   const store=new Store(join(dir,'missions.sqlite'));
   const engine=new Engine(store,never);
@@ -35,6 +35,7 @@ function rig(planner:PiPlanner,options:{failFirstRecoveryConnect?:boolean;
   store.setMeta('telegram.chatgpt.browserId','install:Chrome:synthetic');
   let sends=0,newTabs=0,closed=false,entered='',location='about:blank';
   let connectorAttempts=0;
+  let closedPageInjected=false;
   const connectorOptions:Array<{browserId?:string;bootstrapMissingAnchor?:boolean}|undefined>=[];
   const sentPrompts:string[]=[];
   const roleLocator=(fresh:boolean)=>(selector:string)=>{
@@ -43,8 +44,17 @@ function rig(planner:PiPlanner,options:{failFirstRecoveryConnect?:boolean;
       selector.includes('prompt-textarea')?'composer':
       selector.includes('send-button')?'send':'other';
     const obj:any={
-      count:async()=>role==='other'?0:['composer','send'].includes(role)?1:
-        fresh?(sends?1:0):1,
+      count:async()=>{
+        if(options.failAfterFirstPiNextRead&&!closedPageInjected&&fresh&&sends===1&&
+          store.list().some(m=>store.piPlan(m.id)?.round===1&&
+            store.piPlan(m.id)?.action==='NEXT'&&
+            store.chatBrowserTurn(m.id)?.status==='observed')){
+          closedPageInjected=true;
+          throw new Error('locator.count: Target page, context or browser has been closed');
+        }
+        return role==='other'?0:['composer','send'].includes(role)?1:
+          fresh?(sends?1:0):1;
+      },
       first:()=>obj,last:()=>obj,isVisible:async()=>role!=='other',
       isEnabled:async()=>Boolean(entered),
       innerText:async()=>role==='user'?fresh?entered:'Anchor user message':
@@ -92,7 +102,7 @@ function rig(planner:PiPlanner,options:{failFirstRecoveryConnect?:boolean;
   return {store,engine,bridge,sent,message,dbFile:join(dir,'missions.sqlite'),
     primeRecovered:(prompt:string)=>{location=DEST;entered=prompt;sends=1;},
     setUpdates:(items:TelegramUpdate[])=>{updates=items;},
-    state:()=>({sends,newTabs,closed,sentPrompts,connectorOptions,connectorAttempts}),
+    state:()=>({sends,newTabs,closed,closedPageInjected,sentPrompts,connectorOptions,connectorAttempts}),
     restartedController:(reopened:Store)=>new TelegramBridge(reopened,new Engine(reopened,never),
       transport,1001,2001,async()=>{throw new Error('Codex must not execute');},
       browserConnector,planner),
@@ -122,6 +132,48 @@ function goalPlanner():PiPlanner{
     }),
   };
 }
+
+test('closed Playwriter page after settled PI NEXT defers read-only recovery without replaying the original Send',async()=>{
+  const objective='Verify one settled browser checkpoint survives a closed Playwriter page';
+  const f=rig(goalPlanner(),{failAfterFirstPiNextRead:true});
+  try{
+    f.setUpdates([f.message(3401,`/goal ${objective}`)]);
+    await f.bridge.pollOnce(0);
+    for(let i=0;i<200&&!f.state().closed;i++)
+      await new Promise(resolve=>setTimeout(resolve,30));
+    const m=f.engine.list().find(item=>item.goal===objective);
+    assert.ok(m);
+    assert.equal(f.state().closedPageInjected,true);
+    assert.equal(f.state().sends,1,'only the original observed browser request was submitted');
+    assert.equal(f.store.get(m.id).turnCount,1);
+    assert.equal(f.store.get(m.id).lastError,null);
+    assert.equal(f.store.piPlan(m.id)?.action,'NEXT');
+    const original=f.store.chatBrowserTurn(m.id)!;
+    assert.equal(original.status,'observed');
+    assert.equal(f.store.events(m.id).filter(e=>e.type==='pi.browser_read_retry_deferred').length,1);
+    assert.equal(f.store.events(m.id).filter(e=>e.type==='pi.autopilot_interrupted').length,0);
+    assert.equal(f.store.events(m.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    const retryAt=Number(f.store.getMeta(`pi.retry.after.${m.id}`));
+    assert.ok(retryAt>Date.now());
+    const reopened=new Store(f.dbFile);
+    try{
+      const restarted=f.restartedController(reopened);
+      await (restarted as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>})
+        .recoverObservedPiCheckpoint();
+      assert.equal(f.state().sends,1,'persistent backoff survives SQLite reopen');
+      reopened.setMeta(`pi.retry.after.${m.id}`,String(Date.now()-1));
+      await (restarted as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>})
+        .recoverObservedPiCheckpoint();
+      for(let i=0;i<160&&reopened.get(m.id).turnCount<2;i++)
+        await new Promise(resolve=>setTimeout(resolve,40));
+      assert.equal(reopened.get(m.id).turnCount,2);
+      assert.equal(f.state().sends,2,'one new NEXT request, not a replay of the observed one');
+      assert.equal(reopened.events(m.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2);
+      assert.equal(reopened.events(m.id).filter(e=>e.type==='chatgpt.browser_observed').length,2);
+      assert.equal(reopened.events(m.id).filter(e=>e.type==='pi.autopilot_interrupted').length,0);
+    }finally{reopened.close();}
+  }finally{f.cleanup();}
+});
 
 test('WP4 /goal creates durable Goal plus one PI Mission; PI persists a reviewed plan and blocks without Goal DONE',async()=>{
   const f=rig(goalPlanner());

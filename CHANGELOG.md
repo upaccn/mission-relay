@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.2.14 — 2026-11-17
+
+- Treat the exact Playwriter `locator.count: Target page, context or browser has
+  been closed` failure **after an already observed PI NEXT** as a transient
+  browser read/connection problem only when the last request is settled,
+  the PI decision and full answer SHA match and no owner pause exists.
+  Reuse the existing persistent request-bound 60-second-to-15-minute read-only
+  reconnect backoff. Do not replay or reserve the prior browser Send.
+- Add local `pi-recheck-browser` for an already-interrupted legacy checkpoint.
+  Require an exact, revision-gated original error/event/decision chain and
+  two stable independent reads of the same pinned Chrome user and final
+  assistant SHA before clearing only the interruption. Leave original receipts,
+  PI decision, pending work, owner stops and all audit history intact.
+- Regression-test a real synthetic controller exit and SQLite reopen/reconnect,
+  wrong hashes, stale revision, terminal decisions, owner pause and unresolved
+  request. No new worker, scheduler, browser profile, permission or SQLite reset.
+
 ## 1.2.13 — 2026-11-16
 
 - Classify the operator-managed PI host's exact structured 120-second model

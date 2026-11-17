@@ -49,8 +49,19 @@ export function stalledPollerMayExit(now:number,lastLoopProgressAt:number,
  * DOM attribution and arbitrary exceptions must not become retries. */
 function isTransientPiRecoveryReadFailure(error:unknown):boolean {
   if(!(error instanceof Error))return false;
-  return /Read-only Chrome preflight timed out|Playwriter relay reconnecting|Playwriter (?:connection|relay) (?:closed|disconnected)|(?:connection|socket) (?:reset|closed|refused|aborted)|Target (?:page )?closed|locator\.(?:innerText|count|isVisible): Timeout \d+ms exceeded|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE/i
+  return /Read-only Chrome preflight timed out|Playwriter relay reconnecting|Playwriter (?:connection|relay) (?:closed|disconnected)|(?:connection|socket) (?:reset|closed|refused|aborted)|Target (?:page )?closed|locator\.(?:count|innerText|isVisible): Target page, context or browser has been closed|locator\.(?:innerText|count|isVisible): Timeout \d+ms exceeded|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE/i
     .test(error.message);
+}
+
+/** A continuous browser session can vanish AFTER PI commits NEXT but BEFORE
+ * the next browser request is reserved. Use the same persisted read-only
+ * reconnect backoff as a fresh-worker preflight. Reserved/uncertain Sends,
+ * terminal plans, owner stops and unmatched checkpoints still fail closed. */
+function deferSettledPiNextChromeFailure(store:Store,id:string,error:unknown):boolean {
+  if(!isTransientPiRecoveryReadFailure(error))return false;
+  const m=store.get(id),plan=store.piPlan(id);
+  return plan?.round===m.turnCount&&['NEXT','HANDOFF'].includes(plan.action)&&
+    deferTransientPiBrowserRecovery(store,id,(error as Error).message);
 }
 
 export interface TelegramUpdate {
@@ -969,7 +980,8 @@ export class TelegramBridge {
       }).catch(error=>{
         const reason=error instanceof Error?error.message:'unknown PI recovery error';
         console.error(`PI recovery ${m.id}: ${reason}`);
-        pauseFailedPiPlanning(this.store,m.id,error instanceof Error?error:reason);
+        if(!deferSettledPiNextChromeFailure(this.store,m.id,error))
+          pauseFailedPiPlanning(this.store,m.id,error instanceof Error?error:reason);
       }).finally(async()=>{
         try{await held.close();}catch{console.error('PI recovery session cleanup warning');}
         finally{this.activeMission=null;this.activeTask=null;}
@@ -1257,7 +1269,8 @@ export class TelegramBridge {
       }).catch(error=>{
         const message=error instanceof Error?error.message:'unknown PI autopilot error';
         console.error(`PI autopilot ${m.id}: ${message}`);
-        pauseFailedPiPlanning(this.store,m.id,error instanceof Error?error:message);
+        if(!deferSettledPiNextChromeFailure(this.store,m.id,error))
+          pauseFailedPiPlanning(this.store,m.id,error instanceof Error?error:message);
       }).finally(async()=>{
         try{await session.close();}catch{console.error('PI Playwriter session cleanup warning');}
         finally{this.activeMission=null;this.activeTask=null;}

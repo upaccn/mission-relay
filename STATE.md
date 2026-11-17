@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.2.13`.
+- Current source package version: `1.2.14`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -37,6 +37,14 @@
   observed ChatGPT answer. The revision-gated `pi-recheck-timeout` operator
   command can revalidate an older paused timeout once, without replaying Send,
   clearing owner stops or manufacturing a PI decision.
+- A closed Playwriter page at the **settled PI NEXT pre-Send read** is treated
+  as a recoverable read-only connection failure, with the existing durable
+  request/SHA-bound backoff. No browser request is replayed or guessed.
+  Historical instances with the exact previously persisted closed-page error
+  may use `pi-recheck-browser`, only after two independent matching full
+  user/assistant SHA readbacks in the original pinned Chrome conversation.
+  Any unresolved Send, owner pause, terminal PI plan, wrong answer, missing
+  grant or changed browser binding remains a hard stop.
 - All original Send requests use immutable identity, prompt SHA, pinned
   browser URL/profile and SQLite-at-most-once reservation. Browser polling
   normally occurs every 60 seconds. A genuine connection interruption waits

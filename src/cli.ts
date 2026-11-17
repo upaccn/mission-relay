@@ -6,7 +6,8 @@ import {armScopedPiConnectionDrill,scopedPiConnectionDrillStatus} from './core/p
 import { join, resolve } from 'node:path';
 import { statSync, readFileSync } from 'node:fs';
 import { Engine } from './core/engine.js';
-import { Store,PI_SUCCESSOR_CHECKPOINT_MISMATCH } from './core/store.js';
+import { Store,PI_SUCCESSOR_CHECKPOINT_MISMATCH,
+  PI_CLOSED_PAGE_READ_ERROR } from './core/store.js';
 import {GoalLedger} from './core/goal-store.js';
 import {GoalReleaseGate,inspectReleaseProbeOutcome} from './core/goal-release.js';
 import {inspectSoftwareReleaseCandidate} from './core/software-release.js';
@@ -155,6 +156,9 @@ Commands:
   pi-resume <id> --revision <n> --acknowledge-side-effects
          Release a settled owner-paused PI checkpoint for independent controller re-readback;
          never change it to READY or replay its previous Send
+  pi-recheck-browser <id> --revision <n> --acknowledge-side-effects
+         Revalidate an exact legacy closed-page interruption after two independent
+         SHA-matched browser reads. Never repeats an observed Send
   pi-recheck-capacity <id> --revision <n> --acknowledge-side-effects
          Double-check the original settled reply after a known PI global-task busy error; no Send
   pi-recheck-timeout <id> --revision <n> --acknowledge-side-effects
@@ -1049,7 +1053,7 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       result=store.resumePausedPiCheckpoint(id,revision);
     }
     else if ((command === 'pi-recheck-successor'||command === 'pi-recheck-capacity'||
-      command === 'pi-recheck-timeout') && id) {
+      command === 'pi-recheck-timeout'||command === 'pi-recheck-browser') && id) {
       const f=flags(rest);
       if(!f['--acknowledge-side-effects'])
         throw new Error('Explicit --acknowledge-side-effects required for PI interruption repair');
@@ -1057,16 +1061,22 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       const m=store.get(id),receipt=store.chatBrowserTurn(id);
       const capacity=command==='pi-recheck-capacity'||command==='pi-recheck-timeout';
       const timeout=command==='pi-recheck-timeout';
+      const browser=command==='pi-recheck-browser';
       const url=store.chatLink(id),browserId=store.chatBrowserBinding(id);
       if(m.version!==revision||m.state!=='PAUSED'||m.stopRequested||
-        (!capacity&&m.lastError!==PI_SUCCESSOR_CHECKPOINT_MISMATCH)||
+        (!capacity&&!browser&&m.lastError!==PI_SUCCESSOR_CHECKPOINT_MISMATCH)||
         (capacity&&!m.lastError?.includes(timeout
           ?'Model inference timed out after 120 seconds'
           :'Pi maintenance or a global task is active'))||
+        (browser&&(m.lastError!==PI_CLOSED_PAGE_READ_ERROR||
+          store.piPlan(id)?.round!==m.turnCount||
+          !['NEXT','HANDOFF'].includes(store.piPlan(id)?.action??'')))||
         !receipt||!['observed','reconciled'].includes(receipt.status)||
-        !url||!browserId||(!capacity&&!store.piChainParent(id))||
+        !url||!browserId||(!capacity&&!browser&&!store.piChainParent(id))||
         !store.hasVerifiedPiBrowserCheckpoint(id))
-        throw new Error('No eligible settled successor false-mismatch interruption at this revision');
+        throw new Error(browser
+          ?'No eligible settled closed-page interruption at this revision'
+          :'No eligible settled successor false-mismatch interruption at this revision');
       const session=await withReadOnlyDeadline(connectChatPage(url,{browserId}),
         30_000,late=>late.close());
       const independentlyRead=await withBrowserSession(session,async page=>{
@@ -1077,7 +1087,7 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
           if(snapshot.generating||!snapshot.composerReady||
             !['DONE','NEXT','BLOCKED','HANDOFF'].includes(browserDecision(snapshot.lastAssistant))||
             promptSha!==receipt.promptSha256||answerSha!==receipt.assistantSha256)
-            throw new Error('Live successor Chrome does not match the original settled user/answer SHAs');
+            throw new Error('Live Chrome does not match the original settled user/answer SHAs');
           return {promptSha,answerSha,answer:snapshot.lastAssistant};
         };
         const first=await read();
@@ -1087,13 +1097,15 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
           throw new Error('Live successor answer changed between independent browser reads');
         return {requestPromptSha256:second.promptSha,assistantSha256:second.answerSha};
       });
-      const repaired=capacity
-        ?store.clearHistoricPiCapacityInterruption(id,revision,independentlyRead)
+      const repaired=browser
+        ?store.clearSettledPiBrowserReadInterruption(id,revision,independentlyRead)
+        :capacity?store.clearHistoricPiCapacityInterruption(id,revision,independentlyRead)
         :store.clearVerifiedPiSuccessorMismatch(id,revision,independentlyRead);
       result={missionId:id,state:repaired.state,revision:repaired.version,
         round:repaired.turnCount,stopRequested:repaired.stopRequested,
         assistantSha256:independentlyRead.assistantSha256,
-        note:capacity?'Original PI inference interruption revalidated and cleared without Send or PI decision; original Worker must independently reread the settled answer.':
+        note:browser?'Exact closed-page interruption cleared after two independent browser reads; no Send, original Worker must independently recheck before NEXT.':
+          capacity?'Original PI inference interruption revalidated and cleared without Send or PI decision; original Worker must independently reread the settled answer.':
           'One false parent-vs-successor checkpoint interruption cleared. No Send, owner pause release or PI decision. Original Worker must independently re-read the live browser.'};
     }
     else if (command === 'pause' && id) result = engine.pause(id);

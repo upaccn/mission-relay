@@ -53,6 +53,11 @@ export type PiPlanAction='NEXT'|'DONE'|'BLOCKED'|'HANDOFF';
  * a fresh, explicit, double-read browser hash attestation may clear it. */
 export const PI_SUCCESSOR_CHECKPOINT_MISMATCH=
   'PI recovery refused: current Chrome user/assistant turns differ from the last durable receipt';
+/** A closed Playwriter page reported during the read-only pre-Send history
+ * check. Never infer that a subsequent request was submitted from this text;
+ * the SQLite receipt and exact PI checkpoint must prove no new reservation. */
+export const PI_CLOSED_PAGE_READ_ERROR=
+  'locator.count: Target page, context or browser has been closed';
 /** Older in-flight observers could throw when a cooperative pause denied UI Retry. */
 export const PAUSED_DELIVERY_RETRY_ERROR=
   'Delivery Retry requires the original active or timed-out request';
@@ -1049,6 +1054,54 @@ export class Store {
         requiresIndependentBrowserReadback:true,
       });
       return this.get(id);
+    });
+  }
+  /** One-shot operator repair for an older controller that permanently paused
+   * after a closed page during the read-only NEXT preflight. The caller must
+   * independently read the exact original user and assistant SHA twice.
+   * This method never opens Chrome, reserves a request or dispatches a Send. */
+  clearSettledPiBrowserReadInterruption(id:string,revision:number,input:{
+    requestPromptSha256:string;assistantSha256:string;
+  }):Mission {
+    return this.transaction(()=>{
+      const m=this.get(id),receipt=this.chatBrowserTurn(id),plan=this.piPlan(id);
+      const events=this.events(id),interrupted=events.at(-1),decision=events.at(-2);
+      const failure=interrupted?.payload as {reason?:unknown}|undefined;
+      const pi=decision?.payload as {round?:unknown;action?:unknown;
+        responseSha256?:unknown}|undefined;
+      if(m.version!==revision||m.state!=='PAUSED'||m.stopRequested||
+        m.ownerPid!==null||m.turnCount<1||
+        missionTurnLimitReached(m.maxTurns,m.turnCount)||
+        m.lastError!==PI_CLOSED_PAGE_READ_ERROR||
+        this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
+        this.channelDrainRequested('telegram')||!this.goalContinuationEligible(id)||
+        !receipt||receipt.status!=='observed'||
+        !this.hasVerifiedPiBrowserCheckpoint(id)||
+        receipt.promptSha256!==input.requestPromptSha256||
+        receipt.assistantSha256!==input.assistantSha256||
+        !plan||plan.round!==m.turnCount||
+        !['NEXT','HANDOFF'].includes(plan.action)||
+        plan.responseSha256!==receipt.assistantSha256||
+        interrupted?.type!=='pi.autopilot_interrupted'||
+        failure?.reason!==m.lastError||
+        decision?.type!=='pi.decision'||pi?.round!==m.turnCount||
+        pi?.action!==plan.action||pi?.responseSha256!==receipt.assistantSha256||
+        !this.chatLink(id)||!this.chatBrowserBinding(id)||
+        (m.sandbox==='workspace-write'&&
+          (!isApprovedBuildRepository(this,m.workspace)||
+           !hasIsolatedRepositoryGrant(this,m.workspace)||
+           !declaredSourceMatchesScope(m.goal,m.workspace)))||
+        (this.piChainParent(id)!==null&&
+          this.get(this.piChainParent(id)!).stopRequested))
+        throw new Error('Browser read recovery requires the exact settled NEXT checkpoint and original authorization');
+      return this.update(id,revision,{lastError:null},
+        'pi.browser_checkpoint_revalidated',{
+          interruptedEventId:interrupted.id,decisionEventId:decision.id,
+          round:m.turnCount,requestKey:receipt.requestKey,
+          requestPromptSha256:receipt.promptSha256,
+          assistantSha256:receipt.assistantSha256,
+          requiresIndependentBrowserReadback:true,noBrowserSend:true,
+        });
     });
   }
   /** Explicit owner release of a PAUSED, unresolved new-chat request. This

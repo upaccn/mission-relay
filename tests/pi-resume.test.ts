@@ -6,7 +6,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Engine} from '../src/core/engine.js';
-import {Store} from '../src/core/store.js';
+import {Store,PI_CLOSED_PAGE_READ_ERROR} from '../src/core/store.js';
 import {revokeBuildRepository} from '../src/core/build-scopes.js';
 import type {AgentAdapter} from '../src/core/types.js';
 
@@ -259,6 +259,78 @@ test('exact historic PI capacity interruption may be revalidated once without re
       requestPromptSha256:receipt.promptSha256,assistantSha256:receipt.assistantSha256!,
     }),/exact settled/);
   }finally{f.cleanup();}
+});
+
+test('legacy closed-page NEXT interruption requires exact settled receipt and is repaired once without Send',()=>{
+  const f=fixture();
+  try{
+    const settled=f.finish(),receipt=f.store.chatBrowserTurn(f.id)!;
+    f.store.commitPiPlan(f.id,sha(answer),[],{
+      action:'NEXT',summary:'Verified prior round',nextPrompt:'Continue the next package',
+    });
+    const planned=f.store.get(f.id);
+    const paused=f.store.update(f.id,planned.version,
+      {lastError:PI_CLOSED_PAGE_READ_ERROR},'pi.autopilot_interrupted',
+      {reason:PI_CLOSED_PAGE_READ_ERROR});
+    const input={requestPromptSha256:receipt.promptSha256,
+      assistantSha256:receipt.assistantSha256!};
+    const before=f.store.events(f.id);
+    assert.throws(()=>f.store.clearSettledPiBrowserReadInterruption(f.id,
+      paused.version,{...input,assistantSha256:'f'.repeat(64)}),/exact settled NEXT/);
+    assert.throws(()=>f.store.clearSettledPiBrowserReadInterruption(f.id,
+      paused.version-1,input),/exact settled NEXT|State conflict/);
+    assert.equal(f.store.get(f.id).lastError,PI_CLOSED_PAGE_READ_ERROR);
+    const fixed=f.store.clearSettledPiBrowserReadInterruption(f.id,paused.version,input);
+    assert.equal(fixed.state,'PAUSED');
+    assert.equal(fixed.stopRequested,false);
+    assert.equal(fixed.lastError,null);
+    assert.equal(fixed.turnCount,settled.turnCount);
+    assert.deepEqual(f.store.events(f.id).slice(0,before.length),before);
+    assert.equal(f.store.chatBrowserTurn(f.id)?.requestKey,receipt.requestKey);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_observed').length,1);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='pi.browser_checkpoint_revalidated').length,1);
+    assert.throws(()=>f.store.clearSettledPiBrowserReadInterruption(f.id,
+      fixed.version,input),/exact settled NEXT/);
+    const originalReadOnlyErrors=f.store.events(f.id).filter(e=>e.type==='pi.autopilot_interrupted');
+    assert.equal(originalReadOnlyErrors.length,1,'historic interrupt is never erased');
+  }finally{f.cleanup();}
+});
+
+test('closed-page operator repair refuses owner pause, terminal plan, uncertain receipt and wrong error',()=>{
+  for(const scenario of ['owner-stop','terminal','unsettled','wrong-error']){
+    const f=fixture();
+    try{
+      f.finish();
+      const receipt=f.store.chatBrowserTurn(f.id)!;
+      f.store.commitPiPlan(f.id,sha(answer),[],{
+        action:scenario==='terminal'?'BLOCKED':'NEXT',summary:'Prior decision',
+        nextPrompt:scenario==='terminal'?'':'Continue next item',
+      });
+      const before=f.store.get(f.id);
+      f.store.update(f.id,before.version,{
+        lastError:scenario==='wrong-error'?'Browser permission denied':PI_CLOSED_PAGE_READ_ERROR,
+        ...(scenario==='owner-stop'?{stopRequested:true}:{}),
+      },'pi.autopilot_interrupted',{
+        reason:scenario==='wrong-error'?'Browser permission denied':PI_CLOSED_PAGE_READ_ERROR,
+      });
+      if(scenario==='unsettled'){
+        // This fixture's original receipt remains settled, but any later
+        // reserved browser request must also prevent a repair.
+        const current=f.store.get(f.id);
+        f.store.reserveChatBrowserTurn(f.id,current.version,'second-reservation',
+          sha('Second request'));
+      }
+      const current=f.store.get(f.id);
+      const eventCount=f.store.events(f.id).length;
+      assert.throws(()=>f.store.clearSettledPiBrowserReadInterruption(f.id,
+        current.version,{requestPromptSha256:receipt.promptSha256,
+          assistantSha256:receipt.assistantSha256!}),/exact settled NEXT/);
+      assert.equal(f.store.events(f.id).length,eventCount);
+      assert.equal(f.store.events(f.id).filter(e=>
+        e.type==='pi.browser_checkpoint_revalidated').length,0);
+    }finally{f.cleanup();}
+  }
 });
 
 test('exact PI 120-second inference timeout may be revalidated once without a browser Send',()=>{
