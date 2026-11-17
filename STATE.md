@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.2.14`.
+- Current source package version: `1.2.15`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -23,6 +23,13 @@
   Telegram Worker and one leased browser dispatcher. Multiple Goals may
   remain independently queued/active, but a browser Send or uncertain original
   request prevents dispatch to another Goal until a safe checkpoint.
+- A verified external blocker is scoped first to its work item. PI may mark
+  that work BLOCKED and atomically select a different approved independent
+  work package instead of terminating the Goal. All blocked release criteria
+  remain unmet, and the Goal becomes BLOCKED when no independent work remains.
+  PI receives up to 20 recent persisted PASSED/BLOCKED outcomes and is directed
+  toward shipping code, UI, native and transaction evidence, not renamed
+  feasibility reports. This is delivery scheduling, never an acceptance waiver.
 - New PI Missions are unbounded (`max_turns=0`); each ChatGPT conversation
   permits at most **8 observed Relay Sends**, then requires a distinct,
   verified conversation. Existing finite-limit Missions keep their stored

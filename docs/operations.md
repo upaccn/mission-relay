@@ -81,6 +81,20 @@ historical, not the current source ceiling.
 
 ## Metered CI and native verification
 
+For long-running commercial Goals, a work-item external blocker is not an
+automatic stop for independent product work. In v1.2.15, an explicit PI
+`BLOCKED` review durably retains that item and its evidence; the same atomic
+decision selects the next dependency-independent work item if one exists.
+Blocked prerequisites cannot be counted as release PASS. When independent
+work is exhausted, the Goal becomes BLOCKED and requires real new capability
+evidence or an owner-authorized contract change before resumption. The PI
+planning prompt includes recent durable PASSED/BLOCKED item outcomes to avoid
+renamed feasibility loops; those outcomes are controller history, not proof
+of real Git, device or billing acceptance. Operators should inspect the
+existing Goal ledger and source-bound evidence instead of opening another
+identical audit work package. Routine patches get affected tests, not a
+repeated full CI matrix; final exact-SHA release CI is still mandatory.
+
 Before pushing iterative changes to a private repository, inspect its `.github/workflows/` triggers. A push to a watched branch may automatically start a complete metered matrix. Prefer local deterministic checks and the already approved native testing host (for Android, the established device/emulator/Google Play readiness workflow); batch remote pushes at meaningful acceptance boundaries. Run hosted CI when the actual owner acceptance or high-risk release gate needs independent coverage. The native Play readiness check is not a Play submission or a replacement for mandatory independently evidenced remote release CI. Mission Relay's prompt policy cannot disable GitHub workflows in unrelated repositories; optimize those workflows separately when authorized.
 
 ## Paused original-message Retry after maintenance

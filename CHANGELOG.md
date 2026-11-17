@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.15 — 2026-11-17
+
+- Preserve a verified external work-item blocker without unnecessarily
+  terminating the entire Goal. After PI marks that item BLOCKED, select a
+  different approved, dependency-independent work item inside the same SQLite
+  transaction. When no independent work remains, mark the Goal BLOCKED; never
+  imply the blocked requirement or publication gate passed.
+- Supply PI with recent durable PASSED/BLOCKED work outcomes, and prefer
+  production changes, focused source-delta tests, native UX and licensed
+  sandbox verification over repeated report-only or renamed feasibility work.
+- Add deterministic regression covering independent delivery behind a real
+  security blocker and terminal HOLD after the other lanes finish. Retain
+  source/GMK separation, owner contract, one-Worker custody and original
+  at-most-once browser Send handling.
+
 ## 1.2.14 — 2026-11-17
 
 - Treat the exact Playwriter `locator.count: Target page, context or browser has

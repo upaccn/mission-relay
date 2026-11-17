@@ -406,6 +406,61 @@ test('PI BLOCKED uses existing terminal decision without claiming Goal completio
   }finally{f.close();}
 });
 
+test('external blocker defers only its work and continues an independent shipping lane',async()=>{
+  const f=fixture();
+  try{
+    const plan={summary:'Security proof and independent purchase UI',items:[
+      {key:'time-root',title:'Prove independent trusted clock',priority:100,
+        description:'Qualify an available trust root',dependsOn:[],
+        acceptance:['Cross-poweroff trusted time is proven on device']},
+      {key:'purchase-ui',title:'Finish purchase flow',priority:90,
+        description:'Implement and visually verify billing UI',dependsOn:[],
+        acceptance:['Live sandbox purchase and restore are demonstrated']},
+      {key:'release',title:'Release candidate',priority:80,
+        description:'Ship only once security is proven',dependsOn:['time-root','purchase-ui'],
+        acceptance:['Both mandatory gates passed before release']},
+    ]};
+    await review(f,1,'Initial delivery plan',planner({plan}));
+    assert.equal(work(f,'time-root').status,'IN_PROGRESS');
+    const next=await review(f,2,'Trust source not available on supported platform',
+      planner({verdict:'BLOCKED'}));
+    assert.equal(next.action,'NEXT');
+    assert.match(next.nextPrompt,/purchase-ui/);
+    assert.match(next.summary,/Deferred blocked time-root/);
+    assert.equal(work(f,'time-root').status,'BLOCKED');
+    assert.equal(work(f,'purchase-ui').status,'IN_PROGRESS');
+    assert.equal(work(f,'release').status,'PENDING');
+    assert.equal(f.ledger.getGoal(f.goal.id).status,'ACTIVE');
+    assert.equal(f.store.events(f.mission.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2,
+      'The controller selects a next work package but never resends the observed turn');
+    const outcomes:GoalReviewContext['priorWorkOutcomes']=[];
+    const pi=planner({onReview:x=>outcomes.push(...x.priorWorkOutcomes??[])});
+    const done=await review(f,3,'Purchase UI built and sandbox verified',pi);
+    assert.equal(done.action,'BLOCKED','Release may not proceed through blocked security');
+    assert.ok(outcomes.some(x=>x.key==='time-root'&&x.status==='BLOCKED'));
+    assert.equal(work(f,'purchase-ui').status,'PASSED');
+    assert.equal(work(f,'release').status,'PENDING');
+    assert.equal(f.ledger.getGoal(f.goal.id).status,'BLOCKED');
+  }finally{f.close();}
+});
+
+test('PI planning and review explicitly reject report churn while retaining release constraints',()=>{
+  const planPrompt=goalPlanPrompt({objective:goalText,ownerAcceptance:['Trusted 72h'],
+    browserAnswer:'Repeated old probe',responseSha256:sha('Repeated old probe'),
+    ownerDirectives:[],priorWorkOutcomes:[{key:'time-root',title:'Trusted clock',status:'BLOCKED'}]});
+  assert.match(planPrompt,/independent, authorized deliverables/);
+  assert.match(planPrompt,/BLOCKED: time-root/);
+  assert.match(planPrompt,/do not repeat BLOCKED capability searches/i);
+  const reviewPrompt=goalReviewPrompt({objective:goalText,ownerAcceptance:['Trusted 72h'],
+    browserAnswer:'Old report',responseSha256:sha('Old report'),ownerDirectives:[],
+    planSummary:'Delivery',workItem:{id:'id',goalId:'goal',planId:'plan',
+      key:'ui',title:'Implement purchase UI',description:'Ship functional UI',priority:90,
+      status:'IN_PROGRESS',evidenceRefs:[],version:1,createdAt:'',updatedAt:''},
+    acceptance:['Real purchase works'],priorWorkReviews:[]});
+  assert.match(reviewPrompt,/A renamed report, fresh checklist/);
+  assert.match(reviewPrompt,/other\s+independent approved packages can still proceed/);
+});
+
 test('a claimed permanent blocker without an external cause and release condition cannot terminate the Goal',async()=>{
   const f=fixture();
   try{
