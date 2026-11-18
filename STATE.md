@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.2.15`.
+- Current source package version: `1.2.16`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -56,10 +56,15 @@
   browser URL/profile and SQLite-at-most-once reservation. Browser polling
   normally occurs every 60 seconds. A genuine connection interruption waits
   for the original answer; the delivery-timeout or stream-error **UI Retry**
-  has one durably persisted allowance per original message and is never a
-  second composer Send. Owner pauses defer the click; recovery of a stopped
-  uncertain request is revision-gated and owner-authorized. A complete answer
-  must be independently correlated before PI proceeds.
+  has one initial durable allowance per original message, plus up to two
+  distinct, independently persisted follow-up attempts while the original
+  existing-chat request is still being observed or remains uncertain and the
+  identical UI failure is visible after a two-minute cooling period. Never repeat a composer
+  Send or an ambiguously attempted UI click. After all three attempts fail,
+  emit one owner-visible exhaustion notification and retain original custody.
+  Owner pauses defer the click; recovery of a stopped uncertain request is
+  revision-gated and owner-authorized. A complete answer is independently
+  correlated before PI proceeds, even when an earlier UI Retry was clicked.
 - The ChatGPT maximum-conversation-length UI is a distinct terminal capacity
   condition, **not** a network Retry and **not** an assistant HANDOFF. A
   verified exact native `Start new chat` control may be clicked **once**

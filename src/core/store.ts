@@ -850,6 +850,81 @@ export class Store {
         requestKey,mode:'same-message-ui-retry',sendAgain:false});
     });
   }
+  /** A timed-out original UI Retry may itself fail. Permit at most two MORE
+   * distinct same-message UI Retry attempts, never another composer Send.
+   * Each follow-up gets its own committed intent before a click; a crash
+   * between intent and click consumes that allowance permanently. */
+  claimDeliveryRetryFollowupIntent(id:string,requestKey:string,promptSha256:string,
+    reason:'delivery-timeout'|'stream-error',nowMs=Date.now()):number|null {
+    return this.transaction(()=>{
+      const m=this.get(id),r=this.chatBrowserTurn(id);
+      const active=m.state==='RUNNING'&&r?.status==='reserved';
+      const uncertain=m.state==='NEEDS_RECONCILIATION'&&r?.status==='uncertain'&&
+        m.ownerPid===null&&
+        m.lastError==='ChatGPT response observation timed out; submission outcome is ambiguous';
+      if((!active&&!uncertain)||
+        m.stopRequested||this.channelDrainRequested('telegram')||
+        !r||r.newConversation===true||
+        r.requestKey!==requestKey||r.promptSha256!==promptSha256||
+        !this.hasDeliveryRetryIntent(id,requestKey,promptSha256))
+        return null;
+      this.requireUnspentBrowserReservation(id,r);
+      const clicked=this.events(id).filter(e=>
+        e.type==='chatgpt.browser_delivery_retry_clicked'&&
+        (e.payload as {requestKey?:string}).requestKey===requestKey);
+      if(clicked.length!==1)return null;
+      const key=`chatgpt.browser.delivery_retry_followup.${id}.${requestKey}`;
+      const raw=this.getMeta(key);
+      const prev=raw?JSON.parse(raw) as {
+        attempt:number;requestKey:string;promptSha256:string;atMs:number;
+      }:null;
+      if(prev&&(prev.requestKey!==requestKey||prev.promptSha256!==promptSha256||
+        ![2,3].includes(prev.attempt)||!Number.isSafeInteger(prev.atMs)))
+        throw new Error('Corrupted follow-up delivery Retry history');
+      const prior=prev?this.events(id).filter(e=>
+        e.type==='chatgpt.browser_delivery_retry_followup_clicked'&&
+        (e.payload as {requestKey?:string;attempt?:number}).requestKey===requestKey&&
+        (e.payload as {attempt?:number}).attempt===prev.attempt):clicked;
+      if(prior.length!==1)return null;
+      const lastClickedAt=prev?.atMs??Date.parse(clicked[0]!.createdAt);
+      // A fresh retry may still be generating/settling. A failed UI status
+      // must persist beyond a conservative cooling period before repeating.
+      if(!Number.isFinite(lastClickedAt)||nowMs-lastClickedAt<120_000)return null;
+      if(prev?.attempt===3){
+        if(!this.events(id).some(e=>
+          e.type==='chatgpt.browser_delivery_retry_exhausted'&&
+          (e.payload as {requestKey?:string}).requestKey===requestKey))
+          this.event(id,'chatgpt.browser_delivery_retry_exhausted',{
+            requestKey,attempts:3,originalSendPreserved:true,
+            action:'owner_attention_after_bounded_same_message_retries'});
+        return null;
+      }
+      const attempt=(prev?.attempt??1)+1;
+      this.setMeta(key,JSON.stringify({attempt,requestKey,promptSha256,atMs:nowMs}));
+      this.event(id,'chatgpt.browser_delivery_retry_followup_intent',{
+        requestKey,promptSha256,attempt,reason,
+        mode:'same-message-ui-retry',sendAgain:false});
+      return attempt;
+    });
+  }
+  recordDeliveryRetryFollowupClicked(id:string,requestKey:string,
+    promptSha256:string,attempt:number):void {
+    this.transaction(()=>{
+      const saved=this.getMeta(`chatgpt.browser.delivery_retry_followup.${id}.${requestKey}`);
+      const value=saved?JSON.parse(saved) as {
+        attempt?:number;requestKey?:string;promptSha256?:string;
+      }:null;
+      if(value?.attempt!==attempt||value.requestKey!==requestKey||
+        value.promptSha256!==promptSha256)
+        throw new Error('Follow-up Retry click lacks matching durable intent');
+      if(this.events(id).some(e=>
+        e.type==='chatgpt.browser_delivery_retry_followup_clicked'&&
+        (e.payload as {requestKey?:string;attempt?:number}).requestKey===requestKey&&
+        (e.payload as {attempt?:number}).attempt===attempt))return;
+      this.event(id,'chatgpt.browser_delivery_retry_followup_clicked',{
+        requestKey,attempt,mode:'same-message-ui-retry',sendAgain:false});
+    });
+  }
   /** Native ChatGPT 'Start new chat' is a DIFFERENT side effect from
    * delivery Retry and never replays an original composer Send. This only
    * authorizes the one visible platform button after the original request

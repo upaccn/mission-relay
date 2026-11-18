@@ -658,7 +658,8 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
   const startedAt=Date.now();let deadline=startedAt+timeoutMs;
   let last='',lastTurnId:string|null=null;let stableSince=Date.now();
   let failureSince:number|null=null;
-  let interruptedSeen=false,deliveryRetryClicked=false,transportExtensionUsed=false;
+  let interruptedSeen=false,deliveryRetryAttempts=0,transportExtensionUsed=false;
+  let lastDeliveryRetryClickedAt=0;
   const readState={consecutiveReadFailures:0};
   while(Date.now()<deadline) {
     const current=await inspectAfterSend(page,targetUrl,readState,deadline);
@@ -678,21 +679,31 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
       console.warn('ChatGPT connection interrupted; waiting for the same response without another Send');
     }
     if((banner==='delivery-timeout'||banner==='stream-error')&&
-      !deliveryRetryClicked&&newestUserMatchesPrompt) {
+      deliveryRetryAttempts<(deliveryRetry?3:1)&&newestUserMatchesPrompt) {
       const clicked=await clickDeliveryRetryOnce(page,targetUrl,true,false,
         deliveryRetry?.claim);
       if(clicked) {
         deliveryRetry?.clicked();
-        deliveryRetryClicked=true;
+        deliveryRetryAttempts++;
+        lastDeliveryRetryClickedAt=Date.now();
         if(!transportExtensionUsed){
           deadline=interruptedDeadline(startedAt,deadline,Date.now(),
             timeoutMs===DEFAULT_BROWSER_TURN_TIMEOUT_MS);
           transportExtensionUsed=true;
         }
-        console.warn('ChatGPT delivery/stream failure; clicked its existing-message Retry button once');
+        console.warn(`ChatGPT delivery/stream failure; clicked existing-message Retry #${deliveryRetryAttempts}`);
         await delay(Math.min(3000,Math.max(0,deadline-Date.now())));
         continue;
       }
+    }
+    if(deliveryRetry&&deliveryRetryAttempts===3&&
+      (banner==='delivery-timeout'||banner==='stream-error')&&
+      newestUserMatchesPrompt&&!current.generating&&
+      Date.now()-lastDeliveryRetryClickedAt>=120_000){
+      // A final claim performs only a durable exhaustion notification. Never
+      // click a fourth time, nor hold the single Worker for another hour.
+      await deliveryRetry.claim(banner);
+      throw new Error('ChatGPT response observation timed out; submission outcome is ambiguous');
     }
     if(banner===null&&isFreshResponseLoadFailure(before,current,newestUserMatchesPrompt)) {
       failureSince??=Date.now();

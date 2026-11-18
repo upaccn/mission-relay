@@ -50,14 +50,29 @@ export async function executeBrowserTurn(input:{
   store.reserveChatBrowserTurn(missionId,revision,requestKey,promptSha256,{
     promptSnapshot:input.promptSnapshot,goalBinding:input.goalBinding});
   let observedCandidateSha:string|null=null;
+  let deliveryRetryAttempt=0;
   try {
     const receipt=await submitChatTurn(page,url,prompt,input.timeoutMs,input.requireFinalMarker,
       input.expectedSource?{assistantSha256:input.expectedSource.assistantSha256,
         assistantTurnId:before.lastAssistantTurnId??null}:undefined,{
-        claim:async(reason)=>matchesSubmittedUserPrompt(
-          await lastVisibleUserPromptSha256(page),prompt)
-          &&store.claimDeliveryRetryIntent(missionId,requestKey,promptSha256,reason),
-        clicked:()=>store.recordDeliveryRetryClicked(missionId,requestKey,promptSha256),
+        claim:async(reason)=>{
+          if(!matchesSubmittedUserPrompt(await lastVisibleUserPromptSha256(page),prompt))
+            return false;
+          if(!store.hasDeliveryRetryIntent(missionId,requestKey,promptSha256)){
+            if(!store.claimDeliveryRetryIntent(missionId,requestKey,promptSha256,reason))
+              return false;
+            deliveryRetryAttempt=1;return true;
+          }
+          deliveryRetryAttempt=store.claimDeliveryRetryFollowupIntent(
+            missionId,requestKey,promptSha256,reason)??0;
+          return deliveryRetryAttempt>0;
+        },
+        clicked:()=>{
+          if(deliveryRetryAttempt===1)
+            store.recordDeliveryRetryClicked(missionId,requestKey,promptSha256);
+          else store.recordDeliveryRetryFollowupClicked(
+            missionId,requestKey,promptSha256,deliveryRetryAttempt);
+        },
       });
     const assistantSha256=createHash('sha256').update(receipt.lastAssistant).digest('hex');
     observedCandidateSha=assistantSha256;

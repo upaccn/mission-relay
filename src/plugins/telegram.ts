@@ -194,6 +194,7 @@ const TERMINAL_EVENTS=new Set([
   'chatgpt.browser_rollover_recovered',
   'chatgpt.browser_turn_recovered',
   'chatgpt.browser_run_finished',
+  'chatgpt.browser_delivery_retry_exhausted',
   'pi.decision','pi.autopilot_finished','pi.autopilot_interrupted',
 ]);
 /** Telegram is not end-to-end encrypted. Treat all model summaries and
@@ -286,6 +287,12 @@ export function formatBrowserResultNotification(m:Mission,event:MissionEvent):st
     return ['Needs attention — ChatGPT response unconfirmed',
       `Round: ${typeof data.round==='number'?data.round:m.turnCount}`,
       'The original request is protected; it will not be sent again automatically.',
+      'Details: /status'].join('\n');
+  if(event.type==='chatgpt.browser_delivery_retry_exhausted')
+    return ['Needs attention — ChatGPT Retry limit reached',
+      'Three bounded Retry clicks on the original message did not produce a verified answer.',
+      'Original Send is preserved; no message was resubmitted.',
+      'Inspect the existing browser response before authorizing further recovery.',
       'Details: /status'].join('\n');
   const excerpt=typeof data.excerpt==='string'?data.excerpt:(m.lastSummary??'');
   const allLines=excerpt.replace(/\r/g,'').split('\n').map(x=>x.trim()).filter(Boolean);
@@ -603,16 +610,27 @@ export class TelegramBridge {
       }
       const already=this.store.hasDeliveryRetryIntent(candidate.id,r.requestKey,r.promptSha256);
       const banner=await withReadOnlyDeadline(visibleLongTaskBanner(page,snapshot.lastAssistant));
-      if(scopeConsistent&&!already && !snapshot.generating &&
+      if(scopeConsistent&&!snapshot.generating &&
         (banner==='delivery-timeout'||banner==='stream-error')) {
+        let attempt=0;
         const clicked=await clickDeliveryRetryOnce(page,destination,true,false,
           async(reason)=>{
             if(await lastVisibleUserPromptSha256(page)!==r.promptSha256)return false;
-            return this.store.claimDeliveryRetryIntent(candidate.id,r.requestKey,r.promptSha256,reason);
+            if(!already){
+              if(!this.store.claimDeliveryRetryIntent(candidate.id,r.requestKey,r.promptSha256,reason))
+                return false;
+              attempt=1;return true;
+            }
+            attempt=this.store.claimDeliveryRetryFollowupIntent(candidate.id,
+              r.requestKey,r.promptSha256,reason)??0;
+            return attempt>0;
           });
         if(clicked){
-          this.store.recordDeliveryRetryClicked(candidate.id,r.requestKey,r.promptSha256);
-          console.warn('Recovered timed-out ChatGPT delivery/stream by one existing-message UI Retry (no composer Send)');
+          if(attempt===1)
+            this.store.recordDeliveryRetryClicked(candidate.id,r.requestKey,r.promptSha256);
+          else this.store.recordDeliveryRetryFollowupClicked(candidate.id,
+            r.requestKey,r.promptSha256,attempt);
+          console.warn(`Recovered timed-out ChatGPT delivery/stream by existing-message UI Retry #${attempt} (no composer Send)`);
         }
         return;
       }
@@ -622,7 +640,7 @@ export class TelegramBridge {
       // continuation, use the prior independently committed PI checkpoint
       // instead. First-turn/adopted and new-chat recovery keep their stricter
       // original custody requirements.
-      if(!already){
+      if(!already||(r.newConversation!==true&&candidate.turnCount>0)){
         const plan=this.store.piPlan(candidate.id);
         if(r.newConversation===true||candidate.turnCount<1||!plan||
           plan.round!==candidate.turnCount||
@@ -1042,6 +1060,7 @@ export class TelegramBridge {
           ?formatPiNotification(this.store.get(event.missionId),event)
           :event.type==='chatgpt.browser_observed'||event.type==='chatgpt.browser_uncertain'||
           event.type==='chatgpt.browser_run_finished'||
+          event.type==='chatgpt.browser_delivery_retry_exhausted'||
           event.type==='chatgpt.browser_rollover_recovered'||event.type==='chatgpt.browser_turn_recovered'
           ?formatBrowserResultNotification(this.store.get(event.missionId),event)
           :formatNativeMissionNotification(this.store.get(event.missionId),event);

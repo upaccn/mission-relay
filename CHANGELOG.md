@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.2.16 — 2026-11-18
+
+- Fix production ChatGPT delivery-timeout stalls after the first recorded UI
+  Retry. For an unchanged uncertain existing-chat original request, permit up
+  to two additional unique, durable same-message Retry intents, each at least
+  two minutes after the preceding clicked attempt. No composer Send is
+  repeated, no intent can be consumed a second time after ambiguous failure,
+  and owner pauses, changed tab/prompt or active maintenance veto all retries.
+- Apply the same bounded follow-ups during an already-running original
+  browser observer, rather than waiting for the long observation timeout
+  before trying again. Keep first-new-chat retry semantics unchanged.
+- Notify the Telegram owner exactly once when three guarded attempts have
+  failed; preserve the original request lock and unresolved Mission instead
+  of silently continuing or inventing a completed reply.
+- Independently recover a genuine final-marked existing-chat answer after a
+  prior UI Retry, subject to the prior PI checkpoint, exact original prompt,
+  stable SHA and no stale previous assistant reuse. Add targeted red/green
+  tests for repeated banners, attempt exhaustion, pause, wrong request and
+  completed-answer recovery.
+
 ## 1.2.15 — 2026-11-17
 
 - Preserve a verified external work-item blocker without unnecessarily

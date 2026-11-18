@@ -365,3 +365,123 @@ test('changed last user prompt blocks automatic Retry without consuming its inte
     assert.equal(f.store.get(f.id).state,'NEEDS_RECONCILIATION');
   }finally{f.cleanup();}
 });
+
+test('repeated exact delivery failures get two bounded follow-up UI clicks without a second composer Send',async()=>{
+  const f=fixture();const now=Date.now;try{
+    f.store.finishChatBrowserTurn(f.id,'original',{kind:'uncertain',error:timeout});
+    const page=new RetryPage();
+    const bridge=new TelegramBridge(f.store,f.engine,{
+      getUpdates:async()=>[],sendMessage:async()=>{},
+    },1,2,undefined,async()=>({page:page as unknown as Page,close:async()=>{}}));
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(page.clicks,1);
+    const initial=now();
+    for(const [offset,clicks] of [[40_000,1],[121_000,2],[160_000,2],
+      [243_000,3],[370_000,3]] as const){
+      page.banner=true;page.assistant='Previous assistant response\n[MISSION_RELAY:NEXT]';
+      Date.now=()=>initial+offset;
+      (bridge as unknown as {lastDeliveryRetryRecoveryAt:number}).lastDeliveryRetryRecoveryAt=0;
+      await bridge.recoverUncertainDeliveryOnce();
+      assert.equal(page.clicks,clicks,`unexpected Retry at offset ${offset}`);
+    }
+    assert.equal(f.store.get(f.id).state,'NEEDS_RECONCILIATION');
+    assert.equal(f.store.get(f.id).turnCount,0);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.deepEqual(f.store.events(f.id)
+      .filter(e=>e.type==='chatgpt.browser_delivery_retry_followup_intent')
+      .map(e=>(e.payload as {attempt:number}).attempt),[2,3]);
+    assert.equal(f.store.events(f.id)
+      .filter(e=>e.type==='chatgpt.browser_delivery_retry_followup_clicked').length,2);
+    assert.equal(f.store.events(f.id)
+      .filter(e=>e.type==='chatgpt.browser_delivery_retry_exhausted').length,1);
+    // A completed SHA-distinct answer may be credited even after all Retry
+    // allowances are exhausted; the old uncertainty remains in audit history.
+    page.banner=false;page.assistant=reply;
+    (bridge as unknown as {lastDeliveryRetryRecoveryAt:number}).lastDeliveryRetryRecoveryAt=0;
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(f.store.get(f.id).state,'PAUSED');
+    assert.equal(f.store.get(f.id).turnCount,1);
+  }finally{Date.now=now;f.cleanup();}
+});
+
+test('follow-up Retry refuses unclicked prior intent, owner pause and wrong original request',()=>{
+  const f=fixture();try{
+    f.store.finishChatBrowserTurn(f.id,'original',{kind:'uncertain',error:timeout});
+    const old=Date.now()-130_000;
+    assert.equal(f.store.claimDeliveryRetryFollowupIntent(f.id,'original',hash(prompt),
+      'delivery-timeout',old),null);
+    assert.equal(f.store.claimDeliveryRetryIntent(f.id,'original',hash(prompt)),true);
+    assert.equal(f.store.claimDeliveryRetryFollowupIntent(f.id,'original',hash(prompt),
+      'delivery-timeout',old),null);
+    f.store.recordDeliveryRetryClicked(f.id,'original',hash(prompt));
+    assert.equal(f.store.claimDeliveryRetryFollowupIntent(f.id,'wrong',hash(prompt),
+      'delivery-timeout',Date.now()+200_000),null);
+    f.store.update(f.id,f.store.get(f.id).version,{stopRequested:true},
+      'mission.pause_requested');
+    assert.equal(f.store.claimDeliveryRetryFollowupIntent(f.id,'original',hash(prompt),
+      'delivery-timeout',Date.now()+200_000),null);
+    f.store.update(f.id,f.store.get(f.id).version,{stopRequested:false},
+      'test.resume_after_pause');
+    const attempt=f.store.claimDeliveryRetryFollowupIntent(f.id,'original',hash(prompt),
+      'delivery-timeout',Date.now()+200_000);
+    assert.equal(attempt,2);
+    assert.equal(f.store.claimDeliveryRetryFollowupIntent(f.id,'original',hash(prompt),
+      'delivery-timeout',Date.now()+400_000),null,
+      'An unconfirmed second click cannot consume or authorize the third');
+    const reopened=new Store(join(f.dir,'missions.sqlite'),{readOnly:true});
+    try{assert.equal(reopened.hasDeliveryRetryIntent(f.id,'original',hash(prompt)),true);}
+    finally{reopened.close();}
+    assert.equal(f.store.events(f.id)
+      .filter(e=>e.type==='chatgpt.browser_delivery_retry_followup_intent').length,1);
+    assert.equal(f.store.events(f.id)
+      .filter(e=>e.type==='chatgpt.browser_delivery_retry_followup_clicked').length,0);
+  }finally{f.cleanup();}
+});
+
+test('completed existing-chat response after first UI Retry is independently recovered',async()=>{
+  const f=fixture();try{
+    const prior='Previously authenticated assistant reply\n[MISSION_RELAY:NEXT]';
+    f.store.finishChatBrowserTurn(f.id,'original',{
+      kind:'observed',assistantSha256:hash(prior),summary:prior});
+    f.store.commitPiPlan(f.id,hash(prior),[],{
+      action:'NEXT',summary:'Continue authorized goal',nextPrompt:prompt});
+    f.store.reserveChatBrowserTurn(f.id,f.store.get(f.id).version,'next',hash(prompt));
+    assert.equal(f.store.claimDeliveryRetryIntent(f.id,'next',hash(prompt)),true);
+    f.store.recordDeliveryRetryClicked(f.id,'next',hash(prompt));
+    f.store.finishChatBrowserTurn(f.id,'next',{kind:'uncertain',error:timeout});
+    const page=new RetryPage();page.banner=false;page.assistant=reply;
+    const bridge=new TelegramBridge(f.store,f.engine,{
+      getUpdates:async()=>[],sendMessage:async()=>{},
+    },1,2,undefined,async()=>({page:page as unknown as Page,close:async()=>{}}));
+    await bridge.recoverUncertainDeliveryOnce();
+    assert.equal(f.store.get(f.id).state,'PAUSED');
+    assert.equal(f.store.get(f.id).turnCount,2);
+    assert.equal(page.clicks,0);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2);
+  }finally{f.cleanup();}
+});
+
+test('active original browser observation may retry again after a durable prior click and cooldown',()=>{
+  const f=fixture();try{
+    const initial=Date.now();
+    assert.equal(f.store.claimDeliveryRetryIntent(f.id,'original',hash(prompt)),true);
+    f.store.recordDeliveryRetryClicked(f.id,'original',hash(prompt));
+    assert.equal(f.store.claimDeliveryRetryFollowupIntent(f.id,'original',hash(prompt),
+      'delivery-timeout',initial+60_000),null);
+    assert.equal(f.store.claimDeliveryRetryFollowupIntent(f.id,'original',hash(prompt),
+      'delivery-timeout',initial+121_000),2);
+    f.store.recordDeliveryRetryFollowupClicked(f.id,'original',hash(prompt),2);
+    assert.equal(f.store.get(f.id).state,'RUNNING');
+    assert.equal(f.store.chatBrowserTurn(f.id)?.status,'reserved');
+    assert.equal(f.store.claimDeliveryRetryFollowupIntent(f.id,'original',hash(prompt),
+      'delivery-timeout',initial+242_000),3);
+    f.store.recordDeliveryRetryFollowupClicked(f.id,'original',hash(prompt),3);
+    assert.equal(f.store.claimDeliveryRetryFollowupIntent(f.id,'original',hash(prompt),
+      'delivery-timeout',initial+364_000),null);
+    assert.equal(f.store.events(f.id).filter(e=>
+      e.type==='chatgpt.browser_delivery_retry_exhausted').length,1);
+    assert.equal(f.store.events(f.id).filter(e=>
+      e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(f.store.get(f.id).turnCount,0);
+  }finally{f.cleanup();}
+});
