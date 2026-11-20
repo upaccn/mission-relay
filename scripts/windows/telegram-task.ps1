@@ -44,6 +44,13 @@ $root = if ($BootstrapRoot) {
     (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 }
 $node = Join-Path $env:USERPROFILE 'scoop\apps\nodejs-lts\current\node.exe'
+$nodeDirectory = Split-Path -Parent $node
+if (@($env:PATH -split ';') -notcontains $nodeDirectory) {
+    # SSH-launched maintenance shells may expose Scoop's npm shim without
+    # exposing the matching node.exe. Keep npm scripts on the enrolled LTS
+    # runtime without changing the user's persistent PATH.
+    $env:PATH = $nodeDirectory + ';' + $env:PATH
+}
 $cli = Join-Path $root 'dist\cli.js'
 $privateDir = Join-Path $env:LOCALAPPDATA 'MissionRelay\telegram-task'
 $tokenFile = Join-Path $privateDir 'bot-token.dpapi'
@@ -60,6 +67,11 @@ function Assert-LocalProxy([string]$url) {
 function Assert-Prerequisites {
     if (-not $IsWindows) { throw 'Windows required' }
     if (-not (Test-Path -LiteralPath $node -PathType Leaf)) { throw 'Node LTS not found in Scoop current path' }
+    $resolvedNode = Get-Command node.exe -ErrorAction SilentlyContinue
+    if (-not $resolvedNode -or
+        [IO.Path]::GetFullPath($resolvedNode.Source) -ine [IO.Path]::GetFullPath($node)) {
+        throw 'Process PATH must resolve node.exe to the enrolled Scoop LTS runtime'
+    }
     if (-not (Test-Path -LiteralPath $cli -PathType Leaf)) { throw 'Run npm run build before managing the Telegram task' }
 }
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.21 — 2026-11-20
+
+- Make the Windows maintenance script prepend its exact enrolled Scoop Node
+  LTS directory to the process-local `PATH` before running npm scripts, and
+  verify `node.exe` resolves to that same runtime. SSH-launched upgrades no
+  longer depend on an interactive login's inherited PATH; persistent user
+  environment is unchanged.
+- Add a source regression for the Node/npm runtime binding. No Mission,
+  SQLite, Worker, browser Send or scheduling semantics changed.
+
 ## 1.2.20 — 2026-11-20
 
 - Clean the generated `dist/` directory before every TypeScript build so

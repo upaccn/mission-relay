@@ -404,6 +404,10 @@ from the current TypeScript source and emits untracked
 `dist/build-provenance.json` describing the exact checkout HEAD and SHA-256
 tree digest of **every compiled JS file**. This prevents deleted or relocated
 modules from surviving in a later bundle.
+The Windows Upgrade action adds the exact enrolled Scoop Node LTS directory
+to its process-local `PATH` before invoking `npm.cmd`, so SSH-launched
+maintenance shells cannot resolve the npm shim without its matching `node.exe`.
+It does not change the user's persistent environment.
 The single actual Telegram Worker verifies this manifest against its compiled
 entrypoint, the installed JS tree, a clean Git checkout and HEAD at startup.
 Only the process holding the real SQLite channel lease can atomically record

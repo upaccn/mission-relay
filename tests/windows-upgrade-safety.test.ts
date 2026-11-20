@@ -226,6 +226,10 @@ test('GMK pull-only upgrade is ordered behind the SQLite drain and never install
     'A locally approved loopback proxy is scoped to this maintenance process');
   assert.doesNotMatch(upgrade,/git config --(?:global|local)|setx\s|netsh\s/i);
   assert.match(script,/function Assert-OurTask \{[\s\S]*?Principal\.LogonType -ne 'Interactive'[\s\S]*?Principal\.RunLevel -ne 'Limited'/);
+  assert.match(script,/\$nodeDirectory = Split-Path -Parent \$node[\s\S]*?\$env:PATH = \$nodeDirectory \+ ';' \+ \$env:PATH/,
+    'SSH-launched upgrades must add the exact enrolled Node LTS directory to process-local PATH');
+  assert.match(script,/function Assert-Prerequisites \{[\s\S]*?Get-Command node\.exe[\s\S]*?GetFullPath\(\$resolvedNode\.Source\)[\s\S]*?GetFullPath\(\$node\)/,
+    'npm scripts must resolve node.exe to the exact enrolled Scoop LTS runtime');
   assert.match(script,/\[string\]\$BootstrapRoot = ''/);
   assert.match(script,/if \(\$BootstrapRoot -and \$Action -notin @\('Upgrade','Compatibility'\)\)/,
     'A temporary bootstrap must not operate on task enrollment or generic restarts');
