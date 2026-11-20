@@ -9,6 +9,7 @@ import {MAX_RELAY_CHAT_TURNS,MAX_CONVERSATION_LENGTH_ERROR} from './chat-limits.
 import {missionTurnsRemaining,missionTurnLimitReached} from './mission-turns.js';
 import {isApprovedBuildRepository,declaredSourceMatchesScope,hasIsolatedRepositoryGrant} from './build-scopes.js';
 import type {RuntimeProvenance} from './runtime-provenance.js';
+import {hasFinalMissionRelayMarker,missionRelayMarker} from './mission-marker.js';
 
 type MissionRow = {
   id: string; goal: string; acceptance_json: string; checks_json: string; workspace: string;
@@ -2001,7 +2002,7 @@ export class Store {
       this.requireUnspentBrowserReservation(id,record);
       if(deadReserved&&(
         createHash('sha256').update(input.summary).digest('hex')!==input.assistantSha256||
-        !/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]\s*$/.test(input.summary)))
+        !hasFinalMissionRelayMarker(input.summary)))
         throw new Error('Dead-owner rollover recovery requires the complete SHA-matched final-marked answer');
       if(this.list().some(other=>other.id!==id &&
         this.chatLink(other.id)===destination &&
@@ -2056,7 +2057,7 @@ export class Store {
       this.requireUnspentBrowserReservation(id,record);
       if(deadReserved){
         if(createHash('sha256').update(input.summary).digest('hex')!==input.assistantSha256||
-          !/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]\s*$/.test(input.summary))
+          !hasFinalMissionRelayMarker(input.summary))
           throw new Error('Dead-owner recovery requires the complete SHA-matched final-marked answer');
       }
       // A re-rendered *previous* assistant after a newer exact user prompt
@@ -2514,7 +2515,7 @@ export class Store {
         if(options.includeBlocked===false&&pi?.action==='BLOCKED'){
           retained++;continue;
         }
-        const terminalBrowser=/\[MISSION_RELAY:DONE\]\s*$/.test(m.lastSummary??'');
+        const terminalBrowser=missionRelayMarker(m.lastSummary??'')==='DONE';
         const settled=['COMPLETED','CANCELLED'].includes(m.state)||
           (m.state==='PAUSED'&&!m.lastError&&!m.stopRequested&&
            this.pendingPiOwnerDirectives(m.id).length===0&&

@@ -147,7 +147,7 @@ function multiRig(){
         isEnabled:async()=>Boolean(entered),
         innerText:async()=>role==='user'?(anchor?'Existing anchor user':entered):
           anchor?'Existing anchor answer':
-            `Synthetic independently bounded reply: tab ${tag} turn ${sent}\n[MISSION_RELAY:NEXT]`,
+          `Synthetic independently bounded reply: tab ${tag} turn ${sent}\n[M\u200B\u200BISSION_RELAY:NEXT]`,
         fill:async(text:string)=>{entered=text;},
         click:async()=>{
           sent++;
@@ -295,6 +295,49 @@ test('two durable write Goals rotate A→B→A→B on one Worker with separate r
     assert.ok(r.replies.some(msg=>msg.includes('Goal A:')&&msg.includes('Goal B:')));
     assert.ok(r.replies.some(msg=>msg.includes('Goals:')&&
       msg.includes('Needs attention')));
+  }finally{await r.idle();r.close();}
+});
+
+test('a terminal prior Mission does not strand the next queued Goal on the single Worker',async()=>{
+  const r=multiRig();
+  try{
+    const prior=r.engine.create({goal:'Prior Mission reached a verified terminal blocker',
+      acceptance:['Keep the original terminal receipt'],workspace:'',sandbox:'read-only',
+      mode:'supervised',maxTurns:0,requestKey:'terminal-prior',checks:[]});
+    const priorLinked=r.store.linkChat(prior.id,ORIGIN,prior.version).mission;
+    const priorBound=r.store.bindChatBrowser(prior.id,browserId,priorLinked.version).mission;
+    r.store.setMeta(`pi.autopilot.enabled.${prior.id}`,'1');
+    const priorPrompt='Prior original request';
+    const priorAnswer='A concrete external blocker remains.\n[MISSION_RELAY:BLOCKED]';
+    const priorSha=createHash('sha256').update(priorPrompt).digest('hex');
+    const answerSha=createHash('sha256').update(priorAnswer).digest('hex');
+    r.store.reserveChatBrowserTurn(prior.id,priorBound.version,'terminal-prior-1',priorSha);
+    r.store.finishChatBrowserTurn(prior.id,'terminal-prior-1',{
+      kind:'observed',assistantSha256:answerSha,summary:priorAnswer});
+    r.store.commitPiPlan(prior.id,answerSha,[],{
+      action:'BLOCKED',summary:'The prior Mission is terminal; no continuation is authorized',nextPrompt:''});
+    assert.equal(r.store.piPlan(prior.id)?.action,'BLOCKED');
+
+    const objective='Next independent product delivery Goal';
+    const next=r.engine.create({goal:objective,acceptance:['Implement and verify the next product'],
+      workspace:REPO_B,sandbox:'workspace-write',mode:'supervised',maxTurns:0,
+      requestKey:'terminal-next-goal',checks:[]});
+    const nextLinked=r.store.linkChat(next.id,ORIGIN,next.version).mission;
+    const nextBound=r.store.bindChatBrowser(next.id,browserId,nextLinked.version).mission;
+    r.store.setMeta(`pi.autopilot.enabled.${next.id}`,'1');
+    const ledger=new GoalLedger(r.store);
+    const goal=ledger.createGoal({requestKey:'terminal-next-goal',objective,priority:50});
+    ledger.bindPiMission(goal.id,next.id,nextBound.version,'terminal-next-bind');
+
+    await (r.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>})
+      .recoverObservedPiCheckpoint();
+    await r.idle();
+    assert.ok(r.store.get(next.id).turnCount>=1,
+      'The single Worker must automatically dispatch the next READY Goal after the previous terminal PI decision');
+    assert.ok(r.sends.some(send=>send.prompt.includes(REPO_B)),
+      'The queued Goal must execute only inside its own approved repository scope');
+    assert.equal(r.store.piPlan(prior.id)?.action,'BLOCKED',
+      'The previous terminal Mission remains unchanged');
   }finally{await r.idle();r.close();}
 });
 

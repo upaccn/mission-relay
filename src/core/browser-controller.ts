@@ -7,6 +7,7 @@ import type {Page} from 'playwriter';
 import type {Store,PiPlan,GoalPromptBinding} from './store.js';
 import {inspectChatPage,lastVisibleUserPromptSha256,matchesSubmittedUserPrompt,chatTabTargetSha256,submitChatTurn,submitNewChatTurn,MAX_BROWSER_TURN_TIMEOUT_MS,visibleConversationLengthLimit} from '../plugins/chatgpt-browser.js';
 import {validateRemoteProjectPath} from './pi-planner.js';
+import {missionRelayMarker} from './mission-marker.js';
 
 // One Telegram message has a 4096-character limit; leave room for "/build ".
 // This bounds the owner's full task, not PI's per-turn nextPrompt (1500).
@@ -133,9 +134,7 @@ export async function retireSupersededRelayTab(ownedPage:Page|null,
 }
 /** Flow-control signal, not independent verification of a model's claims. */
 export function browserDecision(answer:string):BrowserDecision {
-  const ending=answer.trim().slice(-300);
-  const match=ending.match(/(?:^|\n)\[MISSION_RELAY:(NEXT|DONE|BLOCKED|HANDOFF)\]\s*$/);
-  return match?.[1] as BrowserDecision || 'UNMARKED';
+  return missionRelayMarker(answer)??'UNMARKED';
 }
 
 export function browserContinuationPrompt(goal:string,acceptance:string[],first:boolean,

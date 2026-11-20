@@ -1647,6 +1647,18 @@ test('New ChatGPT first Send tolerates same-origin transitional URLs but refuses
   assert.ok(page.transientReads>=3);
 });
 
+test('New ChatGPT first Send settles a stable final marker containing renderer-inserted zero-width spaces',async()=>{
+  const page=new TransientNewChatPage();
+  const raw='Initial Goal discovery completed.\n[M\u200B\u200BISSION_RELAY:NEXT]';
+  page.reply=raw;
+  const done=await submitNewChatTurn(page as unknown as Page,
+    'Authorized read-only Goal discovery',12000);
+  assert.equal(done.receipt.lastAssistant,raw,
+    'The exact original answer bytes remain intact for its durable SHA-256');
+  assert.equal(browserDecision(done.receipt.lastAssistant),'NEXT');
+  assert.equal(page.sends,1);
+});
+
 test('Realistic about:blank transition after new-chat Send is observed without duplicate dispatch',async()=>{
   assert.equal(tolerateRolloverNavigation('about:blank',5000),true);
   assert.equal(tolerateRolloverNavigation('',5000),true);
@@ -2087,6 +2099,8 @@ test('Browser driver stops without blindly continuing unmarked or blocked model 
   assert.equal(browserDecision('No marker at all'),'UNMARKED');
   assert.equal(browserDecision('Need an approval\n[MISSION_RELAY:BLOCKED]'),'BLOCKED');
   assert.equal(browserDecision('Can continue\n[MISSION_RELAY:NEXT]'),'NEXT');
+  assert.equal(browserDecision('Can continue\n[M\u200B\u200BISSION_RELAY:NEXT]'),'NEXT');
+  assert.equal(browserDecision('Can continue\n[M\u200B\u200BISSION_RELAY:NEXT]\nnot final'),'UNMARKED');
   assert.equal(browserDecision('All verified\n[MISSION_RELAY:DONE]'),'DONE');
   assert.match(browserContinuationPrompt('test',['evidence'],true),/acceptance criteria:/i);
 });

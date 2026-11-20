@@ -2,13 +2,13 @@ import type { Page, PlaywriterBrowserConnection } from 'playwriter';
 import {createHash} from 'node:crypto';
 import { normalizeChatGPTUrl } from '../core/chatgpt-handoff.js';
 import {MAX_CONVERSATION_LENGTH_ERROR} from '../core/chat-limits.js';
+import {hasFinalMissionRelayMarker} from '../core/mission-marker.js';
 
 const ASSISTANT_SELECTOR='[data-message-author-role="assistant"]';
 const USER_SELECTOR='[data-message-author-role="user"]';
 const COMPOSER_SELECTOR='#prompt-textarea[contenteditable="true"], [data-testid="prompt-textarea"][contenteditable="true"]';
 const SEND_SELECTOR='button[data-testid="send-button"], button[aria-label="Send prompt"], button[aria-label="Send message"]';
 const STOP_SELECTOR='button[data-testid="stop-button"], button[aria-label="Stop generating"]';
-const RELAY_END_MARKER=/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]\s*$/;
 
 /** ChatGPT may render generated file cards AFTER the final assistant marker.
  * They are browser UI, not additional assistant prose. Only remove them if
@@ -18,7 +18,7 @@ const RELAY_END_MARKER=/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]\
 export function stripVerifiedFileCardTail(
   fullAnswer:string,renderedProse:string,resourceCards:string[],
 ):string {
-  if(!resourceCards.length||!RELAY_END_MARKER.test(renderedProse.trim()))return fullAnswer;
+  if(!resourceCards.length||!hasFinalMissionRelayMarker(renderedProse))return fullAnswer;
   const at=fullAnswer.indexOf(renderedProse);
   if(at<0||fullAnswer.slice(0,at).trim())return fullAnswer;
   const suffix=fullAnswer.slice(at+renderedProse.length).trim();
@@ -361,7 +361,7 @@ export async function inspectChatPage(page:Page,expectedUrl:string):Promise<Chat
   const turn=legacyCount?assistant.last():count?
     assistantHeadings(page).last().locator('xpath=..'):null;
   if(turn&&lastAssistant.includes('[MISSION_RELAY:')&&
-     !RELAY_END_MARKER.test(lastAssistant.trim())) {
+     !hasFinalMissionRelayMarker(lastAssistant)) {
     // Playwriter's selector bridge can strip quotes from CSS attribute-word
     // selectors and produce invalid CSS for Tailwind class tokens containing
     // '/'. XPath matches the exact whitespace-delimited class without that
@@ -642,7 +642,6 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
   // Mission continuation turns explicitly require a final marker. The accessible
   // ChatGPT UI may not expose a Stop button while streaming; a short stable
   // pause alone is not evidence that the response is finished.
-  const finalMarker=/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]\s*$/;
   const before=await inspectChatPage(page,targetUrl);
   if(!before.composerReady||before.generating)
     throw new Error('ChatGPT composer not ready or another response is generating');
@@ -720,7 +719,7 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
         stableSince=Date.now();
       }
       finalCandidate=!current.generating && banner===null &&
-        (!requireFinalMarker||finalMarker.test(current.lastAssistant.trim()));
+        (!requireFinalMarker||hasFinalMissionRelayMarker(current.lastAssistant));
       if(finalCandidate && Date.now()-stableSince>=2500) {
         return {...current,submitted:true,observedAt:new Date().toISOString()};
       }
@@ -806,7 +805,6 @@ export async function submitNewChatTurn(page:Page,prompt:string,
   const send=await sendLocator(page);
   await send.click({timeout:10000});
   const start=Date.now();let deadline=start+timeoutMs;
-  const finalMarker=/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]\s*$/;
   let last='',stableSince=start,failureSince:number|null=null,reloadedBlank=false;
   let interruptedSeen=false,deliveryRetryClicked=false,transportExtensionUsed=false;
   const readState={consecutiveReadFailures:0};
@@ -868,7 +866,7 @@ export async function submitNewChatTurn(page:Page,prompt:string,
       if(snapshot.userCount>0 && snapshot.assistantCount>0 && snapshot.lastAssistant &&
         newestUserMatchesPrompt) {
         if(snapshot.lastAssistant!==last){last=snapshot.lastAssistant;stableSince=Date.now();}
-        finalCandidate=!snapshot.generating && banner===null && finalMarker.test(snapshot.lastAssistant.trim());
+        finalCandidate=!snapshot.generating && banner===null && hasFinalMissionRelayMarker(snapshot.lastAssistant);
         if(finalCandidate && Date.now()-stableSince>=2500)
           return {url:destination,receipt:{...snapshot,submitted:true,observedAt:new Date().toISOString()}};
       }

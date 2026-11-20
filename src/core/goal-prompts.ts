@@ -53,6 +53,7 @@ export function goalWorkPrompt(store:Store,missionId:string,plan:PiPlan,
     plan.nextPrompt.trim(),
     ...(writeWorkspace?CI_EXECUTOR_POLICY:[]),
     'Execute only this package. Check actual outcomes and report evidence, unresolved work and blockers.',
+    'The final control marker must be literal ASCII on its own final line, with no invisible Unicode characters or formatting.',
     'End with one standalone [MISSION_RELAY:NEXT], [MISSION_RELAY:HANDOFF], [MISSION_RELAY:DONE] or [MISSION_RELAY:BLOCKED].',
   ].join('\n');
   if(!prompt.trim()||prompt.length>12000)

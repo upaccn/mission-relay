@@ -28,6 +28,7 @@ import {telegramChatAnchor} from '../core/chat-anchor.js';
 import {GoalReleaseGate} from '../core/goal-release.js';
 import type {RuntimeProvenance} from '../core/runtime-provenance.js';
 import type {Mission,MissionEvent} from '../core/types.js';
+import {missionRelayMarker} from '../core/mission-marker.js';
 
 export const telegramPluginManifest:PluginManifest={
   id:'channel.telegram',version:'0.1.0',apiVersion:1,kind:'channel',
@@ -299,8 +300,9 @@ export function formatBrowserResultNotification(m:Mission,event:MissionEvent):st
   // Prefer the deliberate compact handoff to the arbitrary tail of a 5–30min
   // response. The model's claims are unverified, so label them accordingly.
   // Keep the flow marker outside the summary, so it cannot consume a useful line.
-  const marker=/^\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]$/;
-  const finalMarker=marker.test(allLines.at(-1)??'')?allLines.pop():undefined;
+  const marker=missionRelayMarker(excerpt);
+  const finalMarker=marker?`[MISSION_RELAY:${marker}]`:undefined;
+  if(finalMarker)allLines.pop();
   let headerIndex=-1;
   for(let i=allLines.length-1;i>=0;i--) {
     const heading=allLines[i]!.replace(/^#{1,6}\s*/,'').replace(/\*\*/g,'').trim();
@@ -652,7 +654,7 @@ export class TelegramBridge {
             (e.payload as {assistantSha256?:string}).assistantSha256===plan.responseSha256))return;
       }
       if(snapshot.generating||banner!==null||
-        !/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]\s*$/.test(snapshot.lastAssistant.trim()))
+        !missionRelayMarker(snapshot.lastAssistant))
         return;
       // Never credit a stale earlier answer, a mid-stream UI refresh, or a
       // different owner's message. The Store also checks the original lock,
@@ -766,7 +768,7 @@ export class TelegramBridge {
         const banner=await withReadOnlyDeadline(visibleLongTaskBanner(page,snapshot.lastAssistant));
         if(snapshot.generating||!snapshot.composerReady||
           user!==record.promptSha256||banner!==null||
-          !/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]\s*$/.test(snapshot.lastAssistant.trim()))
+          !missionRelayMarker(snapshot.lastAssistant))
           return null;
         return snapshot.lastAssistant;
       };

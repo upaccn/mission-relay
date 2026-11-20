@@ -17,12 +17,12 @@ import {normalizeChatGPTUrl} from './chatgpt-handoff.js';
 import {chatTabTargetSha256,inspectChatPage,lastVisibleUserPromptSha256} from '../plugins/chatgpt-browser.js';
 import {withReadOnlyDeadline} from './read-only-deadline.js';
 import {retireSupersededRelayTab} from './browser-controller.js';
+import {hasFinalMissionRelayMarker} from './mission-marker.js';
 
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex');
 const SHA40=/^[a-f0-9]{40}$/;
 const SHA64=/^[a-f0-9]{64}$/;
 const UUID=/^[a-f0-9-]{36}$/i;
-const FINAL=/(?:^|\n)\[MISSION_RELAY:(?:NEXT|DONE|BLOCKED|HANDOFF)\]\s*$/;
 const CAPTURE_WINDOW_MS=20*60*1000;
 export type TrustedChromeTabObservation={
   urlSha256:string;targetSha256:string;promptSha256:string;answerSha256:string;
@@ -118,7 +118,7 @@ export async function observeTrustedChromeTab(page:Page,url:string):Promise<Trus
   if(first.state.url!==expected||second.state.url!==expected||
     first.state.generating||second.state.generating||
     !first.state.composerReady||!second.state.composerReady||
-    !FINAL.test(second.state.lastAssistant.trim())||
+    !hasFinalMissionRelayMarker(second.state.lastAssistant)||
     !first.target||first.target!==second.target||!first.prompt||
     first.prompt!==second.prompt||
     first.state.lastAssistant!==second.state.lastAssistant||

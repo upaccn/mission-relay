@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.2.16`.
+- Current source package version: `1.2.17`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -65,6 +65,11 @@
   Owner pauses defer the click; recovery of a stopped uncertain request is
   revision-gated and owner-authorized. A complete answer is independently
   correlated before PI proceeds, even when an earlier UI Retry was clicked.
+- The final Mission Relay marker remains a standalone exact ASCII final line.
+  The shared parser tolerates at most four U+200B characters embedded inside
+  that marker only, matching a reproduced ChatGPT transcript-rendering defect;
+  the original assistant text and its SHA-256 are never normalized. No other
+  invisible characters, indentation or trailing prose are accepted.
 - The ChatGPT maximum-conversation-length UI is a distinct terminal capacity
   condition, **not** a network Retry and **not** an assistant HANDOFF. A
   verified exact native `Start new chat` control may be clicked **once**

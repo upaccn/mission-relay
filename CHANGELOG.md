@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.2.17 — 2026-11-20
+
+- Fix a reproduced production stall where ChatGPT's rendered final marker
+  contained two zero-width spaces (`U+200B`) inside `MISSION_RELAY`. The strict
+  standalone final-line parser now tolerates at most four such characters
+  inside the marker only; original answer bytes and SHA-256 remain unchanged.
+- Apply the same parser to first/new-chat observation, normal continuation,
+  uncertain-answer recovery, store recovery gates, Telegram summaries and
+  release Chrome probes. New versioned Goal work prompts explicitly require
+  literal ASCII markers; legacy unversioned prompt builders remain byte-stable
+  so already-reserved requests can still be reconstructed exactly.
+- Add regressions for the exact rendered marker, bounded normalization and
+  automatic dispatch of the next queued Goal after a prior terminal Mission.
+
 ## 1.2.16 — 2026-11-18
 
 - Fix production ChatGPT delivery-timeout stalls after the first recorded UI
