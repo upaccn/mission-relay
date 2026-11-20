@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.20 — 2026-11-20
+
+- Clean the generated `dist/` directory before every TypeScript build so
+  removed or relocated modules cannot survive into a later production bundle.
+- Add regression coverage proving build cleanup preserves project sources and
+  refuses a filesystem-root target. No Mission, SQLite or Worker semantics
+  changed.
+
 ## 1.2.19 — 2026-11-20
 
 - Derive the operator CLI help version from `package.json`, eliminating the

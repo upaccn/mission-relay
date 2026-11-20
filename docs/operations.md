@@ -399,8 +399,11 @@ readback digests remain in the same receipt. These outcome fields are written
 observation, missing independently reviewed request, or contradictory record
 cannot be converted into a PASS by supplying these fields in an external file.
 
-`npm run build` now emits untracked `dist/build-provenance.json` describing
-the exact checkout HEAD and SHA-256 tree digest of **every compiled JS file**.
+`npm run build` first removes the generated `dist/` directory, then compiles
+from the current TypeScript source and emits untracked
+`dist/build-provenance.json` describing the exact checkout HEAD and SHA-256
+tree digest of **every compiled JS file**. This prevents deleted or relocated
+modules from surviving in a later bundle.
 The single actual Telegram Worker verifies this manifest against its compiled
 entrypoint, the installed JS tree, a clean Git checkout and HEAD at startup.
 Only the process holding the real SQLite channel lease can atomically record
