@@ -42,6 +42,9 @@ import { listBrowsers } from 'playwriter';
 import type { CreateMission, Sandbox } from './core/types.js';
 import type { VerificationCheck } from './core/types.js';
 
+const packageVersion = (JSON.parse(readFileSync(
+  new URL('../package.json',import.meta.url),'utf8')) as {version:string}).version;
+
 function flags(argv: string[]): Record<string,string[]> {
   const out: Record<string,string[]> = {};
   for (let i=0;i<argv.length;i++) {
@@ -67,7 +70,7 @@ function option(f:Record<string,string[]>,name:string,defaultValue?:string):stri
   return values[0]!;
 }
 function help():void {
-  console.log(`Mission Relay v1.0
+  console.log(`Mission Relay v${packageVersion}
 Commands:
   software-release-status --sha <GitHub main SHA> --run-id <GitHub Actions run>
                        Independently qualify software CI on three platforms without a Goal or SQLite
@@ -98,7 +101,7 @@ Commands:
   pi-drill-connection <mission-id> --revision <n> [--ttl-seconds 90]
                        --acknowledge-side-effects  One-shot, single-session PI recovery disconnect;
                        only at a settled idle checkpoint, automatically expires within 120s
-  pi-evidence <mission-id>  Audit real event/PI SHA correlation and 10-send chat segmentation (no content, no Send)
+  pi-evidence <mission-id>  Audit real event/PI SHA correlation and current 8-send chat segmentation (no content, no Send)
   pi-chain-evidence <mission-id>  Verify durable 32-turn successor lineage and inherited scope (no Send)
   goal-request-ledger <goal-id>  Read-only Goal→Mission→Chat→request→browser evidence custody audit
   goal-release-status <goal-id>  Read-only independent Goal release gates, evidence and blockers

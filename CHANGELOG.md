@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.19 — 2026-11-20
+
+- Derive the operator CLI help version from `package.json`, eliminating the
+  stale hard-coded `v1.0` banner. Keep the help text aligned with the current
+  eight-Send-per-Chat policy.
+- Correct operational descriptions of the eighth-to-ninth Chat rollover.
+  Preserve the stable legacy `chrome-10-to-11` evidence identifier and all
+  historical ten-Send SQLite records unchanged.
+- No Mission scheduling, browser Send/Retry, SQLite schema or Worker
+  lifecycle semantics changed.
+
 ## 1.2.18 — 2026-11-20
 
 - Separate the single Worker's control cycle into authenticated owner intake,

@@ -120,7 +120,7 @@ no fabricated successful receipt; the read-only diagnostic instead reports
 A production PASS additionally requires the actual installed exact SHA,
 settled original request custody, independent current Chrome and Worker
 observations, the approved Goal/PI state and the required private receipts.
-Even all source tests passing does **not** prove a live 10→11 or legacy 32→child
+Even all source tests passing does **not** prove a live 8→9 or legacy 32→child
 transition, completed maintenance, browser custody or criterion acceptance.
 Original uncertain requests and owner pauses always retain their recorded
 SQLite state; release probes must never retry or rewrite them to create proof.

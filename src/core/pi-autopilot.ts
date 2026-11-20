@@ -349,7 +349,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
         throw new Error('PI next browser Send refused: visible ChatGPT history differs from the last observed receipt');
       // The source can change AGAIN after this read, while the rollover
       // prompt is being constructed. Recheck both exact hashes at the final
-      // pre-reservation boundary, including for automatic 10→11 rotation.
+      // pre-reservation boundary, including for automatic 8→9 rotation.
       exactSource={promptSha256:previous.promptSha256,
         assistantSha256:previous.assistantSha256!};
     }

@@ -49,7 +49,7 @@ evidence verifier, not a PI dispatcher. It creates an exact Git SHA release
 target only after the approved plan's Work Items and their criteria all have
 PI-*reported* PASS; that report never counts as independent acceptance.
 Eleven current-Goal release gates cover check, privacy, full tests, build,
-Ubuntu/macOS/Windows CI, live 8→9 rollover (legacy internal 10→11 label), maintenance recovery,
+Ubuntu/macOS/Windows CI, live 8→9 rollover (stable legacy gate ID `chrome-10-to-11`), maintenance recovery,
 tab retirement and GMK readback. Every work criterion adds its own independent
 evidence requirement. A verified receipt records source, original proof
 digest, reference, target SHA, observed time and bounded freshness. Every
