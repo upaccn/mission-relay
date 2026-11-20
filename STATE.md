@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.2.17`.
+- Current source package version: `1.2.18`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -23,6 +23,14 @@
   Telegram Worker and one leased browser dispatcher. Multiple Goals may
   remain independently queued/active, but a browser Send or uncertain original
   request prevents dispatch to another Goal until a safe checkpoint.
+- The Worker control cycle is ordered **authenticated owner inbox → durable
+  Mission/Goal recovery and dispatch → best-effort outbound Telegram delivery**.
+  A successful inbound poll is required before new browser side effects so a
+  queued owner pause is observed first. Failed Telegram replies/notifications
+  retain their SQLite reply or event cursor and cannot abort scheduling; an
+  inbound `getUpdates` failure still defers dispatch because owner commands
+  may be waiting. Startup uses this same cycle rather than dispatching before
+  the first owner-inbox read.
 - A verified external blocker is scoped first to its work item. PI may mark
   that work BLOCKED and atomically select a different approved independent
   work package instead of terminating the Goal. All blocked release criteria

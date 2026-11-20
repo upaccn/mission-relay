@@ -10,6 +10,17 @@ repositories, downloaded extensions, credentials, temporary tests, private
 SQLite backups and recovery images **outside** the Mission Relay checkout.
 An unexpected binary or adjacent project is not a Core dependency.
 
+## Worker scheduling and Telegram delivery isolation
+
+The single Worker processes one cycle in this order: authenticated owner
+inbox, durable Mission/Goal recovery and dispatch, then outbound Telegram
+replies and notifications. This ensures a queued `/pause` is applied before a
+new browser Send. A failed outbound `sendMessage` leaves its original SQLite
+reply/event cursor pending for a later cycle and must not stop Goal scheduling.
+An inbound `getUpdates` failure still defers new dispatch because the Worker
+cannot prove that no owner control command is waiting. Startup recovery uses
+the same order; never add a separate scheduler or bypass the single Worker.
+
 GitHub `main`, a published release and the installed GMK Worker have
 different provenance. After a source change, first qualify the **exact**
 main SHA with `software-release-status` and its completed CI run; do not

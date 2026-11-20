@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.18 — 2026-11-20
+
+- Separate the single Worker's control cycle into authenticated owner intake,
+  durable Mission/Goal recovery and dispatch, then best-effort outbound
+  Telegram delivery. A pending `/pause` is observed before new browser work;
+  a Telegram `sendMessage` failure can no longer skip the scheduler or strand
+  the next eligible Goal. Inbound polling failures still defer dispatch.
+- Retain failed replies and notification cursors for at-least-once delivery,
+  isolate reply and notification failures, and perform startup recovery only
+  after the first successful owner-inbox poll. No new daemon, database, queue,
+  browser Send path or relaxation of uncertain-request/owner-pause fences.
+- Add a single-Worker regression proving a failed terminal notification does
+  not prevent dispatch of the next queued Goal, and update retry tests to
+  verify durable outbound delivery without repeating owner commands.
+
 ## 1.2.17 — 2026-11-20
 
 - Fix a reproduced production stall where ChatGPT's rendered final marker

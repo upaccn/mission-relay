@@ -181,6 +181,16 @@ intake remains available. Request keys, conversation locks, one-shot Retry,
 eight-Send Chat rollover and durable original prompt snapshots are enforced.
 Only one browser Worker, one SQLite and one inbox/queue are used.
 
+The Worker control cycle has three ordered phases: authenticated Telegram
+inbox intake, durable Mission/Goal recovery and dispatch, then best-effort
+outbound reply/notification delivery. The first phase must succeed before new
+browser side effects so a queued owner pause is applied first. Outbound
+`sendMessage` failures leave the original reply or event cursor pending but
+cannot skip the scheduler; a failed inbound `getUpdates` call still defers
+dispatch because unseen owner commands may exist. Startup recovery follows
+the same order. This reuses the existing lease and SQLite state machine rather
+than introducing a second scheduler or queue.
+
 Per-path operator permissions use
 `telegram.build.allow.<SHA256(absolute path)>` in private SQLite.
 Legacy single-project approval is compatible, but PI's separate tool-free

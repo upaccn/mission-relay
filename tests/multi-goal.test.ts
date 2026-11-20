@@ -188,12 +188,15 @@ function multiRig(){
         releaseCondition:'Independent real-world verification required'},
     }),
   };
-  let updates:TelegramUpdate[]=[],replies:string[]=[];
+  let updates:TelegramUpdate[]=[],replies:string[]=[],failNextSend=false;
   let originalAnchorAvailable=true;
   const connectionAttempts:Array<{url:string;bootstrap:boolean}>=[];
   const transport:TelegramTransport={
     getUpdates:async offset=>updates.filter(u=>u.update_id>=offset),
-    sendMessage:async(_id,message)=>{replies.push(message);},
+    sendMessage:async(_id,message)=>{
+      if(failNextSend){failNextSend=false;throw new Error('synthetic Telegram send failure');}
+      replies.push(message);
+    },
   };
   const connect=async(url:string,options?:{browserId?:string;bootstrapMissingAnchor?:boolean})=>{
       assert.equal(options?.browserId,browserId);
@@ -219,6 +222,7 @@ function multiRig(){
   };
   return {store,file,engine,bridge,newController,replies,sends,sessions,message,idle,
     connectionAttempts,loseOriginalAnchor:()=>{originalAnchorAvailable=false;},
+    failNextSend:()=>{failNextSend=true;},
     setUpdates:(items:TelegramUpdate[])=>{updates=items;},
     close:()=>{store.close();rmSync(dir,{recursive:true,force:true});}};
 }
@@ -338,6 +342,79 @@ test('a terminal prior Mission does not strand the next queued Goal on the singl
       'The queued Goal must execute only inside its own approved repository scope');
     assert.equal(r.store.piPlan(prior.id)?.action,'BLOCKED',
       'The previous terminal Mission remains unchanged');
+  }finally{await r.idle();r.close();}
+});
+
+test('a failed terminal Telegram notification cannot starve the next queued Goal',async()=>{
+  const r=multiRig();
+  try{
+    r.store.setMeta('telegram.notifications_cursor',String(r.store.maxEventId()));
+    const prior=r.engine.create({goal:'Prior Mission reached a verified terminal blocker',
+      acceptance:['Keep the original terminal receipt'],workspace:'',sandbox:'read-only',
+      mode:'supervised',maxTurns:0,requestKey:'terminal-notification-prior',checks:[]});
+    const priorLinked=r.store.linkChat(prior.id,ORIGIN,prior.version).mission;
+    const priorBound=r.store.bindChatBrowser(prior.id,browserId,priorLinked.version).mission;
+    r.store.setMeta(`pi.autopilot.enabled.${prior.id}`,'1');
+    const priorPrompt='Prior terminal original request';
+    const priorAnswer='A concrete external blocker remains.\n[MISSION_RELAY:BLOCKED]';
+    r.store.reserveChatBrowserTurn(prior.id,priorBound.version,'terminal-notification-prior-1',
+      createHash('sha256').update(priorPrompt).digest('hex'));
+    r.store.finishChatBrowserTurn(prior.id,'terminal-notification-prior-1',{
+      kind:'observed',assistantSha256:createHash('sha256').update(priorAnswer).digest('hex'),
+      summary:priorAnswer,telegramBatch:{terminal:true,flowSignal:'BLOCKED'},
+    });
+    r.store.commitPiPlan(prior.id,createHash('sha256').update(priorAnswer).digest('hex'),[],{
+      action:'BLOCKED',summary:'The prior Mission is terminal; no continuation is authorized',nextPrompt:''});
+
+    const objective=`Next independent product delivery Goal\nRepository: ${REPO_B}`;
+    const next=r.engine.create({goal:objective,acceptance:['Implement and verify the next product'],
+      workspace:REPO_B,sandbox:'workspace-write',mode:'supervised',maxTurns:0,
+      requestKey:'terminal-notification-next',checks:[]});
+    const nextLinked=r.store.linkChat(next.id,ORIGIN,next.version).mission;
+    const nextBound=r.store.bindChatBrowser(next.id,browserId,nextLinked.version).mission;
+    r.store.setMeta(`pi.autopilot.enabled.${next.id}`,'1');
+    const ledger=new GoalLedger(r.store);
+    const goal=ledger.createGoal({requestKey:'terminal-notification-next',objective,priority:50});
+    ledger.bindPiMission(goal.id,next.id,nextBound.version,'terminal-notification-next-bind');
+
+    r.failNextSend();
+    await (r.bridge as unknown as {controlCycleOnce:(timeout:number)=>Promise<void>})
+      .controlCycleOnce(0);
+    await r.idle();
+    assert.ok(r.store.get(next.id).turnCount>=1,
+      'The Worker must dispatch the next Goal before attempting outbound terminal notifications');
+    assert.ok(r.sends.some(send=>send.prompt.includes(REPO_B)),
+      'A notification failure must not alter the next Goal repository scope');
+    assert.equal(r.store.piPlan(prior.id)?.action,'BLOCKED',
+      'The previous terminal Mission must remain unchanged');
+    const terminalEventId=r.store.events(prior.id)
+      .find(event=>event.type==='pi.autopilot_finished')!.id;
+    assert.ok(Number(r.store.getMeta('telegram.notifications_cursor'))<terminalEventId,
+      'A failed notification must not advance the durable cursor past its terminal event');
+  }finally{await r.idle();r.close();}
+});
+
+test('the Worker applies a queued owner pause before dispatching a READY Goal',async()=>{
+  const r=multiRig();
+  try{
+    const objective=`Owner-paused queued Goal\nRepository: ${REPO_B}`;
+    const mission=r.engine.create({goal:objective,acceptance:['Do not send after owner pause'],
+      workspace:REPO_B,sandbox:'workspace-write',mode:'supervised',maxTurns:0,
+      requestKey:'owner-pause-before-dispatch',checks:[]});
+    const linked=r.store.linkChat(mission.id,ORIGIN,mission.version).mission;
+    const bound=r.store.bindChatBrowser(mission.id,browserId,linked.version).mission;
+    r.store.setMeta(`pi.autopilot.enabled.${mission.id}`,'1');
+    const ledger=new GoalLedger(r.store);
+    const goal=ledger.createGoal({requestKey:'owner-pause-before-dispatch',objective,priority:50});
+    ledger.bindPiMission(goal.id,mission.id,bound.version,'owner-pause-before-dispatch-bind');
+    r.setUpdates([r.message(706,`/pause ${mission.id}`)]);
+    await (r.bridge as unknown as {controlCycleOnce:(timeout:number)=>Promise<void>})
+      .controlCycleOnce(0);
+    const paused=r.store.get(mission.id);
+    assert.equal(paused.state,'PAUSED');
+    assert.equal(paused.stopRequested,true);
+    assert.equal(paused.turnCount,0);
+    assert.equal(r.sends.length,0,'No browser Send may start before the owner pause is applied');
   }finally{await r.idle();r.close();}
 });
 

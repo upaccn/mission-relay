@@ -667,15 +667,19 @@ test('Telegram duplicate update never repeats an action',async()=>{
   }finally{f.cleanup();}
 });
 
-test('Telegram retries failed replies but not commands',async()=>{
+test('Telegram retries failed replies without repeating commands or blocking notifications',async()=>{
   const f=fixture();try {
     f.transport.updates=[f.message(11,`/pause ${f.m.id}`)];
     f.transport.failSend=true;
-    await assert.rejects(f.bridge.pollOnce(0),/network drop/);
+    await f.bridge.pollOnce(0);
     assert.equal(f.engine.get(f.m.id).state,'PAUSED');
+    assert.equal(f.store.pendingChannelReplies('telegram').length,1,
+      'A failed outbound reply remains durably pending');
     await f.bridge.pollOnce(0);
     assert.equal(f.store.events(f.m.id).filter(x=>x.type==='mission.paused').length,1);
-    assert.match(f.transport.sent[0]!,/Paused — no further work/);
+    assert.ok(f.transport.sent.some(text=>/Paused — no further work/.test(text)),
+      'The original command reply is delivered on a later cycle');
+    assert.equal(f.store.pendingChannelReplies('telegram').length,0);
   }finally{f.cleanup();}
 });
 
@@ -799,7 +803,7 @@ test('A failed Telegram final notification is retried from SQLite without repeat
       telegramBatch:{terminal:true,flowSignal:'DONE'},
     });
     f.transport.failSend=true;
-    await assert.rejects(f.bridge.pollOnce(0),/network drop/);
+    await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,0);
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,1);

@@ -357,12 +357,16 @@ export class TelegramBridge {
 
   /** This small method is intentionally public for offline integration tests. */
   async pollOnce(timeoutSeconds=8):Promise<void> {
+    await this.pollOwnerInboxOnce(timeoutSeconds);
+    await this.deliverOutboundBestEffort();
+  }
+
+  /** Intake is the control-plane fence: process authenticated owner commands
+   * before scheduling any new browser side effect. Outbound Telegram delivery
+   * is deliberately not part of this transaction or scheduling decision. */
+  private async pollOwnerInboxOnce(timeoutSeconds=8):Promise<void> {
     if(this.store.getMeta('telegram.notifications_cursor')===null)
       this.store.setMeta('telegram.notifications_cursor',String(this.store.maxEventId()));
-    if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
-      for(const m of this.engine.list())this.store.createPiSuccessor(m.id);
-    await this.deliverPendingReplies();
-    await this.deliverNotifications();
     const offset=Number(this.store.getMeta('telegram.inbox_cursor') ?? '0');
     const updates=await this.transport.getUpdates(offset,timeoutSeconds);
     if(!Array.isArray(updates)) throw new Error('Telegram getUpdates did not return an array');
@@ -398,7 +402,73 @@ export class TelegramBridge {
         }
       }
     }
-    await this.deliverPendingReplies();
+    // Materialize any already-authorized finite-Mission successor only after
+    // the owner inbox was read and applied. This is a durable SQLite mutation,
+    // not a browser Send; the normal scheduler will verify and dispatch it.
+    if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
+      for(const mission of this.engine.list())this.store.createPiSuccessor(mission.id);
+  }
+
+  /** Outbound notifications are at-least-once, cursor-backed delivery. A
+   * Telegram send failure must leave its durable reply/event pending, but must
+   * never abort the independent Mission scheduler or owner-command intake. */
+  private async deliverOutboundBestEffort():Promise<void> {
+    try{await this.deliverPendingReplies();}
+    catch(error){
+      const reason=error instanceof Error?error.message:'unknown transport error';
+      console.error(`Telegram reply delivery deferred: ${reason}`);
+    }
+    try{await this.deliverNotifications();}
+    catch(error){
+      const reason=error instanceof Error?error.message:'unknown transport error';
+      console.error(`Telegram notification delivery deferred: ${reason}`);
+    }
+  }
+
+  /** One deterministic Worker cycle: owner intake → durable recovery/dispatch
+   * → best-effort outbound delivery. No second daemon or queue is introduced. */
+  private async controlCycleOnce(timeoutSeconds=8):Promise<void> {
+    await this.pollOwnerInboxOnce(timeoutSeconds);
+    if(this.store.channelDrainRequested(this.source))return;
+    await this.reconcileControlStateOnce();
+    await this.deliverOutboundBestEffort();
+  }
+
+  private async reconcileControlStateOnce():Promise<void> {
+    if(this.store.channelDrainRequested(this.source))return;
+    // Housekeeping belongs to the existing leased Worker, not a new service.
+    // Preserve unresolved/paused missions and their immutable audit trail.
+    if(!this.activeTask&&!this.activeMission&&
+      Date.now()-this.lastArchiveSweepAt>=60*60*1000){
+      this.lastArchiveSweepAt=Date.now();
+      try {
+        this.store.archiveSettledMissions({
+          minAgeMs:24*60*60*1000,includeBlocked:false,
+        });
+      }catch{
+        console.error('Settled Mission housekeeping deferred; no active request was changed');
+      }
+    }
+    // Each recovery path remains fenced by the same single Worker and SQLite
+    // request identity. Any reserved/uncertain Send blocks Goal switching.
+    if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
+      await this.recoverUncertainDeliveryOnce();
+    if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
+      await this.recoverNativePrefilledDraftOnce();
+    if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
+      await this.recoverNativePrefilledReplyOnce();
+    if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
+      await this.recoverObservedPiCheckpoint();
+    if(!this.activeTask&&!this.store.channelDrainRequested(this.source)&&
+      watchedBrowser(this.store)&&Date.now()-this.lastBrowserWatchAt>=15_000){
+      this.lastBrowserWatchAt=Date.now();
+      try{await this.scanBrowserWatchOnce();}
+      catch{
+        console.error('Browser watch scan unavailable; Telegram controller stays online');
+      }
+      if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
+        await this.recoverObservedPiCheckpoint();
+    }
   }
 
   async run(signal?:AbortSignal):Promise<void> {
@@ -428,16 +498,6 @@ export class TelegramBridge {
     try {
       if(this.startupProvenance)
         this.store.recordChannelRuntime(this.source,lease,this.startupProvenance);
-      // Recover ONLY a PI decision whose previous browser response and
-      // next-step plan were durably observed. Never reconstruct an uncertain Send.
-      if(!this.store.channelDrainRequested(this.source))
-        await this.recoverUncertainDeliveryOnce();
-      if(!this.store.channelDrainRequested(this.source))
-        await this.recoverNativePrefilledDraftOnce();
-      if(!this.store.channelDrainRequested(this.source))
-        await this.recoverNativePrefilledReplyOnce();
-      if(!this.store.channelDrainRequested(this.source))
-        await this.recoverObservedPiCheckpoint();
       while(!signal?.aborted) {
         if(this.store.channelDrainRequested(this.source)) {
           // A previously accepted browser/PI task is authoritative and must
@@ -467,46 +527,9 @@ export class TelegramBridge {
         }
         startedInsideDrain=false;
         try {
-          await this.pollOnce();
+          await this.controlCycleOnce();
           lastLoopProgressAt=Date.now();
           if(this.store.channelDrainRequested(this.source))continue;
-          // Housekeeping belongs to the existing leased Worker, not a new
-          // service. Preserve unresolved/paused missions and their audit
-          // trail; a BLOCKED PI verdict still needs owner attention.
-          if(!this.activeTask&&!this.activeMission&&
-            Date.now()-this.lastArchiveSweepAt>=60*60*1000){
-            this.lastArchiveSweepAt=Date.now();
-            try {
-              this.store.archiveSettledMissions({
-                minAgeMs:24*60*60*1000,includeBlocked:false,
-              });
-            }catch{
-              console.error('Settled Mission housekeeping deferred; no active request was changed');
-            }
-          }
-          // Adopted ChatGPT missions may be queued by an independent local
-          // CLI. Only this leased foreground controller drives PI/browser.
-          if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
-            await this.recoverUncertainDeliveryOnce();
-          if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
-            await this.recoverNativePrefilledDraftOnce();
-          if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
-            await this.recoverNativePrefilledReplyOnce();
-          if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
-            await this.recoverObservedPiCheckpoint();
-          if(!this.activeTask&&!this.store.channelDrainRequested(this.source)&&
-            watchedBrowser(this.store)&&
-            Date.now()-this.lastBrowserWatchAt>=15_000) {
-            this.lastBrowserWatchAt=Date.now();
-            try {await this.scanBrowserWatchOnce();}
-            catch {
-              // Discovery is best-effort and never delays Telegram polling
-              // through its transport backoff when Chrome is disconnected.
-              console.error('Browser watch scan unavailable; Telegram controller stays online');
-            }
-            if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
-              await this.recoverObservedPiCheckpoint();
-          }
           backoff=1000;
           lastLoopProgressAt=Date.now();
         }
