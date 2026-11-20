@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.22 — 2026-11-20
+
+- Run the existing Windows production build stages directly through the exact
+  enrolled Node LTS executable instead of `npm.cmd run build`. This removes
+  the SSH `cmd.exe`/npm run-script PATH dependency while preserving the same
+  clean → TypeScript compile → provenance sequence.
+- Keep the change inside the existing fenced Upgrade/rollback path; no Mission,
+  SQLite, Worker, browser Send or scheduling semantics changed.
+
 ## 1.2.21 — 2026-11-20
 
 - Make the Windows maintenance script prepend its exact enrolled Scoop Node

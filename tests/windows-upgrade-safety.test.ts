@@ -204,7 +204,9 @@ test('GMK pull-only upgrade is ordered behind the SQLite drain and never install
     'git -C $root fetch origin main',
     'git -C $root merge-base --is-ancestor $oldSha $remoteSha',
     'git -C $root pull --ff-only origin main',
-    'npm.cmd run build',
+    "& $node (Join-Path $root 'scripts\\clean-build.mjs')",
+    "& $node (Join-Path $root 'node_modules\\typescript\\bin\\tsc')",
+    "& $node (Join-Path $root 'scripts\\write-build-provenance.mjs')",
     'Start-ScheduledTask -TaskName $taskName',
     'Wait-ForChannel $true',
     '$current=Assert-FencedWorker $ExpectedSha',
@@ -226,10 +228,10 @@ test('GMK pull-only upgrade is ordered behind the SQLite drain and never install
     'A locally approved loopback proxy is scoped to this maintenance process');
   assert.doesNotMatch(upgrade,/git config --(?:global|local)|setx\s|netsh\s/i);
   assert.match(script,/function Assert-OurTask \{[\s\S]*?Principal\.LogonType -ne 'Interactive'[\s\S]*?Principal\.RunLevel -ne 'Limited'/);
-  assert.match(script,/\$nodeDirectory = Split-Path -Parent \$node[\s\S]*?\$env:PATH = \$nodeDirectory \+ ';' \+ \$env:PATH/,
-    'SSH-launched upgrades must add the exact enrolled Node LTS directory to process-local PATH');
+  assert.match(upgrade,/& \$node \(Join-Path \$root 'scripts\\clean-build\.mjs'\)[\s\S]*?& \$node \(Join-Path \$root 'node_modules\\typescript\\bin\\tsc'\)[\s\S]*?& \$node \(Join-Path \$root 'scripts\\write-build-provenance\.mjs'\)/,
+    'all deterministic build stages must use the exact enrolled Node executable in package-script order');
   assert.match(script,/function Assert-Prerequisites \{[\s\S]*?Get-Command node\.exe[\s\S]*?GetFullPath\(\$resolvedNode\.Source\)[\s\S]*?GetFullPath\(\$node\)/,
-    'npm scripts must resolve node.exe to the exact enrolled Scoop LTS runtime');
+    'maintenance commands must resolve node.exe to the exact enrolled Scoop LTS runtime');
   assert.match(script,/\[string\]\$BootstrapRoot = ''/);
   assert.match(script,/if \(\$BootstrapRoot -and \$Action -notin @\('Upgrade','Compatibility'\)\)/,
     'A temporary bootstrap must not operate on task enrollment or generic restarts');

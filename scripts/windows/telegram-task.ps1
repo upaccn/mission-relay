@@ -46,9 +46,8 @@ $root = if ($BootstrapRoot) {
 $node = Join-Path $env:USERPROFILE 'scoop\apps\nodejs-lts\current\node.exe'
 $nodeDirectory = Split-Path -Parent $node
 if (@($env:PATH -split ';') -notcontains $nodeDirectory) {
-    # SSH-launched maintenance shells may expose Scoop's npm shim without
-    # exposing the matching node.exe. Keep npm scripts on the enrolled LTS
-    # runtime without changing the user's persistent PATH.
+    # SSH-launched maintenance shells may omit the enrolled Node LTS runtime.
+    # Scope the exact executable directory to this process, never the user.
     $env:PATH = $nodeDirectory + ';' + $env:PATH
 }
 $cli = Join-Path $root 'dist\cli.js'
@@ -246,9 +245,6 @@ function Assert-UpgradeTarget([string]$sha) {
     }
     if (-not (Test-Path -LiteralPath (Join-Path $root 'node_modules\typescript\bin\tsc') -PathType Leaf)) {
         throw 'Existing GMK TypeScript dependencies missing; do not run npm ci against live DLLs'
-    }
-    if (-not (Get-Command npm.cmd -ErrorAction SilentlyContinue)) {
-        throw 'npm.cmd is unavailable; build prerequisites must be installed before a maintenance drain'
     }
 }
 
@@ -1178,8 +1174,15 @@ switch ($Action) {
             Push-Location $root
             try {
                 $buildStarted=$true
-                & npm.cmd run build
-                if ($LASTEXITCODE -ne 0) { throw 'GMK TypeScript build failed' }
+                # Run the existing package.json build stages directly through
+                # the enrolled Node executable. npm.cmd/npm run adds a cmd.exe
+                # and run-script PATH layer that is unreliable over SSH.
+                & $node (Join-Path $root 'scripts\clean-build.mjs')
+                if ($LASTEXITCODE -ne 0) { throw 'GMK build cleanup failed' }
+                & $node (Join-Path $root 'node_modules\typescript\bin\tsc')
+                if ($LASTEXITCODE -ne 0) { throw 'GMK TypeScript compilation failed' }
+                & $node (Join-Path $root 'scripts\write-build-provenance.mjs')
+                if ($LASTEXITCODE -ne 0) { throw 'GMK build provenance generation failed' }
             }
             finally { Pop-Location }
             Assert-UpgradeTarget $ExpectedSha
