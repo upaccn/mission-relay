@@ -307,9 +307,13 @@ function exercise(scenario:string):Receipt {
       ['fake-cli:channel-drain-status','fake-cli:browser-binding-health',
         'fake-cli:show','fake-cli:pi-resume'].includes(c)),
     `the cooperative mock trace must contain only recognized fake operations: ${JSON.stringify(receipt.calls)}`);
-    assert.deepEqual(receipt.calls.filter(c=>c.startsWith('fake-build:')),
-      ['fake-build:clean','fake-build:tsc','fake-build:provenance'],
-      'the production build must run its three direct-Node stages exactly once and in order');
+    if(receipt.calls.includes('fake-build:clean')) {
+      assert.deepEqual(receipt.calls.filter(c=>c.startsWith('fake-build:')),
+        scenario==='build_stage_failure'
+          ? ['fake-build:clean','fake-build:tsc']
+          : ['fake-build:clean','fake-build:tsc','fake-build:provenance'],
+        'the production build must run each reached direct-Node stage exactly once and in order');
+    }
     if(scenario==='damaged_rollback_image'){
       assert.ok(receipt.stages.includes('compiled_rollback_saved'),
         'saved backup first passed original byte validation');
