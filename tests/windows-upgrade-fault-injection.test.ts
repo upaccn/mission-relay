@@ -195,6 +195,7 @@ function exercise(scenario:string):Receipt {
         '$script:calls.Add("atomic-release");$script:drain=$false;$script:releases++}',
       'function IsolatedNode {'+
         '$global:LASTEXITCODE=0;'+
+        'if([string]$args[0] -eq $cli) {'+
         '$script:calls.Add("fake-cli:"+[string]$args[1]);'+
         'switch([string]$args[1]) {'+
         '"channel-drain-status" {'+
@@ -208,7 +209,35 @@ function exercise(scenario:string):Receipt {
         '"not_connected"}else{"exact_connected"};matchingLinkedTabs=1;enabledChatTabs=1}|ConvertTo-Json -Compress)};'+
         '"show" {return (@{version=1}|ConvertTo-Json -Compress)};'+
         '"pi-resume" {$script:resumes++;return ""};'+
-        'default {throw "Unexpected isolated CLI access"}}}',
+        'default {throw "Unexpected isolated CLI access"}};return};'+
+        '$buildStep=[string]$args[0];'+
+        'if($buildStep -like "*clean-build.mjs") {'+
+        '$script:calls.Add("fake-build:clean");'+
+        'Get-ChildItem -LiteralPath (Join-Path $root "dist") -Force | Remove-Item -Recurse -Force;return};'+
+        'if($buildStep -like "*typescript\\bin\\tsc") {'+
+        '$script:calls.Add("fake-build:tsc");'+
+        '$body="// synthetic NEW compiled code";'+
+        '[IO.File]::WriteAllText((Join-Path $root "dist/cli.js"),$body);'+
+        'if($script:fault -eq "build_stage_failure") {'+
+        '$script:failpoints.Add("build_stage_failure");$global:LASTEXITCODE=2};return};'+
+        'if($buildStep -like "*write-build-provenance.mjs") {'+
+        '$script:calls.Add("fake-build:provenance");'+
+        '$body=[IO.File]::ReadAllText((Join-Path $root "dist/cli.js"));'+
+        '$source=if($script:fault -eq "damaged_build_manifest") {'+
+        '$script:failpoints.Add("damaged_build_manifest");"e"*40}else{$script:target};'+
+        '$cliSha=if($script:fault -eq "damaged_build_cli"){"0"*64}else{'+
+        '[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData('+
+        '[Text.Encoding]::UTF8.GetBytes($body))).ToLowerInvariant()};'+
+        '$manifest=@{sourceSha=$source;treeSha256=$script:newTree;'+
+        'cliSha256=$cliSha;fileCount=1}|ConvertTo-Json -Compress;'+
+        'if($script:fault -eq "damaged_build_cli") {$script:failpoints.Add("damaged_build_cli")};'+
+        '[IO.File]::WriteAllText((Join-Path $root "dist/build-provenance.json"),$manifest);'+
+        'if($script:fault -eq "recovery_trigger_race") {'+
+        '$script:calls.Add("scheduled-trigger-old-worker");'+
+        'if($script:workerRunning){throw "Scheduled trigger overlapped an existing Worker"};'+
+        '$script:nextPid++;$script:workerPid=$script:nextPid;'+
+        '$script:workerSource=$script:oldSha;$script:workerRunning=$true};return};'+
+        'throw "Unexpected isolated Node build stage: $buildStep"}',
       'function git {'+
         '$command=(@($args)|ForEach-Object{[string]$_}) -join " ";'+
         '$script:calls.Add("fake-git:"+$command);'+
@@ -233,27 +262,6 @@ function exercise(scenario:string):Receipt {
         '$script:failpoints.Add("git_fetch_failure");$global:LASTEXITCODE=2;return};'+
         'if($command -match "fetch origin main|merge-base --is-ancestor"){return};'+
         'throw "Unmocked Git access: $command"}',
-      'function npm.cmd {'+
-        '$script:calls.Add("fake-build");'+
-        '$global:LASTEXITCODE=0;'+
-        '$body="// synthetic NEW compiled code";'+
-        '[IO.File]::WriteAllText((Join-Path $root "dist/cli.js"),$body);'+
-        '$source=if($script:fault -eq "damaged_build_manifest") {'+
-        '$script:failpoints.Add("damaged_build_manifest");"e"*40}else{$script:target};'+
-        '$cliSha=if($script:fault -eq "damaged_build_cli"){"0"*64}else{'+
-        '[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData('+
-        '[Text.Encoding]::UTF8.GetBytes($body))).ToLowerInvariant()};'+
-        '$manifest=@{sourceSha=$source;treeSha256=$script:newTree;'+
-        'cliSha256=$cliSha;fileCount=1}|ConvertTo-Json -Compress;'+
-        'if($script:fault -eq "damaged_build_cli") {$script:failpoints.Add("damaged_build_cli")};'+
-        '[IO.File]::WriteAllText((Join-Path $root "dist/build-provenance.json"),$manifest);'+
-        'if($script:fault -eq "recovery_trigger_race") {'+
-        '$script:calls.Add("scheduled-trigger-old-worker");'+
-        'if($script:workerRunning){throw "Scheduled trigger overlapped an existing Worker"};'+
-        '$script:nextPid++;$script:workerPid=$script:nextPid;'+
-        '$script:workerSource=$script:oldSha;$script:workerRunning=$true};'+
-        'if($script:fault -eq "npm_build_failure") {'+
-        '$script:failpoints.Add("npm_build_failure");$global:LASTEXITCODE=2}}',
       '$script:expectedDatabaseSha256=[Convert]::ToHexString('+
         '[Security.Cryptography.SHA256]::HashData([IO.File]::ReadAllBytes($script:database))).ToLowerInvariant()',
       'try {',
@@ -295,10 +303,13 @@ function exercise(scenario:string):Receipt {
     assert.ok(receipt.workerHighWater<=1,'never launch a second Worker');
     assert.ok(receipt.calls.every(c=>c==='stop-worker'||c==='start-worker'||
       c==='scheduled-trigger-old-worker'||
-      c==='atomic-release'||c==='fake-build'||c.startsWith('fake-git:')||
+      c==='atomic-release'||c.startsWith('fake-build:')||c.startsWith('fake-git:')||
       ['fake-cli:channel-drain-status','fake-cli:browser-binding-health',
         'fake-cli:show','fake-cli:pi-resume'].includes(c)),
-    'the cooperative mock trace must contain only recognized fake operations');
+    `the cooperative mock trace must contain only recognized fake operations: ${JSON.stringify(receipt.calls)}`);
+    assert.deepEqual(receipt.calls.filter(c=>c.startsWith('fake-build:')),
+      ['fake-build:clean','fake-build:tsc','fake-build:provenance'],
+      'the production build must run its three direct-Node stages exactly once and in order');
     if(scenario==='damaged_rollback_image'){
       assert.ok(receipt.stages.includes('compiled_rollback_saved'),
         'saved backup first passed original byte validation');
@@ -355,7 +366,7 @@ test('actual Windows Upgrade branch resists injected health, version, SQLite, bu
       ...['history_reset_has_parent','health_after_upgrade','version_after_upgrade','sqlite_after_upgrade',
         'damaged_build_manifest','damaged_build_cli','pre_admission_unsettled',
         'journal_failure','restore_failure','browser_binding_failure',
-        'git_fetch_failure','git_pull_failure','npm_build_failure',
+        'git_fetch_failure','git_pull_failure','build_stage_failure',
         'worker_start_timeout','snapshot_backup_failure']
         .map(name=>({name,outcome:'error',head:SHA_OLD,drain:false,worker:true,releases:1})),
       ...['sqlite_damaged_during_upgrade','damaged_rollback_image',
