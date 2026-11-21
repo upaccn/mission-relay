@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.2.23`.
+- Current source package version: `1.2.24`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -77,7 +77,10 @@
   supports the current localized ProseMirror UI through one unique semantic
   contenteditable textbox and one unique composer-form submit control. This is
   locale-independent; ambiguous or multiple editors/buttons still fail
-  closed. Conversation binding and the one-shot Send reservation are unchanged.
+  closed. Accessible transcript identity recognizes both English
+  `You said:` / `ChatGPT said:` and Chinese `你说：` / `ChatGPT 说：`
+  headings, preserving exact user-prompt and assistant-answer SHA correlation.
+  Conversation binding and the one-shot Send reservation are unchanged.
 - The final Mission Relay marker remains a standalone exact ASCII final line.
   The shared parser tolerates at most four U+200B characters embedded inside
   that marker only, matching a reproduced ChatGPT transcript-rendering defect;

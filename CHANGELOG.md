@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.24 — 2026-11-21
+
+- Recognize Chinese ChatGPT transcript headings `你说：` and `ChatGPT 说：`
+  alongside the English accessible headings, preserving exact prompt and
+  assistant-answer SHA correlation in localized UI.
+- Extend the localized browser-controller regression through a complete
+  single-Send/observed-answer flow, including the ProseMirror composer and
+  language-independent form submit control.
+
 ## 1.2.23 — 2026-11-21
 
 - Support ChatGPT's localized ProseMirror composer through a unique semantic

@@ -63,8 +63,10 @@ test('accessible ChatGPT snapshot separates generated file cards from the final 
   const composer={count:async()=>1,isVisible:async()=>true};
   const page={url:()=>url,
     locator:(selector:string)=>selector.includes('prompt-textarea')?composer:empty,
-    getByRole:(role:string,options:{name?:string})=>role==='heading'&&
-      (options.name==='ChatGPT said:'||options.name==='You said:')?heading:empty,
+    getByRole:(role:string,options:{name?:string|RegExp})=>role==='heading'&&
+      (options.name instanceof RegExp
+        ?['ChatGPT said:','ChatGPT 说：','You said:','你说：'].some(x=>options.name!.test(x))
+        :options.name==='ChatGPT said:'||options.name==='You said:')?heading:empty,
   } as unknown as Page;
   const snapshot=await inspectChatPage(page,url);
   assert.equal(snapshot.assistantCount,1);
@@ -231,6 +233,11 @@ test('ChatGPT accessible user transcript decorations are excluded from prompt id
   assert.notEqual(canonicalVisibleUserPrompt(`${submitted}\nShow less\nSubsequent human text`,true),submitted);
   assert.notEqual(canonicalVisibleUserPrompt(`You said:\n${submitted}\nAdditional human edit\n…\nShow more`,true),submitted);
   assert.notEqual(canonicalVisibleUserPrompt(`You said:\n${submitted}\nShow something else`,true),submitted);
+  const localized=`你说：\n${submitted}\n…\nShow more`;
+  assert.equal(canonicalVisibleUserPrompt(localized,true),submitted,
+    'The Chinese accessible heading is UI chrome, not part of the owner prompt');
+  assert.equal(createHash('sha256').update(canonicalVisibleUserPrompt(localized,true)).digest('hex'),
+    createHash('sha256').update(submitted).digest('hex'));
 });
 
 test('inline-link DOM wraps do not change exact original user-prompt SHA or strip real line breaks',async()=>{
@@ -796,6 +803,7 @@ class SyntheticChatPage {
 }
 
 class AccessibleChatPage extends SyntheticChatPage {
+  locale:'en'|'zh'='en';
   override locator(selector:string):any {
     // The current ChatGPT UI has accessible headings and a named textbox,
     // not data-message-author-role or #prompt-textarea.
@@ -805,14 +813,20 @@ class AccessibleChatPage extends SyntheticChatPage {
     return super.locator(selector);
   }
   override getByRole(role:string,options:{name:string|RegExp}):any {
-    if(role==='heading' && (options.name==='ChatGPT said:'||options.name==='You said:')) {
-      const isAssistant=options.name==='ChatGPT said:';
+    const assistantLabel=this.locale==='zh'?'ChatGPT 说：':'ChatGPT said:';
+    const userLabel=this.locale==='zh'?'你说：':'You said:';
+    const assistantMatch=options.name instanceof RegExp
+      ?options.name.test(assistantLabel):options.name===assistantLabel;
+    const userMatch=options.name instanceof RegExp
+      ?options.name.test(userLabel):options.name===userLabel;
+    if(role==='heading' && (assistantMatch||userMatch)) {
+      const isAssistant=assistantMatch;
       const target:any={
         count:async()=>1+this.sends,
         last:()=>target,
         locator:(_selector:string)=>({innerText:async()=>isAssistant
-          ? 'ChatGPT said:\n'+(this.sends?this.reply:'Previous answer')
-          : 'You said:\n'+this.prompt,
+          ? assistantLabel+'\n'+(this.sends?this.reply:'Previous answer')
+          : userLabel+'\n'+this.prompt,
           getAttribute:async(name:string)=>isAssistant&&
             name==='data-content-search-unit-key'? 'assistant-turn-'+this.sends:null}),
       };
@@ -826,6 +840,7 @@ class AccessibleChatPage extends SyntheticChatPage {
 }
 
 class LocalizedComposerChatPage extends AccessibleChatPage {
+  constructor(){super();this.locale='zh';}
   override locator(selector:string):any {
     if(selector==='[role="textbox"][contenteditable="true"]')
       return SyntheticChatPage.prototype.locator.call(this,'prompt-textarea');
@@ -845,7 +860,10 @@ class FlakyAssistantHeadingPage extends AccessibleChatPage {
   constructor(remainingTimeouts:number){super();this.remainingTimeouts=remainingTimeouts;}
   override getByRole(role:string,options:{name:string|RegExp}):any {
     const original=super.getByRole(role,options);
-    if(role!=='heading'||options.name!=='ChatGPT said:')return original;
+    const assistantLabel=this.locale==='zh'?'ChatGPT 说：':'ChatGPT said:';
+    const assistantMatch=options.name instanceof RegExp
+      ?options.name.test(assistantLabel):options.name===assistantLabel;
+    if(role!=='heading'||!assistantMatch)return original;
     const last=original.last();
     return {...original,last:()=>({...last,locator:(selector:string)=>{
       const node=last.locator(selector);
@@ -1063,7 +1081,11 @@ test('Connection interrupted is a waiting state, not a final reply or Retry trig
 class VirtualizedChatPage extends AccessibleChatPage {
   override getByRole(role:string,options:{name:string|RegExp}):any {
     const locator=super.getByRole(role,options);
-    if(role==='heading' && (options.name==='You said:'||options.name==='ChatGPT said:'))
+    const labels=this.locale==='zh'?['你说：','ChatGPT 说：']:['You said:','ChatGPT said:'];
+    const headingMatch=options.name instanceof RegExp
+      ?labels.some(label=>options.name instanceof RegExp&&options.name.test(label))
+      :labels.includes(options.name);
+    if(role==='heading' && headingMatch)
       return {...locator,count:async()=>this.sends?3:5};
     return locator;
   }
@@ -1072,12 +1094,15 @@ class VirtualizedChatPage extends AccessibleChatPage {
 class MismatchedChatPage extends AccessibleChatPage {
   override getByRole(role:string,options:{name:string|RegExp}):any {
     const locator=super.getByRole(role,options);
-    if(role==='heading' && options.name==='You said:') {
+    const userLabel=this.locale==='zh'?'你说：':'You said:';
+    const userMatch=options.name instanceof RegExp
+      ?options.name.test(userLabel):options.name===userLabel;
+    if(role==='heading' && userMatch) {
       const mismatch:any={
         count:()=>locator.count(),
         last:()=>mismatch,
         locator:(_selector:string)=>({innerText:async()=>
-          'You said:\nUnrelated later user message, not the authorized prompt'}),
+          userLabel+'\nUnrelated later user message, not the authorized prompt'}),
       };
       return mismatch;
     }
@@ -1091,15 +1116,18 @@ class StalePreviousAnswerPage extends AccessibleChatPage {
   assistantReads=0;
   override getByRole(role:string,options:{name:string|RegExp}):any {
     const original=super.getByRole(role,options);
-    if(role!=='heading'||options.name!=='ChatGPT said:')return original;
+    const assistantLabel=this.locale==='zh'?'ChatGPT 说：':'ChatGPT said:';
+    const assistantMatch=options.name instanceof RegExp
+      ?options.name.test(assistantLabel):options.name===assistantLabel;
+    if(role!=='heading'||!assistantMatch)return original;
     const last=original.last();
     return {...original,last:()=>({...last,locator:(selector:string)=>{
       const node=last.locator(selector);
       return {...node,
         innerText:async()=>{
           this.assistantReads++;
-          return this.assistantReads===2?'ChatGPT said:\n':
-            'ChatGPT said:\nPrevious answer\n[MISSION_RELAY:NEXT]';
+          return this.assistantReads===2?assistantLabel+'\n':
+            assistantLabel+'\nPrevious answer\n[MISSION_RELAY:NEXT]';
         },
         getAttribute:async(name:string)=>name==='data-content-search-unit-key'
           ?'fallback-turn-1:80:assistant':null,
@@ -2005,7 +2033,7 @@ test('Current ChatGPT accessible headings and Ask ChatGPT textbox work without l
   }finally{f.cleanup();}
 });
 
-test('localized ProseMirror textbox and form submit control work without English labels',async()=>{
+test('localized Chinese transcript headings, ProseMirror textbox and form submit control work without English labels',async()=>{
   const f=fixture();try{
     const fake=new LocalizedComposerChatPage(),page=fake as unknown as Page;
     const before=await inspectChatPage(page,URL);

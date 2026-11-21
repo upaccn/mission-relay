@@ -27,8 +27,12 @@ export function stripVerifiedFileCardTail(
 }
 
 /** ChatGPT UI has multiple DOM variants: legacy message attributes and accessible turn headings. */
-function assistantHeadings(page:Page) { return page.getByRole('heading',{name:'ChatGPT said:',exact:true}); }
-function userHeadings(page:Page) { return page.getByRole('heading',{name:'You said:',exact:true}); }
+function assistantHeadings(page:Page) {
+  return page.getByRole('heading',{name:/^(?:ChatGPT said:|ChatGPT 说[:：])$/u});
+}
+function userHeadings(page:Page) {
+  return page.getByRole('heading',{name:/^(?:You said:|你说[:：])$/u});
+}
 async function composerLocator(page:Page) {
   const legacy=page.locator(COMPOSER_SELECTOR);
   if(await legacy.count()===1) return legacy;
@@ -111,7 +115,7 @@ async function sendLocator(page:Page) {
  * prompt bytes. Strip only these exact observed UI decorations; other text
  * differences must remain a hash mismatch and fail closed. */
 export function canonicalVisibleUserPrompt(text:string,headingWrapper:boolean):string {
-  const withoutHeader=headingWrapper?text.replace(/^You said:\s*/,''):text;
+  const withoutHeader=headingWrapper?text.replace(/^(?:You said:|你说[:：])\s*/u,''):text;
   return withoutHeader
     .replace(/\n(?:…|\.\.\.)\s*\nShow more\s*$/u,'')
     // Expanded long prompts expose a Show less control inside the same
@@ -364,7 +368,7 @@ export async function inspectChatPage(page:Page,expectedUrl:string):Promise<Chat
   let lastAssistant=count?legacyCount
     ? await assistant.last().innerText({timeout:5000})
     : (await assistantHeadings(page).last().locator('xpath=..').innerText({timeout:5000}))
-      .replace(/^ChatGPT said:\s*/,'')
+      .replace(/^(?:ChatGPT said:|ChatGPT 说[:：])\s*/u,'')
     :'';
   // ChatGPT can produce identical text in consecutive assistant turns. The
   // accessible transcript exposes an identity for each message; do not use
