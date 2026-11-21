@@ -825,6 +825,20 @@ class AccessibleChatPage extends SyntheticChatPage {
   }
 }
 
+class LocalizedComposerChatPage extends AccessibleChatPage {
+  override locator(selector:string):any {
+    if(selector==='[role="textbox"][contenteditable="true"]')
+      return SyntheticChatPage.prototype.locator.call(this,'prompt-textarea');
+    if(selector==='form button[type="submit"]')
+      return SyntheticChatPage.prototype.locator.call(this,'send-button');
+    return super.locator(selector);
+  }
+  override getByRole(role:string,options:{name:string|RegExp}):any {
+    if(role==='textbox')return SyntheticChatPage.prototype.locator.call(this,'not-present');
+    return super.getByRole(role,options);
+  }
+}
+
 class FlakyAssistantHeadingPage extends AccessibleChatPage {
   remainingTimeouts:number;
   timeoutReads=0;
@@ -1988,6 +2002,21 @@ test('Current ChatGPT accessible headings and Ask ChatGPT textbox work without l
     assert.equal(done.state,'PAUSED');
     assert.equal(done.turnsObserved[0]?.flowSignal,'DONE');
     assert.equal(done.turnsObserved[0]?.turnCount,1);
+  }finally{f.cleanup();}
+});
+
+test('localized ProseMirror textbox and form submit control work without English labels',async()=>{
+  const f=fixture();try{
+    const fake=new LocalizedComposerChatPage(),page=fake as unknown as Page;
+    const before=await inspectChatPage(page,URL);
+    assert.equal(before.composerReady,true,
+      'A unique role=textbox contenteditable composer is locale-independent');
+    const done=await driveChatConversation({store:f.store,missionId:f.linked.id,
+      revision:f.linked.version,requestPrefix:'localized-composer',turns:1,
+      page,url:URL,timeoutMs:10000});
+    assert.equal(fake.sends,1,'The localized form submit control is clicked exactly once');
+    assert.equal(done.state,'PAUSED');
+    assert.equal(done.turnsObserved[0]?.flowSignal,'DONE');
   }finally{f.cleanup();}
 });
 

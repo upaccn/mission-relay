@@ -32,6 +32,12 @@ function userHeadings(page:Page) { return page.getByRole('heading',{name:'You sa
 async function composerLocator(page:Page) {
   const legacy=page.locator(COMPOSER_SELECTOR);
   if(await legacy.count()===1) return legacy;
+  // ChatGPT's localized ProseMirror composer may expose only its semantic
+  // textbox role, without the legacy prompt-textarea id/test id or English
+  // accessible name. Require one unique contenteditable textbox; never guess
+  // between multiple editors.
+  const editable=page.locator('[role="textbox"][contenteditable="true"]');
+  if(await editable.count()===1) return editable;
   return page.getByRole('textbox',{name:'Ask ChatGPT',exact:true});
 }
 /** The native maximum-length action carries the exact unsent original
@@ -92,6 +98,11 @@ export async function clickNativePrefilledSendOnce(page:Page,promptSha256:string
 async function sendLocator(page:Page) {
   const legacy=page.locator(SEND_SELECTOR);
   if(await legacy.count()) return legacy.first();
+  // The current localized ChatGPT UI renders its Send action as the unique
+  // submit button in the composer form (for example aria-label="发送"). This
+  // structural fallback is language-independent and remains single-target.
+  const submit=page.locator('form button[type="submit"]');
+  if(await submit.count()===1) return submit;
   return page.getByRole('button',{name:/^Send(?: prompt| message)?$/i}).first();
 }
 

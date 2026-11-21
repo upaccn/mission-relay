@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.23 — 2026-11-21
+
+- Support ChatGPT's localized ProseMirror composer through a unique semantic
+  contenteditable textbox and the unique composer-form submit control, while
+  retaining legacy selectors as the preferred path. The existing exact-chat
+  binding and durable at-most-once Send reservation are unchanged.
+- Add an end-to-end browser-controller regression using Chinese accessible
+  labels and no legacy prompt/send selectors.
+
 ## 1.2.22 — 2026-11-20
 
 - Run the existing Windows production build stages directly through the exact

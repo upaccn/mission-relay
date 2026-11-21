@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.2.22`.
+- Current source package version: `1.2.23`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -73,6 +73,11 @@
   Owner pauses defer the click; recovery of a stopped uncertain request is
   revision-gated and owner-authorized. A complete answer is independently
   correlated before PI proceeds, even when an earlier UI Retry was clicked.
+- The ChatGPT browser adapter prefers established prompt/send selectors, then
+  supports the current localized ProseMirror UI through one unique semantic
+  contenteditable textbox and one unique composer-form submit control. This is
+  locale-independent; ambiguous or multiple editors/buttons still fail
+  closed. Conversation binding and the one-shot Send reservation are unchanged.
 - The final Mission Relay marker remains a standalone exact ASCII final line.
   The shared parser tolerates at most four U+200B characters embedded inside
   that marker only, matching a reproduced ChatGPT transcript-rendering defect;
