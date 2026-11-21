@@ -238,6 +238,20 @@ test('ChatGPT accessible user transcript decorations are excluded from prompt id
     'The Chinese accessible heading is UI chrome, not part of the owner prompt');
   assert.equal(createHash('sha256').update(canonicalVisibleUserPrompt(localized,true)).digest('hex'),
     createHash('sha256').update(submitted).digest('hex'));
+  const chineseCollapsed=`你说：\n${submitted}\n…\n显示更多`;
+  const chineseExpanded=`你说：\n${submitted}\n收起`;
+  for(const visible of [chineseCollapsed,chineseExpanded,
+    `你说：\n${submitted}\n显示更少`]){
+    assert.equal(canonicalVisibleUserPrompt(visible,true),submitted);
+    assert.equal(createHash('sha256').update(canonicalVisibleUserPrompt(visible,true)).digest('hex'),
+      createHash('sha256').update(submitted).digest('hex'));
+  }
+  // The original request must still be rejected when a collapsed excerpt
+  // omits authored content. Removing UI decoration never reconstructs it.
+  assert.notEqual(canonicalVisibleUserPrompt(
+    `你说：\n${submitted.slice(0,18)}\n…\n显示更多`,true),submitted);
+  assert.notEqual(canonicalVisibleUserPrompt(
+    `你说：\n${submitted}\n收起\nUnexpected later message`,true),submitted);
 });
 
 test('inline-link DOM wraps do not change exact original user-prompt SHA or strip real line breaks',async()=>{

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.2.25 — 2026-11-21
+
+- Fix Chinese long-message controls `显示更多`, `收起` and
+  `显示更少` in exact ChatGPT prompt reconstruction. A live 2026-11-21
+  Chinese session showed a completed first-turn reply while the deployed
+  English-only parser treated the transcript as empty; the existing pending
+  request is preserved, not replayed.
+- Keep matching conservative: stripping an exact UI suffix never authorizes
+  an incomplete collapsed prompt, and no Send, Retry, SQLite or scheduler
+  semantics change.
+
 ## 1.2.24 — 2026-11-21
 
 - Recognize Chinese ChatGPT transcript headings `你说：` and `ChatGPT 说：`

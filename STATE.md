@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.2.24`.
+- Current source package version: `1.2.25`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -80,6 +80,9 @@
   closed. Accessible transcript identity recognizes both English
   `You said:` / `ChatGPT said:` and Chinese `你说：` / `ChatGPT 说：`
   headings, preserving exact user-prompt and assistant-answer SHA correlation.
+  Chinese `显示更多`, `收起` and `显示更少` controls are removed
+  only as anchored transcript decorations. A collapsed excerpt that omits
+  authored prompt text still cannot match the reserved complete prompt SHA.
   Conversation binding and the one-shot Send reservation are unchanged.
 - The final Mission Relay marker remains a standalone exact ASCII final line.
   The shared parser tolerates at most four U+200B characters embedded inside

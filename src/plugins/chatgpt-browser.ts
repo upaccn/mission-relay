@@ -112,15 +112,15 @@ async function sendLocator(page:Page) {
 
 /** Accessible ChatGPT transcript wrappers can put You said: and Show more
  * controls into the parent heading's innerText. They are NOT user-authored
- * prompt bytes. Strip only these exact observed UI decorations; other text
+ * prompt bytes. Strip only these exact English/Chinese UI decorations; other text
  * differences must remain a hash mismatch and fail closed. */
 export function canonicalVisibleUserPrompt(text:string,headingWrapper:boolean):string {
   const withoutHeader=headingWrapper?text.replace(/^(?:You said:|你说[:：])\s*/u,''):text;
   return withoutHeader
-    .replace(/\n(?:…|\.\.\.)\s*\nShow more\s*$/u,'')
-    // Expanded long prompts expose a Show less control inside the same
+    .replace(/\n(?:…|\.\.\.)\s*\n(?:Show more|显示更多)\s*$/u,'')
+    // Expanded long prompts expose a Show less / 收起 control inside the same
     // heading wrapper. It is UI chrome, not another user-authored sentence.
-    .replace(/\nShow less\s*$/u,'').trim();
+    .replace(/\n(?:Show less|收起|显示更少)\s*$/u,'').trim();
 }
 
 /** ChatGPT renders user-authored newlines as <br>, but its inline-link
