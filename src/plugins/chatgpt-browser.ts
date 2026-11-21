@@ -33,15 +33,33 @@ function assistantHeadings(page:Page) {
 function userHeadings(page:Page) {
   return page.getByRole('heading',{name:/^(?:You said:|你说[:：])$/u});
 }
+/** ChatGPT can mount an invisible home composer alongside the visible thread
+ * composer. Choose by actual visibility, not DOM count or localized labels.
+ * Ambiguous visible candidates fail closed; never pick the first by accident. */
+async function singleVisible<T extends ReturnType<Page['locator']>>(candidates:T):Promise<T|null> {
+  const count=await candidates.count();
+  if(count===1)return await candidates.isVisible()?candidates:null;
+  if(count>8)return null;
+  let visible:T|null=null;
+  for(let i=0;i<count;i++){
+    const candidate=candidates.nth(i) as T;
+    if(!await candidate.isVisible())continue;
+    if(visible)return null;
+    visible=candidate;
+  }
+  return visible;
+}
 async function composerLocator(page:Page) {
   const legacy=page.locator(COMPOSER_SELECTOR);
-  if(await legacy.count()===1) return legacy;
-  // ChatGPT's localized ProseMirror composer may expose only its semantic
-  // textbox role, without the legacy prompt-textarea id/test id or English
-  // accessible name. Require one unique contenteditable textbox; never guess
-  // between multiple editors.
+  const visibleLegacy=await singleVisible(legacy);
+  if(visibleLegacy)return visibleLegacy;
+  // The localized ProseMirror composer may lack the legacy id and English
+  // accessible name. The hidden home/editor instance must not make the
+  // unique visible thread textbox appear ambiguous.
   const editable=page.locator('[role="textbox"][contenteditable="true"]');
-  if(await editable.count()===1) return editable;
+  const visibleEditable=await singleVisible(editable);
+  if(visibleEditable)return visibleEditable;
+  if(await editable.count())return editable; // multiple visible -> no Send
   return page.getByRole('textbox',{name:'Ask ChatGPT',exact:true});
 }
 /** The native maximum-length action carries the exact unsent original
@@ -101,12 +119,15 @@ export async function clickNativePrefilledSendOnce(page:Page,promptSha256:string
 }
 async function sendLocator(page:Page) {
   const legacy=page.locator(SEND_SELECTOR);
-  if(await legacy.count()) return legacy.first();
+  const visibleLegacy=await singleVisible(legacy);
+  if(visibleLegacy)return visibleLegacy;
   // The current localized ChatGPT UI renders its Send action as the unique
   // submit button in the composer form (for example aria-label="发送"). This
   // structural fallback is language-independent and remains single-target.
   const submit=page.locator('form button[type="submit"]');
-  if(await submit.count()===1) return submit;
+  const visibleSubmit=await singleVisible(submit);
+  if(visibleSubmit)return visibleSubmit;
+  if(await submit.count())return submit; // ambiguous buttons -> no Send
   return page.getByRole('button',{name:/^Send(?: prompt| message)?$/i}).first();
 }
 

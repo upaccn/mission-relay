@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
 import { statSync, readFileSync } from 'node:fs';
 import { Engine } from './core/engine.js';
 import { Store,PI_SUCCESSOR_CHECKPOINT_MISMATCH,
-  PI_CLOSED_PAGE_READ_ERROR } from './core/store.js';
+  PI_CLOSED_PAGE_READ_ERROR,PI_NEXT_SOURCE_PREFLIGHT_ERROR } from './core/store.js';
 import {GoalLedger} from './core/goal-store.js';
 import {GoalReleaseGate,inspectReleaseProbeOutcome} from './core/goal-release.js';
 import {inspectSoftwareReleaseCandidate} from './core/software-release.js';
@@ -160,7 +160,7 @@ Commands:
          Release a settled owner-paused PI checkpoint for independent controller re-readback;
          never change it to READY or replay its previous Send
   pi-recheck-browser <id> --revision <n> --acknowledge-side-effects
-         Revalidate an exact legacy closed-page interruption after two independent
+         Revalidate a settled pre-Send closed-page / visible-composer interruption after two independent
          SHA-matched browser reads. Never repeats an observed Send
   pi-recheck-capacity <id> --revision <n> --acknowledge-side-effects
          Double-check the original settled reply after a known PI global-task busy error; no Send
@@ -1071,14 +1071,14 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
         (capacity&&!m.lastError?.includes(timeout
           ?'Model inference timed out after 120 seconds'
           :'Pi maintenance or a global task is active'))||
-        (browser&&(m.lastError!==PI_CLOSED_PAGE_READ_ERROR||
+        (browser&&(![PI_CLOSED_PAGE_READ_ERROR,PI_NEXT_SOURCE_PREFLIGHT_ERROR].includes(m.lastError??'')||
           store.piPlan(id)?.round!==m.turnCount||
           !['NEXT','HANDOFF'].includes(store.piPlan(id)?.action??'')))||
         !receipt||!['observed','reconciled'].includes(receipt.status)||
         !url||!browserId||(!capacity&&!browser&&!store.piChainParent(id))||
         !store.hasVerifiedPiBrowserCheckpoint(id))
         throw new Error(browser
-          ?'No eligible settled closed-page interruption at this revision'
+          ?'No eligible settled pre-Send browser interruption at this revision'
           :'No eligible settled successor false-mismatch interruption at this revision');
       const session=await withReadOnlyDeadline(connectChatPage(url,{browserId}),
         30_000,late=>late.close());
@@ -1107,7 +1107,7 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       result={missionId:id,state:repaired.state,revision:repaired.version,
         round:repaired.turnCount,stopRequested:repaired.stopRequested,
         assistantSha256:independentlyRead.assistantSha256,
-        note:browser?'Exact closed-page interruption cleared after two independent browser reads; no Send, original Worker must independently recheck before NEXT.':
+        note:browser?'Exact settled pre-Send browser interruption cleared after two independent browser reads; no Send, original Worker must independently recheck before NEXT.':
           capacity?'Original PI inference interruption revalidated and cleared without Send or PI decision; original Worker must independently reread the settled answer.':
           'One false parent-vs-successor checkpoint interruption cleared. No Send, owner pause release or PI decision. Original Worker must independently re-read the live browser.'};
     }

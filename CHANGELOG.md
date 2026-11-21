@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.26 — 2026-11-21
+
+- Handle ChatGPT's simultaneous hidden home composer and visible conversation
+  composer by requiring exactly one **visible** editable and exactly one
+  visible submit control. Two visible editors or controls remain ambiguous and
+  cannot reserve or send a request. Live GMK DOM inspection demonstrated the
+  hidden-home/visible-thread case in a settled NetBox NEXT checkpoint.
+- Allow the existing revision-gated `pi-recheck-browser` read-only operator
+  recovery for the exact previously persisted pre-Send mismatch interruption,
+  after two matching user/assistant SHA-256 reads and the original PI decision,
+  browser binding, repository grant and at-most-once receipt are verified.
+  No automatic historical replay, SQLite migration or parallel Worker.
+
 ## 1.2.25 — 2026-11-21
 
 - Fix Chinese long-message controls `显示更多`, `收起` and

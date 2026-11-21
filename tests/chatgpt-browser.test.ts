@@ -868,6 +868,23 @@ class LocalizedComposerChatPage extends AccessibleChatPage {
   }
 }
 
+/** Current Chrome can retain the hidden home editor while a distinct
+ * visible thread editor is mounted. Only the visible one may be filled. */
+class DualComposerChatPage extends LocalizedComposerChatPage {
+  constructor(readonly bothVisible=false){super();}
+  override locator(selector:string):any {
+    if(selector==='[role="textbox"][contenteditable="true"]'||
+      selector==='form button[type="submit"]'){
+      const active=super.locator(selector);
+      const hidden={...active,isVisible:async()=>this.bothVisible,
+        fill:async()=>{throw new Error('Hidden editor must not be filled');},
+        click:async()=>{throw new Error('Hidden Send must not be clicked');}};
+      return {count:async()=>2,nth:(index:number)=>index===0?hidden:active};
+    }
+    return super.locator(selector);
+  }
+}
+
 class FlakyAssistantHeadingPage extends AccessibleChatPage {
   remainingTimeouts:number;
   timeoutReads=0;
@@ -2059,6 +2076,31 @@ test('localized Chinese transcript headings, ProseMirror textbox and form submit
     assert.equal(fake.sends,1,'The localized form submit control is clicked exactly once');
     assert.equal(done.state,'PAUSED');
     assert.equal(done.turnsObserved[0]?.flowSignal,'DONE');
+  }finally{f.cleanup();}
+});
+
+test('hidden duplicate home composer does not block the unique visible thread and never receives a Send',async()=>{
+  const f=fixture();try{
+    const fake=new DualComposerChatPage(),page=fake as unknown as Page;
+    const initial=await inspectChatPage(page,URL);
+    assert.equal(initial.composerReady,true);
+    const done=await driveChatConversation({store:f.store,missionId:f.linked.id,
+      revision:f.linked.version,requestPrefix:'visible-thread',turns:1,
+      page,url:URL,timeoutMs:10000});
+    assert.equal(fake.sends,1);
+    assert.equal(done.turnsObserved[0]?.flowSignal,'DONE');
+  }finally{f.cleanup();}
+});
+
+test('two visible composer editors are ambiguous and cannot reserve or send',async()=>{
+  const f=fixture();try{
+    const fake=new DualComposerChatPage(true),page=fake as unknown as Page;
+    assert.equal((await inspectChatPage(page,URL)).composerReady,false);
+    await assert.rejects(driveChatConversation({store:f.store,missionId:f.linked.id,
+      revision:f.linked.version,requestPrefix:'ambiguous-editor',turns:1,
+      page,url:URL,timeoutMs:10000}),/ChatGPT tab is not ready|Source ChatGPT tab must be idle|composer/i);
+    assert.equal(fake.sends,0);
+    assert.equal(f.store.events(f.linked.id).filter(e=>e.type==='chatgpt.browser_reserved').length,0);
   }finally{f.cleanup();}
 });
 

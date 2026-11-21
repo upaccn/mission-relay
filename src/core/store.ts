@@ -59,6 +59,11 @@ export const PI_SUCCESSOR_CHECKPOINT_MISMATCH=
  * the SQLite receipt and exact PI checkpoint must prove no new reservation. */
 export const PI_CLOSED_PAGE_READ_ERROR=
   'locator.count: Target page, context or browser has been closed';
+/** Historic pre-Send guard may report this generic error when the visible
+ * reply and original hashes are fine but the UI mounted a hidden duplicate
+ * editor. Only a two-read operator checkpoint validation may clear it. */
+export const PI_NEXT_SOURCE_PREFLIGHT_ERROR=
+  'PI next browser Send refused: visible ChatGPT history differs from the last observed receipt';
 /** Older in-flight observers could throw when a cooperative pause denied UI Retry. */
 export const PAUSED_DELIVERY_RETRY_ERROR=
   'Delivery Retry requires the original active or timed-out request';
@@ -1148,7 +1153,7 @@ export class Store {
       if(m.version!==revision||m.state!=='PAUSED'||m.stopRequested||
         m.ownerPid!==null||m.turnCount<1||
         missionTurnLimitReached(m.maxTurns,m.turnCount)||
-        m.lastError!==PI_CLOSED_PAGE_READ_ERROR||
+        ![PI_CLOSED_PAGE_READ_ERROR,PI_NEXT_SOURCE_PREFLIGHT_ERROR].includes(m.lastError??'')||
         this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
         this.channelDrainRequested('telegram')||!this.goalContinuationEligible(id)||
         !receipt||receipt.status!=='observed'||

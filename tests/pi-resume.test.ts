@@ -6,7 +6,7 @@ import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Engine} from '../src/core/engine.js';
-import {Store,PI_CLOSED_PAGE_READ_ERROR} from '../src/core/store.js';
+import {Store,PI_CLOSED_PAGE_READ_ERROR,PI_NEXT_SOURCE_PREFLIGHT_ERROR} from '../src/core/store.js';
 import {revokeBuildRepository} from '../src/core/build-scopes.js';
 import type {AgentAdapter} from '../src/core/types.js';
 
@@ -294,6 +294,36 @@ test('legacy closed-page NEXT interruption requires exact settled receipt and is
       fixed.version,input),/exact settled NEXT/);
     const originalReadOnlyErrors=f.store.events(f.id).filter(e=>e.type==='pi.autopilot_interrupted');
     assert.equal(originalReadOnlyErrors.length,1,'historic interrupt is never erased');
+  }finally{f.cleanup();}
+});
+
+test('duplicated invisible composer NEXT interruption can be revalidated once without repeating the settled Send',()=>{
+  const f=fixture();
+  try{
+    const settled=f.finish(),receipt=f.store.chatBrowserTurn(f.id)!;
+    f.store.commitPiPlan(f.id,sha(answer),[],{
+      action:'NEXT',summary:'Original PI review',nextPrompt:'Execute approved work',
+    });
+    const current=f.store.get(f.id);
+    const paused=f.store.update(f.id,current.version,
+      {lastError:PI_NEXT_SOURCE_PREFLIGHT_ERROR},'pi.autopilot_interrupted',
+      {reason:PI_NEXT_SOURCE_PREFLIGHT_ERROR});
+    const input={requestPromptSha256:receipt.promptSha256,
+      assistantSha256:receipt.assistantSha256!};
+    assert.throws(()=>f.store.clearSettledPiBrowserReadInterruption(f.id,
+      paused.version,{...input,requestPromptSha256:'f'.repeat(64)}),/exact settled NEXT/);
+    const recovered=f.store.clearSettledPiBrowserReadInterruption(f.id,
+      paused.version,input);
+    assert.equal(recovered.state,'PAUSED');
+    assert.equal(recovered.stopRequested,false);
+    assert.equal(recovered.lastError,null);
+    assert.equal(recovered.turnCount,settled.turnCount);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='chatgpt.browser_observed').length,1);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='pi.decision').length,1);
+    assert.equal(f.store.events(f.id).filter(e=>e.type==='pi.browser_checkpoint_revalidated').length,1);
+    assert.throws(()=>f.store.clearSettledPiBrowserReadInterruption(f.id,
+      recovered.version,input),/exact settled NEXT/);
   }finally{f.cleanup();}
 });
 

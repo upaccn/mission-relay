@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.2.25`.
+- Current source package version: `1.2.26`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -84,6 +84,12 @@
   only as anchored transcript decorations. A collapsed excerpt that omits
   authored prompt text still cannot match the reserved complete prompt SHA.
   Conversation binding and the one-shot Send reservation are unchanged.
+  When ChatGPT mounts a hidden home composer alongside the visible thread
+  composer, only the single visible editable/send control is eligible.
+  Multiple visible controls still fail closed. A stopped, settled NEXT
+  checkpoint with the historical pre-Send mismatch error may be revalidated
+  once via the existing two-read `pi-recheck-browser` operator path; no
+  existing Send or PI decision is replayed.
 - The final Mission Relay marker remains a standalone exact ASCII final line.
   The shared parser tolerates at most four U+200B characters embedded inside
   that marker only, matching a reproduced ChatGPT transcript-rendering defect;

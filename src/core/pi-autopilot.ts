@@ -1,6 +1,7 @@
 import type {Page} from 'playwriter';
 import {createHash} from 'node:crypto';
 import type {Store,PiPlan} from './store.js';
+import {PI_NEXT_SOURCE_PREFLIGHT_ERROR} from './store.js';
 import {SshPiPlanner,RetryablePiError,type PiPlanner} from './pi-planner.js';
 import {inspectChatPage,lastVisibleUserPromptSha256,chatTabTargetSha256} from '../plugins/chatgpt-browser.js';
 import {executeBrowserTurn,executeBrowserRollover,retireSupersededRelayTab,browserFreshTaskPrompt,browserGoalPlanningPrompt,
@@ -346,7 +347,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
         !store.hasVerifiedPiBrowserCheckpoint(missionId)||
         createHash('sha256').update(snapshot.lastAssistant).digest('hex')!==nextPlan!.responseSha256||
         userSha!==previous.promptSha256)
-        throw new Error('PI next browser Send refused: visible ChatGPT history differs from the last observed receipt');
+        throw new Error(PI_NEXT_SOURCE_PREFLIGHT_ERROR);
       // The source can change AGAIN after this read, while the rollover
       // prompt is being constructed. Recheck both exact hashes at the final
       // pre-reservation boundary, including for automatic 8→9 rotation.

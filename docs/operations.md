@@ -520,8 +520,10 @@ repair may restore an older `pi.autopilot_interrupted` event with `lastError`.
 **One-time legacy recovery on v1.2.14 or later:** After a verified idle,
 exact-SHA three-platform CI and approved GMK pull-only upgrade, inspect
 `pi-health`, `pi-evidence`, `browser-binding-health` and the current Mission
-revision. For the **exact** previously persisted closed-page error after an
-observed PI NEXT, the local operator may run:
+revision. For the **exact** previously persisted closed-page error or the
+pre-Send `PI next browser Send refused: visible ChatGPT history differs from the
+last observed receipt` error after an observed PI NEXT, the local operator
+may run:
 
 ```shell
 node dist/cli.js pi-recheck-browser <mission-id> --revision <live-revision> --acknowledge-side-effects
@@ -529,7 +531,9 @@ node dist/cli.js pi-recheck-browser <mission-id> --revision <live-revision> --ac
 
 The command reads the same connected, approved ChatGPT tab twice, compares
 the original full user/assistant SHA-256 digests and exact immutable PI
-event order, and clears only this one error. It cannot retry an original
+event order, and clears only this exact recorded interruption. A hidden
+home composer plus visible thread composer does not weaken prompt/answer
+matching. The command cannot retry an original
 message, fabricate a PI review, reset a Goal, lift an owner pause or issue
 any Send. The existing **single** enrolled Worker then independently rereads
 the same receipt. Do not use the generic `resume` or `pi-resume` command for
