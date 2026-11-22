@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.1 — 2026-11-22
+
+- Windows maintenance: the final verified drain release now retries the same
+  atomic check up to six times (3 s apart) when only the transport sample or
+  heartbeat window refused it, and reports the exact refusal reason. The
+  expected Worker PID, source SHA and attestation are unchanged across
+  attempts, so a retry can never admit a different Worker. Observed on GMK:
+  `ResetProjects` restarted the Worker within seconds and its first release
+  check was refused; the reset rolled back safely.
+
 ## 1.3.0 — 2026-11-22
 
 - **Goal-only executor.** Every task is a PI-controlled Goal executed by

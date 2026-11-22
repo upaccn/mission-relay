@@ -221,10 +221,19 @@ function Release-VerifiedChannelDrain([string]$drainId,[string]$sha,[int]$worker
     $releaseArgs = @($cli,'channel-drain-release-verified','--id',$drainId,
         '--expected-sha',$sha,'--expected-pid',([string]$workerPid),
         '--expected-attested-at',$attestedAt)
-    $null = & $node @releaseArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw 'Final atomic Worker/source/transport verification refused maintenance release'
+    # Each attempt is the same atomic, read-only-on-refusal check with the
+    # same expected PID/SHA/attestation, so a retry can never admit a
+    # different Worker. It only rides out a momentary transport sample (for
+    # example Telegram briefly rejecting getUpdates right after a restart).
+    $reason = ''
+    for ($attempt = 1; $attempt -le 6; $attempt++) {
+        $output = (& $node @releaseArgs 2>&1 | Out-String)
+        if ($LASTEXITCODE -eq 0) { return }
+        $reason = (($output.Trim() -split "`r?`n") | Select-Object -Last 1)
+        if ($reason -notmatch 'transport or pending work changed|transport proof expired') { break }
+        Start-Sleep -Seconds 3
     }
+    throw ('Final atomic Worker/source/transport verification refused maintenance release: ' + $reason)
 }
 
 function Assert-UpgradeTarget([string]$sha) {
