@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.2.27 — 2026-11-22
+
+- Stop re-executing passed work after a PI REPLAN. Production evidence: about a
+  third of 459 PI reviews (11-11 to 11-22) were spent on work-item keys that had
+  already passed in the same Goal, because every new plan started PENDING. A new
+  plan item whose key or exact acceptance obligation already PASSED is now
+  carried forward as PASSED (dependency order, original evidence references,
+  append-only `goal.work_carried_forward`). PI sees the latest outcome per key
+  across all plans instead of the last 20 rows.
+- Give the ChatGPT executor a bounded *Established context* section with PI
+  PASS summaries and still-open external blockers of the Goal, so it reuses
+  accepted results instead of re-auditing baselines. Raw prior answers stay out.
+- Add `/goal-continue <n|id> <what changed>` to continue a BLOCKED Goal after
+  its external condition is fixed, instead of opening a new Goal that re-plans
+  from scratch. No old Mission, receipt or stop flag is changed and no Send is
+  replayed. `/goal-status` for a blocked Goal shows the blocked packages and the
+  command.
+- Documentation: align the AGENTS existing-message Retry contract with the
+  code (one initial plus at most two existing-chat follow-ups), move completed
+  one-time procedures to `docs/operations-history.md`, remove version labels
+  from current runbook headings.
+
 ## 1.2.26 — 2026-11-21
 
 - Handle ChatGPT's simultaneous hidden home composer and visible conversation

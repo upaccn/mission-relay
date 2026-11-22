@@ -170,6 +170,9 @@ export function goalPlanPrompt(input:GoalPlanContext):string{
       `${x.status}: ${x.key} — ${x.title}`):['none']),
     'Do not recreate PASSED work; do not repeat BLOCKED capability searches without new concrete',
     'deployable evidence or an owner-approved changed requirement. Advance independent work.',
+    'Any item reusing a PASSED key, or an identical acceptance obligation, is recorded as already',
+    'PASSED automatically. Reuse an exact key only for the same obligation; plan no re-verification',
+    'of baselines, cost gates or features that already passed.',
     'Untrusted prior browser response:',
     limitAnswer(input.browserAnswer),
     ...controllerCheckpointPrompt(input.controllerCheckpoint),
@@ -300,6 +303,45 @@ function selectNextWork(ledger:GoalLedger,goalId:string,planId:string,source:str
   ledger.setWorkStatus(goalId,item.id,current.version,'IN_PROGRESS',[],`${prefix}:start`);
   return {action:'NEXT',nextPrompt:prompt,summary:`PI selected ${item.key}; ${items.length} planned work items`};
 }
+/** A REPLAN produces a fresh PENDING graph. Without this step every
+ * superseded PASS (baseline checks, cost gates, finished features) is
+ * re-executed in the next browser Send. Match an earlier PASSED item of the
+ * same Goal by its stable key or its exact acceptance obligation, in
+ * dependency order, so prerequisites stay honest. Returns carried keys. */
+function carryForwardPassedWork(ledger:GoalLedger,goalId:string,planId:string,
+  source:string):string[]{
+  const carried:string[]=[];
+  for(let progressed=true;progressed;){
+    progressed=false;
+    const graph=ledger.graph(goalId);
+    const earlier=graph.items.filter(x=>x.planId!==planId&&x.status==='PASSED');
+    if(!earlier.length)return carried;
+    for(const item of graph.items.filter(x=>x.planId===planId&&x.status==='PENDING')){
+      const deps=graph.dependencies.filter(d=>d.itemId===item.id);
+      if(!deps.every(d=>graph.items.find(w=>w.id===d.dependsOnId)?.status==='PASSED'))continue;
+      const obligation=workObligationKey(graph,item);
+      const match=earlier.filter(x=>x.key===item.key||workObligationKey(graph,x)===obligation)
+        .sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt))[0];
+      if(!match)continue;
+      ledger.carryForwardPassed(goalId,item.id,match.id,
+        `pi:${source.slice(0,36)}:${item.id.slice(0,24)}:carry`);
+      carried.push(item.key);progressed=true;break;
+    }
+  }
+  return carried;
+}
+/** Latest status per stable key across every plan of this Goal, so PI sees
+ * what already passed even after many REPLANs (not only the last 20 rows). */
+function priorOutcomes(graph:GoalGraph):{key:string;title:string;status:'PASSED'|'BLOCKED'}[]{
+  const latest=new Map<string,GoalWorkItem>();
+  for(const item of [...graph.items].sort((a,b)=>a.updatedAt.localeCompare(b.updatedAt)))
+    if(item.status==='PASSED'||item.status==='BLOCKED'){
+      const prior=latest.get(item.key);
+      if(prior?.status!=='PASSED'||item.status==='PASSED')latest.set(item.key,item);
+    }
+  return [...latest.values()].slice(-40).map(item=>({key:item.key,title:item.title,
+    status:item.status as 'PASSED'|'BLOCKED'}));
+}
 
 /** A Goal-bound PI round is a single existing Mission PI checkpoint.
  * All Goal writes and the authoritative PI NEXT/HANDOFF/BLOCKED commit share
@@ -357,10 +399,7 @@ export async function reviewGoalPiRound(input:{
   const context={objective:baseline.goal.objective,
     ownerAcceptance:store.get(missionId).acceptance,browserAnswer:input.lastAssistant,
     responseSha256,ownerDirectives,controllerCheckpoint:checkpoint,
-    priorWorkOutcomes:baseline.items.filter(item=>
-      item.status==='PASSED'||item.status==='BLOCKED').slice(-20).map(item=>({
-        key:item.key,title:item.title,status:item.status as 'PASSED'|'BLOCKED',
-      }))};
+    priorWorkOutcomes:priorOutcomes(baseline)};
   const proposed=!approved?await planner.proposeGoalPlan!(context):null;
   const obligation=active?workObligationKey(baseline,active):null;
   const equivalentIds=new Set(baseline.items.filter(item=>
@@ -433,6 +472,7 @@ export async function reviewGoalPiRound(input:{
       const goal=ledger.getGoal(goalId);
       ledger.setGoalStatus(goalId,goal.version,'ACTIVE',`pi:${responseSha256}:activate`);
       chosen=ledger.getPlan(goalId,plan.id);
+      carryForwardPassedWork(ledger,goalId,plan.id,responseSha256);
       next=selectNextWork(ledger,goalId,plan.id,responseSha256);
     }else if(reviewed&&active&&approved){
       const eventKey=`pi:${missionId.slice(0,18)}:${round}:${responseSha256.slice(0,26)}`;
@@ -482,7 +522,10 @@ export async function reviewGoalPiRound(input:{
         ledger.recordPiPlanReview(goalId,missionId,newPlan.id,round,responseSha256,
           `${eventKey}:plan-review`);
         chosen=ledger.getPlan(goalId,newPlan.id);
+        const carried=carryForwardPassedWork(ledger,goalId,newPlan.id,responseSha256);
         next=selectNextWork(ledger,goalId,newPlan.id,responseSha256);
+        if(carried.length)next={...next,
+          summary:`${next.summary}; carried forward PASSED: ${carried.join(', ')}`.slice(0,1000)};
       }else{
         ledger.setWorkStatus(goalId,active.id,active.version,'BLOCKED',[],
           `${eventKey}:blocked`);

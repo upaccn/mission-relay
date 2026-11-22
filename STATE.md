@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.2.26`.
+- Current source package version: `1.2.27`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -35,17 +35,37 @@
   that work BLOCKED and atomically select a different approved independent
   work package instead of terminating the Goal. All blocked release criteria
   remain unmet, and the Goal becomes BLOCKED when no independent work remains.
-  PI receives up to 20 recent persisted PASSED/BLOCKED outcomes and is directed
-  toward shipping code, UI, native and transaction evidence, not renamed
-  feasibility reports. This is delivery scheduling, never an acceptance waiver.
+  PI receives the latest PASSED/BLOCKED outcome per work-item key across all
+  of the Goal's plans (up to 40) and is directed toward shipping code, UI,
+  native and transaction evidence, not renamed feasibility reports. When PI
+  approves a REPLAN, any new PENDING item whose key or exact normalized
+  acceptance obligation matches an earlier PASSED item of the same Goal is
+  carried forward as PASSED (dependency order, original evidence references
+  plus `carried-from:<item>`, append-only `goal.work_carried_forward` event)
+  instead of being re-executed. This is delivery scheduling, never an
+  acceptance waiver: independent Goal release gates are unchanged.
+- Each Goal work prompt carries a bounded (~3000 characters) *Established
+  context* section: the latest PI-written PASS summary per passed key and the
+  recorded release condition of each still-BLOCKED key, labelled as
+  reference rather than authority. Raw prior assistant text is never included.
+- A BLOCKED Goal continues through the owner's `/goal-continue <n|id> <what
+  changed>`: one SQLite transaction supersedes the stopped plan, moves the Goal
+  to PAUSED and binds a fresh queued Mission (same repository and browser
+  profile) whose immutable acceptance records the owner note, blocked release
+  conditions and carried-forward PASSED work. Its first Send is the ordinary
+  read-only Goal discovery turn, rebuilt from the Mission row on recovery; the
+  next PI review approves a new plan and carries PASSED work forward. The old
+  Mission, its receipts and stop flag are untouched; a terminal (BLOCKED/DONE)
+  owner-paused root no longer counts as a live Goal controller.
 - New PI Missions are unbounded (`max_turns=0`); each ChatGPT conversation
   permits at most **8 observed Relay Sends**, then requires a distinct,
   verified conversation. Existing finite-limit Missions keep their stored
   historical successor rules without rewriting requests or audit records.
 - Each writable Goal requires an explicitly approved, non-overlapping
   `/goal-build --repo` source path, checked again on every reservation. The
-  PI adapter inherits the operator-managed default model/provider/effort and
-  remains tool-free; repository approval is not an OS sandbox.
+  PI adapter inherits the operator-managed default model/provider/effort,
+  including any host-side primary/fallback model routing, and remains
+  tool-free; repository approval is not an OS sandbox.
 - Exact structured PI exit-2 model timeout at 120 seconds and temporary
   global-task capacity refusals retry only PI inference with durable
   60-second-to-15-minute backoff after independently rereading the same

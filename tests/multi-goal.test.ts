@@ -547,3 +547,62 @@ test('owner pause survives SQLite restart and only explicit checkpoint resume cl
     assert.throws(()=>r.store.resumePiChain(m.id),/owner-paused/);
   }finally{r.close();}
 });
+
+test('/goal-continue reopens a BLOCKED Goal on the same graph with a fresh queued Mission, no replay',async()=>{
+  const r=multiRig();
+  const recover=async()=>{
+    await (r.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>})
+      .recoverObservedPiCheckpoint();
+    await r.idle();
+  };
+  try{
+    r.setUpdates([r.message(901,`/goal-build --repo ${REPO_A} Goal A: ship the feature`)]);
+    await r.bridge.pollOnce(0);
+    await recover();
+    await recover();
+    const ledger=new GoalLedger(r.store);
+    const goal=ledger.listGoals()[0]!;
+    const first=r.engine.list().find(m=>m.goal===goal.objective)!;
+    assert.equal(ledger.getGoal(goal.id).status,'BLOCKED');
+    assert.equal(r.store.piPlan(first.id)?.action,'BLOCKED');
+    const firstEvents=r.store.events(first.id).length,sendsBefore=r.sends.length;
+    r.setUpdates([r.message(902,'/goal-status 1')]);
+    await r.bridge.pollOnce(0);
+    assert.ok(r.replies.some(x=>x.includes('/goal-continue 1')));
+    r.setUpdates([r.message(903,'/goal-continue 1 Independent verification is now available')]);
+    await r.bridge.pollOnce(0);
+    assert.ok(r.replies.some(x=>x.includes('Goal continued')));
+    assert.equal(ledger.listGoals().length,1,'No new Goal is created');
+    assert.equal(ledger.getGoal(goal.id).status,'PAUSED');
+    const graph=ledger.graph(goal.id);
+    assert.ok(graph.plans.every(p=>p.status==='SUPERSEDED'));
+    assert.ok(graph.events.some(e=>e.type==='goal.owner_continued'));
+    const next=r.engine.list().find(m=>m.requestKey==='telegram-goal-continue-903')!;
+    assert.equal(next.state,'READY');
+    assert.equal(ledger.missionGoalId(next.id),goal.id);
+    assert.equal(next.workspace,REPO_A);
+    assert.match(next.acceptance.join('\n'),/Goal continuation authorized by the owner: Independent verification is now available/);
+    assert.match(next.acceptance.join('\n'),/Previously BLOCKED.*Independent real-world verification required/);
+    assert.equal(r.store.events(first.id).length,firstEvents,'Old Mission is untouched');
+    assert.equal(r.sends.length,sendsBefore,'Intake never sends');
+    // Duplicate Telegram delivery is idempotent; a non-BLOCKED Goal is refused.
+    r.setUpdates([r.message(903,'/goal-continue 1 Independent verification is now available'),
+      r.message(904,'/goal-continue 1 again')]);
+    await r.bridge.pollOnce(0);
+    assert.equal(r.engine.list().filter(m=>ledger.missionGoalId(m.id)===goal.id).length,2);
+    assert.ok(r.replies.some(x=>/only reopens a BLOCKED Goal/.test(x)));
+    await recover();
+    const continued=r.sends[sendsBefore]!;
+    assert.match(continued.prompt,/INITIAL READ-ONLY DISCOVERY/);
+    assert.match(continued.prompt,/Goal continuation authorized by the owner/);
+    assert.notEqual(continued.chat,r.store.chatLink(first.id),'A fresh conversation is used');
+    const work=r.sends[sendsBefore+1]!;
+    assert.match(work.prompt,/Work package: implementation/);
+    assert.equal(work.chat,continued.chat);
+    const after=ledger.graph(goal.id);
+    const approved=after.plans.filter(p=>p.status==='APPROVED');
+    assert.equal(approved.length,1,'PI approved one fresh plan for the same Goal');
+    assert.ok(after.items.some(x=>x.planId===approved[0]!.id&&x.key==='implementation'));
+    assert.equal(r.store.events(first.id).length,firstEvents,'Old Mission is still untouched');
+  }finally{await r.idle();r.close();}
+});

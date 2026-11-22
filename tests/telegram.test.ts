@@ -77,6 +77,7 @@ test('Telegram /help presents a short human-facing menu; rare commands remain di
     const advanced=f.transport.sent.at(-1)!;
     assert.match(advanced,/\/agent/);
     assert.match(advanced,/\/resume/);
+    assert.match(advanced,/\/goal-continue <n> <what changed>/);
     assert.equal(f.engine.list().length,1,'help must never start a Mission');
   }finally{f.cleanup();}
 });

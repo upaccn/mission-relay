@@ -94,6 +94,13 @@ Use `/list`, `/goals`, `/goal-status 2`, `/status 2`, `/pause 2` and `/resume 2`
 to distinguish and manage the numbered tasks without routine UUIDs.
 Resume only clears an explicit owner pause after its original request
 has settled and the checkpoint is independently verified.
+When a Goal is BLOCKED on an external condition (billing, account access,
+a missing tester) and that condition is fixed, send
+`/goal-continue 2 <what changed>` instead of a new `/goal-build`. It keeps
+the same Goal graph: PASSED packages are reused, the old Mission and its
+receipts are untouched, and a fresh queued Mission starts with one read-only
+discovery turn that checks the recorded release conditions before PI
+re-plans only the remaining work.
 No task breakdown, planning fields, plugin selection or additional scheduler
 are required from the Owner; the existing PI proposes and approves a
 versioned, dependency-ordered Work Item plan after the first observed browser

@@ -190,8 +190,11 @@ export class GoalLedger {
         const parent=this.store.get(rootId);
         const plan=this.store.piPlan(rootId);
         const pending=this.store.chatBrowserTurn(rootId);
+        // A PAUSED root whose PI decision is terminal (BLOCKED/DONE) with no
+        // reserved/uncertain Send is settled even if the owner also paused it;
+        // its stop flag and history stay untouched.
         if(!['COMPLETED','CANCELLED','BLOCKED'].includes(parent.state) &&
-           (parent.state!=='PAUSED'||parent.stopRequested||
+           (parent.state!=='PAUSED'||
             pending?.status==='reserved'||pending?.status==='uncertain'||
             !plan||['NEXT','HANDOFF'].includes(plan.action)))
           throw new Error('Goal already has a live PI Mission root');
@@ -199,6 +202,38 @@ export class GoalLedger {
       this.store.setMeta(`goal.pi.binding.${missionId}`,goalId);
       this.event(goalId,'goal.pi_mission_bound',{missionId,missionVersion:mission.version});
       return goalId;
+    });
+  }
+  /** Root Missions explicitly bound to this Goal (successors excluded). */
+  goalRootMissions(goalId:string):string[]{
+    return (this.store.db.prepare(
+      "SELECT key FROM meta WHERE key LIKE 'goal.pi.binding.%' AND value=? ORDER BY key"
+    ).all(goalId) as {key:string}[]).map(x=>x.key.slice('goal.pi.binding.'.length));
+  }
+  /** Owner-authorized continuation of a BLOCKED Goal after its external
+   * condition changed. Supersedes the stopped plan (history kept) and moves
+   * the Goal to PAUSED so the next bound Mission's PI review can approve a
+   * fresh plan; earlier PASSED work is carried forward by that review.
+   * Never touches an existing Mission, receipt or stop flag. */
+  reopenBlockedGoal(goalId:string,expectedVersion:number,noteSha256:string,
+    operationKey:string):Goal{
+    if(!/^[a-f0-9]{64}$/.test(noteSha256))throw new Error('Continuation note digest required');
+    return this.once(goalId,operationKey,{expectedVersion,noteSha256},()=>{
+      const goal=this.getGoal(goalId);
+      requireVersion(goal.version,expectedVersion);
+      if(goal.status!=='BLOCKED')throw new Error('Only a BLOCKED Goal can be continued');
+      const approved=this.store.db.prepare(
+        "SELECT id FROM goal_plans WHERE goal_id=? AND status='APPROVED'").get(goalId) as
+        {id:string}|undefined;
+      if(approved){
+        const plan=this.getPlan(goalId,approved.id);
+        this.setPlanStatus(goalId,plan.id,plan.version,'SUPERSEDED',`${operationKey}:supersede`);
+      }
+      const current=this.getGoal(goalId);
+      const paused=this.setGoalStatus(goalId,current.version,'PAUSED',`${operationKey}:pause`);
+      this.event(goalId,'goal.owner_continued',{supersededPlanId:approved?.id??null,
+        noteSha256,previousVersion:goal.version,newVersion:paused.version});
+      return paused;
     });
   }
   missionGoalId(missionId:string):string|null{
@@ -441,6 +476,38 @@ export class GoalLedger {
       this.event(goalId,'goal.work_status',{itemId,planId:item.planId,from:item.status,
         to:status,previousVersion:item.version,newVersion:item.version+1,
         evidenceRefs:[...evidenceRefs],evidenceSha256:hash(evidenceRefs)});
+      return this.getWork(goalId,itemId);
+    });
+  }
+  /** REPLAN must not silently reset already-passed obligations. Carry one
+   * earlier PASSED item of the SAME Goal (a superseded plan) into a PENDING
+   * item of the current approved plan, reusing its original evidence
+   * references. This is PI-reported work progress only; independent Goal
+   * release acceptance is unchanged. Dependencies must already be PASSED. */
+  carryForwardPassed(goalId:string,itemId:string,sourceItemId:string,
+    operationKey:string):GoalWorkItem{
+    return this.once(goalId,operationKey,{itemId,sourceItemId},()=>{
+      const item=this.getWork(goalId,itemId),source=this.getWork(goalId,sourceItemId);
+      if(item.status!=='PENDING')throw new Error('Only a pending work item can inherit a PASS');
+      if(source.status!=='PASSED'||source.planId===item.planId)
+        throw new Error('Carry-forward requires a PASSED item from an earlier plan of this Goal');
+      if(this.getPlan(goalId,item.planId).status!=='APPROVED')
+        throw new Error('Work item cannot advance without an approved plan');
+      const incomplete=this.store.db.prepare(`SELECT 1 FROM goal_dependencies d
+        JOIN goal_work_items w ON w.id=d.depends_on_id
+        WHERE d.item_id=? AND w.status!='PASSED' LIMIT 1`).get(itemId);
+      if(incomplete)throw new Error('Work item dependencies have not passed');
+      const refs=[...new Set([...source.evidenceRefs,`carried-from:${source.id}`])].slice(-20);
+      evidence(refs);
+      const at=now();
+      this.store.db.prepare(`UPDATE goal_acceptance SET status='PASS',evidence_json=?,
+        version=version+1,updated_at=? WHERE item_id=?`).run(JSON.stringify(refs),at,itemId);
+      this.store.db.prepare(`UPDATE goal_work_items SET status='PASSED',evidence_json=?,
+        version=version+1,updated_at=? WHERE id=?`).run(JSON.stringify(refs),at,itemId);
+      this.event(goalId,'goal.work_carried_forward',{itemId,planId:item.planId,
+        sourceItemId,sourcePlanId:source.planId,key:item.key,
+        previousVersion:item.version,newVersion:item.version+1,
+        evidenceRefs:refs,evidenceSha256:hash(refs)});
       return this.getWork(goalId,itemId);
     });
   }

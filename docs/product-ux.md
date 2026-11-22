@@ -19,6 +19,7 @@ queue, second agent scheduler or separate service is necessary.
 | `/status` or `/status 2` | Show the current task or select a numbered task from `/list` |
 | `/pause` or `/pause 2` | Stop the current or selected Goal at the next safe checkpoint |
 | `/resume 2` | Resume an explicitly paused, settled and independently verified Goal without replaying its prior Send |
+| `/goal-continue 2 <what changed>` | Continue a BLOCKED Goal after its external condition was fixed, reusing passed work instead of starting a new Goal |
 | `/goals` and `/goal-status 2` | Use a stable Goal number to read the second Goal, without copying its internal UUID |
 | `/help` | Show only common actions; `/help advanced` lists optional diagnostics |
 

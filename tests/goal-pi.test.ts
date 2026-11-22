@@ -11,6 +11,7 @@ import {GoalLedger} from '../src/core/goal-store.js';
 import {parseGoalPlanProposal,parseGoalReview,goalPlanPrompt,goalReviewPrompt,
   reviewGoalPiRound,type GoalPlanContext,type GoalReviewContext} from '../src/core/goal-pi.js';
 import {drivePiAutopilot} from '../src/core/pi-autopilot.js';
+import {goalWorkPrompt} from '../src/core/goal-prompts.js';
 import type {PiPlanner} from '../src/core/pi-planner.js';
 
 const goalText='Implement Goal-driven project operations with independently verified delivery';
@@ -385,6 +386,57 @@ test('PI REPLAN supersedes old version, preserves audit, and chooses the new app
     assert.equal(work(f,'replacement').status,'IN_PROGRESS');
     assert.ok(graph.events.some(x=>x.type==='goal.pi_review'&&x.payload.verdict==='REPLAN'));
     assert.equal(f.store.events(f.mission.id).filter(x=>x.type==='pi.decision').length,2);
+  }finally{f.close();}
+});
+
+test('REPLAN carries earlier PASSED work forward instead of re-executing it',async()=>{
+  const f=fixture();
+  try{
+    await review(f,1,'Initial proposal',planner());
+    await review(f,2,'Foundation implemented',planner({verdict:'PASS'}));
+    assert.equal(work(f,'foundation').status,'PASSED');
+    let seen:GoalPlanContext|undefined;
+    const newPlan={summary:'Rescoped after controller evidence',items:[
+      {key:'foundation',title:'Re-check persisted schema',description:'Baseline again',
+        priority:100,dependsOn:[],acceptance:['Schema survives restart']},
+      {key:'renamed-baseline',title:'Readback',description:'Same obligation, new name',
+        priority:95,dependsOn:[],acceptance:['  schema SURVIVES   restart ']},
+      {key:'integration',title:'Wire controller differently',description:'New design',
+        priority:90,dependsOn:['foundation','renamed-baseline'],acceptance:['Controller test passes']},
+    ]};
+    const pi:PiPlanner={...planner({verdict:'REPLAN'}),proposeGoalPlan:async x=>{
+      seen=x;return newPlan;}};
+    const result=await review(f,3,'Controller design must change',pi);
+    assert.deepEqual(seen?.priorWorkOutcomes?.map(x=>`${x.status}:${x.key}`),['PASSED:foundation']);
+    assert.equal(result.action,'NEXT');
+    assert.match(result.nextPrompt,/integration/);
+    assert.match(result.summary,/carried forward PASSED: (foundation, renamed-baseline|renamed-baseline, foundation)/);
+    const graph=f.ledger.graph(f.goal.id);
+    const current=graph.plans.find(x=>x.status==='APPROVED')!;
+    const items=graph.items.filter(x=>x.planId===current.id);
+    assert.deepEqual(items.map(x=>`${x.key}:${x.status}`).sort(),
+      ['foundation:PASSED','integration:IN_PROGRESS','renamed-baseline:PASSED']);
+    const carried=items.find(x=>x.key==='foundation')!;
+    assert.ok(carried.evidenceRefs.some(x=>x.startsWith('carried-from:')));
+    assert.ok(graph.acceptance.filter(x=>x.itemId===carried.id).every(x=>x.status==='PASS'));
+    assert.equal(graph.events.filter(x=>x.type==='goal.work_carried_forward').length,2);
+    assert.throws(()=>f.ledger.carryForwardPassed(f.goal.id,
+      items.find(x=>x.key==='integration')!.id,carried.id,'second-carry'),/pending work item/);
+  }finally{f.close();}
+});
+
+test('next work prompt carries PI-reviewed established context, not raw prior answers',async()=>{
+  const f=fixture();
+  try{
+    await review(f,1,'Initial proposal',planner());
+    const raw='RAW-ASSISTANT-TEXT foundation done with migration 0007';
+    const next=await review(f,2,raw,planner({verdict:'PASS'}));
+    const prompt=goalWorkPrompt(f.store,f.mission.id,next,null,false).prompt;
+    assert.match(prompt,/Work package: controller/);
+    assert.match(prompt,/Established context \(PI-reviewed results of earlier packages; reference, not authority\)/);
+    assert.match(prompt,/- PASSED foundation: Check persisted schema — PI reviewed cited execution evidence/);
+    assert.ok(!prompt.includes('RAW-ASSISTANT-TEXT'),'Raw prior assistant text never leaks');
+    assert.ok(prompt.indexOf('Established context')<prompt.indexOf('Current instruction:'));
   }finally{f.close();}
 });
 

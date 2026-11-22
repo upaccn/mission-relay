@@ -16,13 +16,14 @@ import {adoptConnectedConversation} from '../core/chat-adoption.js';
 import {watchedBrowser,nextBrowserWatchCandidate,acknowledgeBrowserWatchCandidate,
   orderedBrowserWatchCandidates,recordBrowserWatchAttempt,
   type ConnectedChatCandidate} from '../core/browser-watch.js';
-import {driveChatConversation,executeBrowserRollover,browserFreshTaskPrompt} from '../core/browser-controller.js';
+import {driveChatConversation,executeBrowserRollover,browserFreshTaskPrompt,browserGoalPlanningPrompt} from '../core/browser-controller.js';
 import {withReadOnlyDeadline} from '../core/read-only-deadline.js';
 import {consumeScopedPiConnectionDrill,attestScopedPiConnectionClosed} from '../core/pi-connection-drill.js';
 import {drivePiAutopilot,pauseFailedPiPlanning,
   deferTransientPiBrowserRecovery} from '../core/pi-autopilot.js';
 import {SshPiPlanner,validateRemoteProjectPath,type PiPlanner} from '../core/pi-planner.js';
 import {GoalLedger} from '../core/goal-store.js';
+import {goalContinuationAcceptance} from '../core/goal-prompts.js';
 import {hasIsolatedRepositoryGrant,declaredSourceMatchesScope} from '../core/build-scopes.js';
 import {telegramChatAnchor} from '../core/chat-anchor.js';
 import {GoalReleaseGate} from '../core/goal-release.js';
@@ -1173,6 +1174,78 @@ export class TelegramBridge {
     ].join('\n');
   }
 
+  /** `/goal-continue <n|goal-id> <what changed>` — the owner says an external
+   * blocker was resolved. Continue the SAME Goal (graph, PASSED work, audit)
+   * with a fresh queued Mission instead of a new Goal that re-plans from
+   * scratch. The old Mission, its receipts and stop flag are never touched,
+   * no earlier Send is replayed, and the new Mission's first Send is the
+   * ordinary read-only Goal discovery turn rebuilt from immutable Mission
+   * fields. The single leased Worker schedules it like any queued Goal. */
+  private continueGoal(ref:string|undefined,note:string,commandId:string):string {
+    const ledger=new GoalLedger(this.store),goals=ledger.listGoals();
+    if(!ref||!note.trim())
+      throw new Error('Use /goal-continue <number from /goals> <what changed since it was blocked>');
+    let goalId:string|undefined;
+    if(/^[1-9]\d*$/.test(ref)){
+      const n=Number(ref);
+      if(!Number.isSafeInteger(n)||n>goals.length)throw new Error('Goal number is no longer present; refresh /goals.');
+      goalId=goals[n-1]!.id;
+    }else if(/^[0-9a-f-]{8,36}$/i.test(ref)){
+      const matches=goals.filter(g=>g.id.startsWith(ref.toLowerCase()));
+      if(matches.length!==1)throw new Error('Goal id prefix must match exactly one Goal');
+      goalId=matches[0]!.id;
+    }else throw new Error('Use /goal-continue <number from /goals> <what changed>');
+    const text=note.trim();
+    if(text.length>1500)throw new Error('Continuation note must contain 1–1500 characters');
+    const anchor=telegramChatAnchor(this.store);
+    if(!anchor)throw new Error('No approved ChatGPT profile; configure telegram-anchor locally');
+    if(this.piPlanner instanceof SshPiPlanner&&!this.store.getMeta('telegram.pi.sshHost'))
+      throw new Error('PI coordinator not configured; use telegram-pi-config locally');
+    const key=`telegram-goal-continue-${commandId}`;
+    const created=this.store.atomic(()=>{
+      if(this.store.channelDrainRequested(this.source))
+        throw new Error('Telegram maintenance drain active; no Goal was continued');
+      const previous=this.engine.list().find(m=>m.requestKey===key);
+      if(previous){
+        if(ledger.missionGoalId(previous.id)!==goalId)
+          throw new Error('Continuation idempotency key was reused for a different Goal');
+        return {mission:previous,duplicate:true};
+      }
+      const goal=ledger.getGoal(goalId!);
+      if(goal.status!=='BLOCKED')
+        throw new Error(`Goal is ${goal.status}; /goal-continue only reopens a BLOCKED Goal (use /resume for a paused one)`);
+      const roots=ledger.goalRootMissions(goal.id).map(id=>this.store.get(id))
+        .sort((a,b)=>a.createdAt.localeCompare(b.createdAt));
+      const origin=roots.at(-1);
+      if(!origin)throw new Error('Goal has no original Mission scope to continue');
+      const write=origin.sandbox==='workspace-write';
+      if(write&&(!hasIsolatedRepositoryGrant(this.store,origin.workspace)||
+        !declaredSourceMatchesScope(goal.objective,origin.workspace)))
+        throw new Error('Goal repository is no longer individually approved; no continuation was created');
+      const acceptance=goalContinuationAcceptance(ledger.graph(goal.id),
+        origin.acceptance.slice(0,1),text);
+      // Validate the exact first read-only Send before any state changes.
+      browserGoalPlanningPrompt(goal.objective,acceptance,write?origin.workspace:null);
+      ledger.reopenBlockedGoal(goal.id,goal.version,
+        createHash('sha256').update(text).digest('hex'),`continue-${commandId}`);
+      const m=this.engine.create({goal:goal.objective,acceptance,
+        workspace:origin.workspace,sandbox:origin.sandbox,mode:'supervised',
+        maxTurns:0,requestKey:key,checks:[]});
+      const linked=this.store.linkChat(m.id,anchor.url,m.version).mission;
+      const bound=this.store.bindChatBrowser(m.id,anchor.browserId,linked.version).mission;
+      this.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
+      ledger.bindPiMission(goal.id,bound.id,bound.version,`continue-bind-${commandId}`);
+      return {mission:bound,duplicate:false};
+    });
+    return [
+      created.duplicate?'This continuation already exists — nothing was duplicated.':
+        'Goal continued — queued for the single Worker.',
+      taskTitle(created.mission),
+      'Passed work packages are reused; PI re-plans only what was blocked or remains.',
+      'Progress: /list or /status.',
+    ].join('\n');
+  }
+
   private async startPiChat(task:string,commandId:string,write=false,goalDriven=false):Promise<string> {
     // Preserve the established first-Goal launch path. A second Goal is
     // always independent, even if the first is PAUSED or its Send is uncertain.
@@ -1454,7 +1527,7 @@ export class TelegramBridge {
     if(this.store.events(m.id).some(e=>e.type==='pi.autopilot_finished'&&
       (e.payload as {action?:unknown}).action==='DONE'))return 'Completed (PI review)';
     if(m.state==='PAUSED'&&this.store.piPlan(m.id)?.action==='BLOCKED')
-      return 'Needs attention — PI blocked';
+      return 'Needs attention — blocked on an external condition (/goal-continue after fixing it)';
     if(m.id===this.activeMission)return 'Running';
     if(m.state==='READY')return 'Queued';
     if(m.state==='PAUSED'&&!m.lastError&&
@@ -1471,6 +1544,7 @@ export class TelegramBridge {
     if(cmd==='/help'||cmd==='/start') return id==='advanced'?[
       'Mission Relay — advanced commands (rarely needed)',
       '/history [page] — historical audit; /goals [page] and /goal-status <id> — Goals',
+      '/goal-continue <n> <what changed> — continue a blocked Goal after fixing its blocker',
       '/handoff <id> — open linked ChatGPT context; /new <task> — single-turn chat',
       '/auto <task> — alias for plain-text task; /agent <task> — installed native executor',
       '/continue, /resume, /cancel, /instruct — legacy/manual revision-gated actions',
@@ -1494,13 +1568,15 @@ export class TelegramBridge {
       return this.startPiChat(clean.replace(/^chatgpt\s*[:：]\s*/i,''),commandId);
     if(cmd==='/goal')return this.startPiChat(clean.slice(5),commandId,false,true);
     if(cmd==='/goal-build')return this.startPiChat(clean.slice(11),commandId,true,true);
+    if(cmd==='/goal-continue')return this.continueGoal(id,words.join(' '),commandId);
     if(cmd==='/goals'){
       const ledger=new GoalLedger(this.store),goals=ledger.listGoals();
       const {page,pages,start}=missionPage(id,words,goals.length);
       return goals.length?[
         `Goals: Page ${page}/${pages} (${goals.length} total)`,
         ...goals.slice(start,start+TELEGRAM_MISSION_PAGE_SIZE).map((g,i)=>{
-          const m=this.engine.list().find(x=>ledger.missionGoalId(x.id)===g.id);
+          const m=this.engine.list().filter(x=>ledger.missionGoalId(x.id)===g.id)
+            .sort((a,b)=>a.createdAt.localeCompare(b.createdAt)).at(-1);
           const state=g.status==='DONE'?'Completed':
             g.status==='BLOCKED'?'Needs attention':
             m?this.taskDisplayState(m):'Queued';
@@ -1533,6 +1609,10 @@ export class TelegramBridge {
         compactTelegramText(graph.goal.objective,210),
         `Work packages: ${verified} of ${items.length} reviewed as passed`,
         ...(active?[`Current: ${compactTelegramText(active.title,100)}`]:[]),
+        ...(graph.goal.status==='BLOCKED'?[
+          ...items.filter(x=>x.status==='BLOCKED').slice(0,3)
+            .map(x=>`Blocked: ${compactTelegramText(x.title,100)}`),
+          `After fixing it: /goal-continue ${new GoalLedger(this.store).listGoals().findIndex(g=>g.id===id)+1} <what changed>`]:[]),
         release.complete?'Independent release checks: complete':
           'Independent release checks: pending (a model review is not final acceptance)',
         'Task details: /status',
