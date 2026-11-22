@@ -5,7 +5,6 @@ param(
     [string]$Action = 'Status',
     [string]$ProxyUrl = '',
     [string]$ExpectedSha = '',
-    [string]$ResumeMissionId = '',
     # One-time, explicitly selected history cutover after the public repository
     # is rebuilt as a parentless clean release root. Existing workers stay
     # fenced, backup/restore and rollback are identical to a normal upgrade.
@@ -231,9 +230,6 @@ function Release-VerifiedChannelDrain([string]$drainId,[string]$sha,[int]$worker
 function Assert-UpgradeTarget([string]$sha) {
     if ($sha -cnotmatch '^[0-9a-f]{40}$') {
         throw 'Upgrade requires an exact lowercase 40-character GitHub main SHA (-ExpectedSha)'
-    }
-    if ($ResumeMissionId -and $ResumeMissionId -notmatch '^[0-9a-fA-F-]{36}$') {
-        throw 'ResumeMissionId must be one existing Mission UUID'
     }
     $branch = (& git -C $root symbolic-ref --quiet --short HEAD | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $branch -ne 'main') {
@@ -1237,19 +1233,6 @@ switch ($Action) {
                 compiledTreeSha256=$current.runtimeProvenance.compiledTreeSha256;
                 fenced=$true}
             Verify-UpgradeSQLiteContinuity
-            if ($ResumeMissionId) {
-                # An explicitly authorized pause may be resumed only after
-                # the ORIGINAL Chrome binding is inspected under the drain.
-                # A failed binding must roll back BEFORE PI can schedule work.
-                $browser=(& $node $cli browser-binding-health $ResumeMissionId | Out-String | ConvertFrom-Json)
-                if ($LASTEXITCODE -ne 0 -or $browser.binding -ne 'exact_connected' -or
-                    $browser.matchingLinkedTabs -ne 1) {
-                    throw 'Original PI Chrome tab is not independently verified before maintenance release'
-                }
-                Write-UpgradeEvidence 'chrome_binding_readback' @{missionId=$ResumeMissionId;
-                    binding=$browser.binding;enabledChatTabs=$browser.enabledChatTabs;
-                    matchingLinkedTabs=$browser.matchingLinkedTabs;fenced=$true}
-            }
             Assert-SafeRestart
             Write-UpgradeEvidence 'fenced_acceptance_verified' @{sha=$ExpectedSha;
                 pid=$current.pollerPid;drainHeld=$true;rollbackVerified=$rollbackReceipt.verified}
@@ -1371,16 +1354,6 @@ switch ($Action) {
         Release-VerifiedChannelDrain $drainId $ExpectedSha ([int]$current.pollerPid) (([datetime]$current.runtimeProvenance.at).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ'))
         Write-UpgradeEvidence 'drain_released' @{confirmed=$true;sourceSha=$ExpectedSha}
         Test-UpgradeEvidence
-        if ($ResumeMissionId) {
-            # This is a *previously owner-paused* exact observed PI checkpoint.
-            # pi-resume has its own transactional SHA/owner/revision gates;
-            # no browser Send occurs here. The running worker rechecks Chrome.
-            $state=(& $node $cli show $ResumeMissionId | Out-String | ConvertFrom-Json)
-            if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect owner-paused Mission for post-upgrade resume' }
-            & $node $cli pi-resume $ResumeMissionId --revision ([string]$state.version) --acknowledge-side-effects | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw 'Upgrade is active but PI checkpoint did not pass its resume gate' }
-            Write-UpgradeEvidence 'pi_resume_verified' @{missionId=$ResumeMissionId;result='released'}
-        }
         Write-UpgradeEvidence 'complete' @{sha=$ExpectedSha;pid=$current.pollerPid;result='healthy'}
         Test-UpgradeEvidence
         Write-Output ('GMK pull-only upgrade verified at ' + $ExpectedSha + '; healthy single Telegram poller')

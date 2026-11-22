@@ -13,7 +13,7 @@ const PROJECT_TABLES=['missions','events','goals','goal_plans','goal_work_items'
 const RESET_EMPTY_TABLES=[...PROJECT_TABLES,'channel_leases'];
 const SUPPORTED_TABLES=new Set([...RESET_EMPTY_TABLES,'meta']);
 const PRESERVE=['schema_version','telegram.inbox_cursor','telegram.pi.sshHost',
-  'telegram.pi.project','telegram.build.project','telegram.agent.workspace',
+  'telegram.pi.project','telegram.build.project',
   'telegram.chatgpt.anchorUrl','telegram.chatgpt.browserId',
   'telegram.maintenance.drain'];
 const UUID=/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;

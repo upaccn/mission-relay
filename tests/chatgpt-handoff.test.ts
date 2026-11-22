@@ -3,32 +3,11 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { Store } from '../src/core/store.js';
-import { Engine } from '../src/core/engine.js';
-import { normalizeChatGPTUrl, renderChatGPTHandoff } from '../src/core/chatgpt-handoff.js';
-import type { AgentAdapter, TurnInput, Decision, Mission, Verification } from '../src/core/types.js';
+import { normalizeChatGPTUrl } from '../src/core/chatgpt-handoff.js';
 
 const CHAT='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
-class NeverExecute implements AgentAdapter {
-  calls=0;
-  async execute(_input:TurnInput):Promise<Decision> {
-    this.calls++;
-    throw new Error('Codex must not be dispatched');
-  }
-  async verify(_mission:Mission,_decision:Decision):Promise<Verification> {
-    throw new Error('Verifier must not be dispatched');
-  }
-}
-function fixture() {
-  const dir=mkdtempSync(join(tmpdir(),'relay-chat-handoff-'));
-  const store=new Store(join(dir,'missions.sqlite'));
-  const agent=new NeverExecute();
-  const engine=new Engine(store,agent);
-  const mission=engine.create({goal:'Review an existing ChatGPT task',acceptance:['Evidence-backed review'],
-    workspace:dir,sandbox:'read-only',mode:'supervised',maxTurns:3,requestKey:'existing-chat'});
-  return {dir,store,engine,agent,mission,cleanup:()=>{store.close();rmSync(dir,{recursive:true,force:true});}};
-}
 
 test('ChatGPT URLs are constrained to direct conversation links, never credentials or arbitrary sites',()=>{
   assert.equal(normalizeChatGPTUrl(CHAT+'/'),CHAT);
@@ -43,125 +22,80 @@ test('ChatGPT URLs are constrained to direct conversation links, never credentia
   ]) assert.throws(()=>normalizeChatGPTUrl(url),/direct https:\/\/chatgpt.com/);
 });
 
-test('Link persists across restarts and never dispatches Codex or asserts completion',()=>{
-  const f=fixture();try{
-    const linked=f.store.linkChat(f.mission.id,CHAT,f.mission.version);
-    assert.equal(linked.mission.version,f.mission.version+1);
-    assert.equal(linked.mission.state,'READY');
-    assert.equal(f.store.chatLink(f.mission.id),CHAT);
-    assert.equal(f.store.linkChat(f.mission.id,CHAT,linked.mission.version).mission.version,linked.mission.version);
-    assert.throws(()=>f.engine.run(f.mission.id),/external ChatGPT conversation/);
-    assert.equal(f.agent.calls,0);
-    assert.match(renderChatGPTHandoff(linked.mission,CHAT),/send MANUALLY/);
-    assert.equal(f.store.events(f.mission.id).filter(e=>e.type==='chatgpt.handoff_linked').length,1);
-    f.store.close();
-    const reopened=new Store(join(f.dir,'missions.sqlite'));
-    assert.equal(reopened.chatLink(f.mission.id),CHAT);
-    assert.equal(reopened.get(f.mission.id).state,'READY');
-    reopened.close();
-  }finally{
-    // already closed by the test to simulate process restart
-    rmSync(f.dir,{recursive:true,force:true});
-  }
-});
-
-test('Linking requires the current revision and never rewrites active or ambiguous missions',()=>{
-  const f=fixture();try{
-    f.engine.instruct(f.mission.id,'Revision advanced');
-    assert.throws(()=>f.store.linkChat(f.mission.id,CHAT,f.mission.version),/State conflict/);
-    const active=f.store.acquire(f.mission.id);
-    assert.throws(()=>f.store.linkChat(f.mission.id,CHAT,active.version),/Cannot link ChatGPT/);
-    assert.equal(f.store.chatLink(f.mission.id),null);
-  }finally{f.cleanup();}
-});
-
-test('Terminal missions cannot be repurposed as new ChatGPT work',()=>{
-  const f=fixture();try{
-    const cancelled=f.engine.cancel(f.mission.id);
-    assert.throws(()=>f.store.linkChat(f.mission.id,CHAT,cancelled.version),/inactive unfinished mission/);
-    assert.equal(f.store.chatLink(f.mission.id),null);
-  }finally{f.cleanup();}
-});
-
-test('ChatGPT-first CLI creates and repeats a linked mission without a Codex workspace',()=>{
-  const dir=mkdtempSync(join(tmpdir(),'relay-chat-cli-'));
-  const env={...process.env,MISSION_RELAY_HOME:join(dir,'state')};
-  const command=['--import','tsx','src/cli.ts','chat-create','--goal','Research next step',
-    '--accept','Source-backed evidence','--url',CHAT,'--request-key','chat-first-key'];
+test('a Chat link persists across restarts and requires the current revision',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'relay-chat-link-'));
   try{
-    const one=JSON.parse(execFileSync(process.execPath,command,
-      {cwd:process.cwd(),env,encoding:'utf8'})) as {mission:Mission;url:string};
-    assert.equal(one.mission.workspace,'');
-    assert.equal(one.mission.state,'READY');
-    assert.equal(one.mission.version,1);
-    assert.equal(one.url,CHAT);
-    const again=JSON.parse(execFileSync(process.execPath,command,
-      {cwd:process.cwd(),env,encoding:'utf8'})) as {mission:Mission;url:string};
-    assert.equal(again.mission.id,one.mission.id);
-    assert.equal(again.mission.version,1);
-    const handoff=execFileSync(process.execPath,['--import','tsx','src/cli.ts','handoff',one.mission.id],
-      {cwd:process.cwd(),env,encoding:'utf8'});
-    assert.match(handoff,/MANUALLY/);
-    assert.match(handoff,/chatgpt.com\/c\//);
+    const store=new Store(join(dir,'missions.sqlite'));
+    const m=store.create({goal:'Review',acceptance:['Evidence'],workspace:'',
+      sandbox:'read-only',mode:'supervised',requestKey:'link'});
+    const linked=store.linkChat(m.id,CHAT,m.version);
+    assert.equal(linked.mission.version,m.version+1);
+    assert.equal(store.linkChat(m.id,CHAT,linked.mission.version).mission.version,linked.mission.version);
+    assert.throws(()=>store.linkChat(m.id,CHAT.replace('000','001'),m.version),/State conflict/);
+    store.close();
+    const reopened=new Store(join(dir,'missions.sqlite'));
+    assert.equal(reopened.chatLink(m.id),CHAT);
+    reopened.close();
   }finally{rmSync(dir,{recursive:true,force:true});}
 });
 
-test('CLI read and browser dispatch refuse unpinned profile without touching Playwriter',()=>{
-  const dir=mkdtempSync(join(tmpdir(),'relay-chat-pin-cli-'));
-  const env={...process.env,MISSION_RELAY_HOME:join(dir,'state')};
-  try {
-    const args=['--import','tsx','src/cli.ts','chat-create','--goal','Safe profile pin',
-      '--accept','Exact authorized tab','--url',CHAT,'--request-key','profile-pin-test'];
-    const created=JSON.parse(execFileSync(process.execPath,args,
-      {cwd:process.cwd(),env,encoding:'utf8'})) as {mission:Mission};
-    for(const command of ['browser-probe','browser-drive']) {
-      const commandArgs=['--import','tsx','src/cli.ts',command,created.mission.id,
-        ...(command==='browser-drive'?['--revision','1','--request-prefix','never-dispatch']:[])];
-      assert.throws(()=>execFileSync(process.execPath,commandArgs,
-        {cwd:process.cwd(),env,encoding:'utf8',stdio:['ignore','pipe','pipe']}),
-        /Pin this ChatGPT Mission/);
-    }
-    const db=new Store(join(dir,'state','missions.sqlite'));
-    try {
-      assert.equal(db.get(created.mission.id).state,'READY');
-      assert.equal(db.get(created.mission.id).version,1);
-      assert.equal(db.events(created.mission.id).filter(e=>e.type==='chatgpt.browser_reserved').length,0);
-    }finally{db.close();}
-  }finally{rmSync(dir,{recursive:true,force:true});}
-});
-
-test('CLI rejects split generic recovery and atomically reconciles the interrupted browser turn',()=>{
-  const dir=mkdtempSync(join(tmpdir(),'relay-browser-reconcile-cli-'));
+function recoverRig(){
+  const dir=mkdtempSync(join(tmpdir(),'relay-recover-cli-'));
   const env={...process.env,MISSION_RELAY_HOME:join(dir,'state')};
   const db=new Store(join(dir,'state','missions.sqlite'));
-  try {
-    const base=db.create({goal:'Synthetic recovery',acceptance:['No duplicate browser send'],
-      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:2,requestKey:'synthetic-recovery'});
-    const linked=db.linkChat(base.id,CHAT,base.version).mission;
-    db.reserveChatBrowserTurn(linked.id,linked.version,'synthetic-once','a'.repeat(64));
-    const uncertain=db.finishChatBrowserTurn(linked.id,'synthetic-once',
-      {kind:'uncertain',error:'Simulated relay disconnection'});
-    db.close();
-    const invoke=(command:string)=>execFileSync(process.execPath,
-      ['--import','tsx','src/cli.ts',command,linked.id,'--acknowledge-side-effects'],
-      {cwd:process.cwd(),env,encoding:'utf8',stdio:['ignore','pipe','pipe']});
-    assert.throws(()=>invoke('reconcile'),/browser-reconcile/);
-    const inspect=new Store(join(dir,'state','missions.sqlite'));
-    try {
-      assert.equal(inspect.get(linked.id).state,'NEEDS_RECONCILIATION');
-      assert.equal(inspect.get(linked.id).version,uncertain.version);
-      assert.equal(inspect.events(linked.id).filter(x=>x.type==='mission.reconciled').length,0);
-    }finally{inspect.close();}
-    const result=JSON.parse(invoke('browser-reconcile')) as Mission;
-    assert.equal(result.state,'PAUSED');
-    assert.equal(result.version,uncertain.version+1);
-    const reopened=new Store(join(dir,'state','missions.sqlite'));
-    try {
-      assert.equal(reopened.chatBrowserTurn(linked.id)?.status,'reconciled');
-      assert.equal(reopened.events(linked.id).filter(x=>x.type==='mission.reconciled').length,1);
-      assert.equal(reopened.events(linked.id).filter(x=>x.type==='chatgpt.browser_reconciled').length,1);
-      assert.throws(()=>reopened.reserveChatBrowserTurn(linked.id,result.version,'synthetic-once','a'.repeat(64)),
-        /already used/);
-    }finally{reopened.close();}
-  }finally{rmSync(dir,{recursive:true,force:true});}
+  const base=db.create({goal:'Synthetic recovery',acceptance:['No duplicate browser send'],
+    workspace:'',sandbox:'read-only',mode:'supervised',requestKey:'synthetic-recovery'});
+  const linked=db.linkChat(base.id,CHAT,base.version).mission;
+  const bound=db.bindChatBrowser(base.id,'install:Chrome:synthetic',linked.version).mission;
+  db.setMeta(`pi.autopilot.enabled.${base.id}`,'1');
+  db.reserveChatBrowserTurn(bound.id,bound.version,'synthetic-recovery-1','a'.repeat(64));
+  const uncertain=db.finishChatBrowserTurn(bound.id,'synthetic-recovery-1',
+    {kind:'uncertain',error:'Simulated relay disconnection'});
+  db.close();
+  const cli=(...args:string[])=>spawnSync(process.execPath,
+    ['--import','tsx','src/cli.ts','recover',base.id,...args],
+    {cwd:process.cwd(),env,encoding:'utf8'});
+  const open=()=>new Store(join(dir,'state','missions.sqlite'));
+  return {id:base.id,revision:uncertain.version,cli,open,
+    cleanup:()=>rmSync(dir,{recursive:true,force:true})};
+}
+
+test('recover diagnoses an uncertain request read-only and names the next action',()=>{
+  const r=recoverRig();try{
+    const out=r.cli();
+    assert.equal(out.status,0,out.stderr);
+    const report=JSON.parse(out.stdout) as {state:string;nextAction:string;request:{status:string}};
+    assert.equal(report.state,'NEEDS_RECONCILIATION');
+    assert.equal(report.request.status,'uncertain');
+    assert.match(report.nextAction,/recover --accept-reply.*recover --abandon/);
+    const db=r.open();try{
+      assert.equal(db.get(r.id).version,r.revision,'diagnosis never mutates SQLite');
+    }finally{db.close();}
+  }finally{r.cleanup();}
+});
+
+test('recover --abandon settles without crediting or resending; stale revisions and mixed modes are refused',()=>{
+  const r=recoverRig();try{
+    assert.notEqual(r.cli('--abandon','--retry','--revision',String(r.revision)).status,0);
+    assert.notEqual(r.cli('--abandon','--revision',String(r.revision+1)).status,0);
+    const before=r.open();try{assert.equal(before.get(r.id).version,r.revision);}finally{before.close();}
+    const out=r.cli('--abandon','--revision',String(r.revision));
+    assert.equal(out.status,0,out.stderr);
+    const db=r.open();try{
+      const m=db.get(r.id);
+      assert.equal(m.state,'CANCELLED');
+      assert.equal(m.turnCount,0,'no answer credited');
+      assert.equal(db.chatBrowserTurn(r.id)?.status,'reconciled');
+      assert.equal(db.events(r.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1,'never resent');
+    }finally{db.close();}
+    assert.notEqual(r.cli('--abandon','--revision',String(r.revision)).status,0,'second abandon refused');
+  }finally{r.cleanup();}
+});
+
+test('recover --retry refuses a request whose outcome is unknown, before touching Chrome',()=>{
+  const r=recoverRig();try{
+    const out=r.cli('--retry','--revision',String(r.revision));
+    assert.notEqual(out.status,0);
+    assert.match(out.stderr,/settled step/);
+  }finally{r.cleanup();}
 });

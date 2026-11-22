@@ -19,7 +19,7 @@ function fixture(){
   const objective='Validate one original browser Send with Goal custody';
   const goal=ledger.createGoal({requestKey:'owner-custody',objective,priority:90});
   const created=store.create({goal:objective,acceptance:['At most one Send'],
-    workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:32,
+    workspace:'',sandbox:'read-only',mode:'supervised',
     requestKey:'mission-custody',checks:[]});
   const linked=store.linkChat(created.id,source,created.version).mission;
   const bound=store.bindChatBrowser(created.id,'install:Chrome:fixture',linked.version).mission;

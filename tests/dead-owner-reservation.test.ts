@@ -20,7 +20,7 @@ function fixture(newConversation=false) {
   const store=new Store(join(dir,'missions.sqlite'));
   const created=store.create({goal:'Recover an original reply without replay',
     acceptance:['Preserve original Send and audit'],workspace:'',sandbox:'read-only',
-    mode:'supervised',maxTurns:4,checks:[],requestKey:'orphan'});
+    mode:'supervised',checks:[],requestKey:'orphan'});
   const linked=store.linkChat(created.id,URL,created.version).mission;
   const bound=store.bindChatBrowser(linked.id,'install:Chrome:synthetic',linked.version).mission;
   store.setMeta(`pi.autopilot.enabled.${bound.id}`,'1');
@@ -56,8 +56,8 @@ test('CLI refuses an active reserved browser Send before connecting to Playwrite
   const f=fixture();try{
     const before=f.store.events(f.mission.id).length;
     const run=spawnSync(process.execPath,
-      ['--import','tsx','src/cli.ts','browser-recover-turn',f.mission.id,
-        '--revision',String(f.mission.version),'--acknowledge-side-effects'],
+      ['--import','tsx','src/cli.ts','recover',f.mission.id,'--accept-reply',
+        '--revision',String(f.mission.version)],
       {cwd:process.cwd(),encoding:'utf8',timeout:12000,
         env:{...process.env,MISSION_RELAY_HOME:f.dir}});
     assert.notEqual(run.status,0);
@@ -219,9 +219,8 @@ test('CLI refuses live new-chat recovery before opening Playwriter or touching S
   const f=fixture(true);try{
     const before=f.store.events(f.mission.id).length;
     const run=spawnSync(process.execPath,
-      ['--import','tsx','src/cli.ts','browser-recover-rollover',f.mission.id,
-        '--revision',String(f.mission.version),'--new-url',DEST,
-        '--acknowledge-side-effects'],
+      ['--import','tsx','src/cli.ts','recover',f.mission.id,'--accept-reply',
+        '--revision',String(f.mission.version),'--new-url',DEST],
       {cwd:process.cwd(),encoding:'utf8',timeout:12000,
         env:{...process.env,MISSION_RELAY_HOME:f.dir}});
     assert.notEqual(run.status,0);

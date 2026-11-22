@@ -71,7 +71,7 @@ function verifiedControllerCheckpoint(store:Store,missionId:string,round:number,
     (e.payload as {promptSha256?:string}).promptSha256===receipt.promptSha256).at(-1);
   const observation=events.filter(e=>
     ['chatgpt.browser_observed','chatgpt.browser_turn_recovered',
-      'chatgpt.browser_rollover_recovered','chatgpt.browser_attribution_corrected'].includes(e.type)&&
+      'chatgpt.browser_rollover_recovered'].includes(e.type)&&
     (e.payload as {requestKey?:string}).requestKey===receipt.requestKey&&
     (e.payload as {assistantSha256?:string}).assistantSha256===responseSha256&&
     (e.payload as {round?:number}).round===round).at(-1);
@@ -384,7 +384,7 @@ export async function reviewGoalPiRound(input:{
     const change=await planner.decide({
       goal:baseline.goal.objective,
       acceptance:baseline.acceptance.filter(x=>x.itemId===active.id).map(x=>x.criterion),
-      turnCount:round,maxTurns:mission.maxTurns,
+      turnCount:round,
       responseSha256,lastAssistant:input.lastAssistant,
       ownerDirectives,sandbox:mission.sandbox,workspace:mission.workspace,
       priorPiSummary:prior.summary,

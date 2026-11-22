@@ -1,214 +1,172 @@
 #!/usr/bin/env node
-import { randomUUID, createHash } from 'node:crypto';
-import {MAX_RELAY_CHAT_TURNS} from './core/chat-limits.js';
+import {createHash} from 'node:crypto';
+import {join} from 'node:path';
+import {readFileSync} from 'node:fs';
 import {withReadOnlyDeadline} from './core/read-only-deadline.js';
-import { join, resolve } from 'node:path';
-import { statSync, readFileSync } from 'node:fs';
-import { Engine } from './core/engine.js';
-import { Store,PI_SUCCESSOR_CHECKPOINT_MISMATCH,
-  PI_CLOSED_PAGE_READ_ERROR,PI_NEXT_SOURCE_PREFLIGHT_ERROR } from './core/store.js';
+import {Store} from './core/store.js';
 import {GoalLedger} from './core/goal-store.js';
 import {inspectSoftwareReleaseCandidate} from './core/software-release.js';
 import {enrolledTaskStatus} from './core/windows-task.js';
 import {githubRepositoryForRuntime} from './core/github-ci.js';
-import {inspectPiEvidence,inspectPiChainEvidence} from './core/pi-evidence.js';
+import {inspectPiEvidence} from './core/pi-evidence.js';
 import {inspectGoalRequestLedger} from './core/request-ledger.js';
 import {inspectBrowserBinding} from './core/browser-binding-diagnostic.js';
-import {assessPendingBrowserAnswer} from './core/browser-pending-evidence.js';
-import {LazyExecutor,registerExecutorPlugin,registeredExecutorPlugins,defaultExecutorId,
-  setDefaultExecutor,removeExecutorPlugin,executorPreflight} from './core/executor-plugins.js';
-import { TelegramBridge, TelegramHttpTransport } from './plugins/telegram.js';
-import { stateHome } from './core/paths.js';
+import {TelegramBridge,TelegramHttpTransport} from './plugins/telegram.js';
+import {stateHome} from './core/paths.js';
 import {verifiedRuntimeProvenance} from './core/runtime-provenance.js';
-import { renderChatGPTHandoff, normalizeChatGPTUrl } from './core/chatgpt-handoff.js';
+import {normalizeChatGPTUrl} from './core/chatgpt-handoff.js';
 import {setTelegramChatAnchor} from './core/chat-anchor.js';
-import { connectChatPage, inspectChatPage, matchesSubmittedUserPrompt, matchesReservedPromptHash, lastVisibleUserPromptSha256, listConnectedChatCandidates, prepareNewChatOrigin, submitNewChatTurn, withBrowserSession,visibleConversationLengthLimit,clickConversationLengthStartOnce,connectNativePrefilledDraft,nativePrefilledDraftSha256,clickNativePrefilledSendOnce } from './plugins/chatgpt-browser.js';
-import { executeBrowserTurn, driveChatConversation, browserDecision, exactReservedRolloverPrompt, browserRolloverPiPlan } from './core/browser-controller.js';
+import {connectChatPage,inspectChatPage,matchesSubmittedUserPrompt,matchesReservedPromptHash,
+  lastVisibleUserPromptSha256,listConnectedChatCandidates,withBrowserSession} from './plugins/chatgpt-browser.js';
+import {MAX_RELAY_CHAT_TURNS} from './core/chat-limits.js';
+import {browserDecision,reservedRequestPrompt} from './core/browser-controller.js';
 import {validatePictlRemoteConfig,validateRemoteProjectPath} from './core/pi-planner.js';
 import {approveBuildRepository,revokeBuildRepository,approvedBuildRepositories} from './core/build-scopes.js';
-import { listBrowsers } from 'playwriter';
-import type { CreateMission, Sandbox } from './core/types.js';
-import type { VerificationCheck } from './core/types.js';
+import {listBrowsers} from 'playwriter';
 
-const packageVersion = (JSON.parse(readFileSync(
+const packageVersion=(JSON.parse(readFileSync(
   new URL('../package.json',import.meta.url),'utf8')) as {version:string}).version;
+const BOOLEAN_FLAGS=new Set(['--accept-reply','--retry','--abandon']);
 
-function flags(argv: string[]): Record<string,string[]> {
-  const out: Record<string,string[]> = {};
-  for (let i=0;i<argv.length;i++) {
-    const key = argv[i];
-    if (!key?.startsWith('--')) throw new Error(`Unexpected argument: ${key}`);
-    const value = argv[i+1];
-    if (!value || value.startsWith('--')) {
-      if (key === '--acknowledge-side-effects') { out[key] = ['true']; continue; }
-      throw new Error(`Missing value for ${key}`);
-    }
-    (out[key] ??= []).push(value);
+function flags(argv:string[]):Record<string,string[]> {
+  const out:Record<string,string[]>={};
+  for(let i=0;i<argv.length;i++){
+    const key=argv[i];
+    if(!key?.startsWith('--'))throw new Error(`Unexpected argument: ${key}`);
+    if(BOOLEAN_FLAGS.has(key)){out[key]=['true'];continue;}
+    const value=argv[i+1];
+    if(!value||value.startsWith('--'))throw new Error(`Missing value for ${key}`);
+    (out[key]??=[]).push(value);
     i++;
   }
   return out;
 }
 function option(f:Record<string,string[]>,name:string,defaultValue?:string):string {
-  const values = f['--'+name];
-  if (!values?.length) {
-    if (defaultValue !== undefined) return defaultValue;
+  const values=f['--'+name];
+  if(!values?.length){
+    if(defaultValue!==undefined)return defaultValue;
     throw new Error(`Missing --${name}`);
   }
-  if (values.length !== 1) throw new Error(`Duplicate --${name}`);
+  if(values.length!==1)throw new Error(`Duplicate --${name}`);
   return values[0]!;
 }
+const uuid=(id:string|undefined,what:string)=>{
+  if(!id||!/^[0-9a-f-]{36}$/i.test(id))throw new Error(`Provide one ${what} UUID`);
+  return id;
+};
 function help():void {
   console.log(`Mission Relay v${packageVersion}
-Commands:
-  software-release-status --sha <GitHub main SHA> --run-id <GitHub Actions run>
-                       Independently qualify software CI on three platforms without a Goal or SQLite
-  doctor                Check installed optional executor, if any
-  plugin-register --path <absolute .mjs/.js>  Register a trusted native executor plugin
-  plugin-list           List installed native executor (none required for ChatGPT)
-  plugin-default --id <executor.id>  Optional override when several plugins exist
-  plugin-remove --id <executor.id>   Remove one registration (no user files deleted)
-  telegram              Run an optional Telegram channel in the foreground (owner allowlist)
-  channel-drain-request  Request a local SQLite-fenced, idle-only Telegram maintenance drain
-  channel-drain-status   Inspect the local maintenance receipt for failed-launch recovery
-  channel-drain-release --id <drain-id>  Release only the matching maintenance fence
-  channel-drain-release-verified --id <drain-id> --expected-sha <sha> --expected-pid <pid> --expected-attested-at <ISO-8601>
-                         Atomically admit only the freshly healthy, SHA-bound single Worker
-  telegram-anchor --url <ChatGPT conversation> --browser-id <Chrome ID> | --clear
-                       Locally approve a browser launch profile, independent of any Mission
-  telegram-agent-workspace --workspace <dir>|--clear  Optional native executor workspace approval
-  telegram-pi-config --ssh-host <alias> --project <remote-absolute-path> | --clear
-                      Configure tool-free PI inference through the existing SSH connection
-  telegram-build-project --project <remote-absolute-path> | --clear
-                      Legacy default repository for /build (must equal configured PI project)
-  telegram-build-project --allow <remote-absolute-path> | --revoke <path> | --list
-                      Explicit per-repository approval for independent /goal-build --repo <path>
-  telegram-identify     Inspect local /start sender IDs before owner authorization
-  channel-status        Inspect durable Telegram delivery cursor and poller status (no secrets)
-  pi-health             Inspect active PI/browser requests, observed turns and wait age (no content, no Send)
-  pi-evidence <mission-id>  Audit real event/PI SHA correlation and current 8-send chat segmentation (no content, no Send)
-  pi-chain-evidence <mission-id>  Verify durable 32-turn successor lineage and inherited scope (no Send)
-  goal-request-ledger <goal-id>  Read-only Goal→Mission→Chat→request→browser evidence custody audit
-  create --goal <text> --accept <criterion> [--accept <criterion>...] --workspace <path>
-         [--sandbox read-only|workspace-write] [--mode supervised|autopilot]
-         [--max-turns 10] [--request-key <stable key>] [--checks-file <path>]
-  run <id>              Execute one supervised turn or a bounded autopilot
-  show <id>             Read authoritative mission state
-  list                  List complete Mission ledger (including archives)
-  archive-settled       Locally archive only settled history; preserve all audit records
-  events <id>           Read append-only mission events
-  link-chat <id> --url <ChatGPT conversation URL> --revision <version>
-  chat-create --goal <text> --accept <criterion> --url <ChatGPT conversation URL>
-             [--accept <criterion>...] [--request-key <stable key>]
-  handoff <id>          Show existing ChatGPT chat link and manual continuation prompt
-  browser-list          List connected Playwriter browser IDs (no profile emails)
-  browser-candidates --browser-id <approved Chrome ID>   Read-only connected ChatGPT URL inventory
-  browser-binding-health <mission-id>  Read-only exact-tab/last-prompt diagnostic (no Send, no raw URL)
-  browser-pending-evidence <mission-id>  Read-only double-snapshot pending-answer candidate, never reconciles or resends
-  browser-bind <id> --browser-id <id> --revision <n>   Pin a mission to one Chrome profile
-  browser-probe <id> [--browser-id <id>]   Read a Playwriter-enabled ChatGPT tab
-  browser-send <id> --revision <n> --request-key <key> --prompt-file <file>
-         [--browser-id <id>] [--timeout-ms 3600000]  Submit once; never blind-retry
-  browser-drive <id> --revision <n> --request-prefix <key> [--turns 3]
-         [--browser-id <id>] [--timeout-ms 3600000]  Bounded ChatGPT multi-turn loop
-  browser-reconcile <id> --acknowledge-side-effects  Manual ambiguous-turn recovery
-  browser-recover-turn <id> --revision <n> --acknowledge-side-effects
-         Verify an uncertain reply or a dead-owner reserved existing-chat reply;
-         never replay or credit an unmarked/incomplete response
-  browser-correct-attribution <id> --revision <n> --acknowledge-side-effects
-         Independently re-observe an incorrectly credited latest PI answer; append correction,
-         preserve old events and require new PI review before any further Send
-  pi-resume <id> --revision <n> --acknowledge-side-effects
-         Release a settled owner-paused PI checkpoint for independent controller re-readback;
-         never change it to READY or replay its previous Send
-  pi-recheck-browser <id> --revision <n> --acknowledge-side-effects
-         Revalidate a settled pre-Send closed-page / visible-composer interruption after two independent
-         SHA-matched browser reads. Never repeats an observed Send
-  pi-recheck-capacity <id> --revision <n> --acknowledge-side-effects
-         Double-check the original settled reply after a known PI global-task busy error; no Send
-  pi-recheck-timeout <id> --revision <n> --acknowledge-side-effects
-         Double-check the original settled reply after exact PI 120-second model timeout; no Send
-  pi-recheck-successor <id> --revision <n> --acknowledge-side-effects
-         For the known parent-vs-child checkpoint bug only: verify original
-         successor user/answer SHAs twice in the live pinned ChatGPT tab, then
-         clear just the false recovery interruption; no Send or PI decision
-  browser-recover-rollover <id> --revision <n> --new-url <exact new chat URL>
-         --acknowledge-side-effects  Read-only inspect old/new chats, then atomic observed recovery
-  browser-resume-pending-retry <id> --revision <n> --acknowledge-side-effects
-         Release an owner-paused, uncertain original existing/new-chat message for ONE enrolled-Worker
-  browser-start-new-chat <id> --revision <n> --acknowledge-side-effects
-         Click the exact native maximum-length Start new chat button ONCE after maintenance;
-         preserve the uncredited original Send and its lock; never replay the composer
-  browser-send-native-draft <id> --revision <n> --acknowledge-side-effects
-         AFTER production upgrade, send exactly once from the native prefilled,
-         SHA-matched unsent new-chat origin; leave original receipt uncertain
-         existing-message UI Retry; never perform Retry or composer Send here
-  browser-retry-pre-send-rollover <id> --revision <n> --acknowledge-side-effects
-         ONE original-reservation first Send only after the exact old page.goto
-         origin timeout proved no Send click occurred; audit intent before
-         side effects; retain uncertainty and refuse every later retry
-  instruct <id> --text <instruction>
-  pause <id> | resume <id> | cancel <id>
-  reconcile <id> --acknowledge-side-effects
+
+Run
+  telegram                         Run the single Worker (owner-allowlisted Telegram)
+
+Setup (local, once)
+  browser-list                     Connected Playwriter Chrome profiles
+  telegram-anchor --url <ChatGPT chat> --browser-id <id> | --clear
+                                   Chrome profile in which new Goal Chats are opened
+  telegram-pi-config --ssh-host <alias> --project <path> | --clear
+                                   Tool-free PI route (SSH -> pictl infer)
+  telegram-build-project --allow <path> | --revoke <path> | --list
+                                   Repositories a /goal-build may change
+  telegram-identify                Show /start sender IDs before enrolment
+
+Inspect (read-only)
+  list | show <mission> | events <mission>
+  channel-status                   Worker, Telegram delivery and drain state
+  pi-health                        Requests in flight and PI reviews pending
+  pi-evidence <mission>            Request/PI SHA correlation audit
+  goal-request-ledger <goal>       Goal -> Mission -> Chat -> request audit
+  browser-binding-health <mission> Exact pinned tab check (no Send)
+
+Recover a stuck task (always inspect first)
+  recover <mission>                Diagnose; prints the one safe next action
+  recover <mission> --accept-reply --revision <n> [--new-url <chat>]
+                                   Credit a complete reply ChatGPT already shows (read twice)
+  recover <mission> --retry --revision <n>
+                                   Clear an error at a settled step after two matching reads
+  recover <mission> --abandon --revision <n>
+                                   Give up an unverifiable request: no credit, no resend;
+                                   the Goal becomes blocked for /goal-continue
+
+Maintenance and release
+  channel-drain-request | channel-drain-status | channel-drain-release --id <id>
+  channel-drain-release-verified --id <id> --expected-sha <sha> --expected-pid <pid> --expected-attested-at <iso>
+  software-release-status --sha <main SHA> --run-id <Actions run>
+
+A Goal Chat carries at most ${MAX_RELAY_CHAT_TURNS} Relay Sends, then continues in a fresh Chat.
 
 Environment: MISSION_RELAY_HOME, MISSION_RELAY_TELEGRAM_BOT_TOKEN,
-MISSION_RELAY_TELEGRAM_USER_ID, MISSION_RELAY_TELEGRAM_CHAT_ID.
-Each optional native executor manages its own configuration and credentials.
-Telegram is an opt-in foreground channel. Playwriter requires the operator-enabled Chrome extension; no background service or PWA is installed.`);
+MISSION_RELAY_TELEGRAM_USER_ID, MISSION_RELAY_TELEGRAM_CHAT_ID.`);
 }
 
-export async function main(argv=process.argv.slice(2)): Promise<void> {
-  const [command, id, ...rest] = argv;
-  if (!command || ['help','--help','-h'].includes(command)) return help();
+type Store_=Store;
+/** Read the pinned tab twice; both reads must be idle, complete and equal. */
+async function stableRead(store:Store_,id:string,url:string,browserId:string,
+  check:(answer:string,userSha:string|null)=>void):Promise<{answer:string;userSha:string|null}>{
+  const session=await withReadOnlyDeadline(connectChatPage(url,{browserId}),30_000,late=>late.close());
+  return withBrowserSession(session,async page=>{
+    const read=async()=>{
+      const snap=await withReadOnlyDeadline(inspectChatPage(page,url));
+      const userSha=await withReadOnlyDeadline(lastVisibleUserPromptSha256(page));
+      if(snap.generating||!snap.composerReady||!snap.lastAssistant.trim()||
+        !['DONE','NEXT','BLOCKED','HANDOFF'].includes(browserDecision(snap.lastAssistant)))
+        throw new Error('ChatGPT does not show an idle, complete, marked reply');
+      check(snap.lastAssistant,userSha);
+      return {answer:snap.lastAssistant,userSha};
+    };
+    const first=await read();
+    await new Promise(r=>setTimeout(r,3000));
+    const second=await read();
+    if(first.answer!==second.answer||first.userSha!==second.userSha)
+      throw new Error('ChatGPT reply changed between the two reads');
+    void store;void id;
+    return second;
+  });
+}
+
+function diagnose(store:Store_,id:string){
+  const m=store.get(id),receipt=store.chatBrowserTurn(id),plan=store.piPlan(id);
+  const pending=receipt&&['reserved','uncertain'].includes(receipt.status);
+  const deadOwner=store.isAbandonedBrowserReservation(id)||store.isAbandonedBrowserRolloverReservation(id);
+  const action=m.stopRequested?'Owner pause: resume from Telegram with /resume':
+    pending&&(receipt.status==='uncertain'||deadOwner)?
+      (receipt.newConversation
+        ?'Request outcome unknown in a new Chat: if ChatGPT shows its reply, recover --accept-reply --new-url <chat>; otherwise recover --abandon'
+        :'Request outcome unknown: if the pinned Chat shows the complete reply, recover --accept-reply; otherwise recover --abandon'):
+    pending?'A Send is in progress under a live Worker: wait':
+    m.state==='PAUSED'&&m.lastError?'Stopped by an error at a settled step: fix the cause, then recover --retry':
+    m.state==='READY'?'Queued for the Worker: nothing to do':
+    ['DONE','BLOCKED'].includes(plan?.action??'')?`PI decided ${plan!.action}; nothing to recover`:
+    'No recovery needed';
+  return {missionId:id,revision:m.version,state:m.state,round:m.turnCount,
+    stopRequested:m.stopRequested,lastError:m.lastError,
+    request:receipt?{status:receipt.status,newConversation:receipt.newConversation===true,deadOwner}:null,
+    piDecision:plan?{round:plan.round,action:plan.action}:null,
+    goalId:new GoalLedger(store).missionGoalId(id),nextAction:action};
+}
+
+export async function main(argv=process.argv.slice(2)):Promise<void> {
+  const [command,id,...rest]=argv;
+  if(!command||['help','--help','-h'].includes(command))return help();
   if(command==='software-release-status'){
     const f=flags(argv.slice(1));
     if(Object.keys(f).length!==2||!f['--sha']||!f['--run-id'])
       throw new Error('Usage: software-release-status --sha <SHA> --run-id <Actions ID>');
-    const report=await inspectSoftwareReleaseCandidate(githubRepositoryForRuntime(),
-      option(f,'sha'),option(f,'run-id'));
-    console.log(JSON.stringify(report,null,2));
+    console.log(JSON.stringify(await inspectSoftwareReleaseCandidate(githubRepositoryForRuntime(),
+      option(f,'sha'),option(f,'run-id')),null,2));
     return;
   }
-  const home = stateHome();
-  const diagnostic=['channel-status','channel-drain-status',
-    'pi-health','pi-evidence','pi-chain-evidence','browser-binding-health',
-    'browser-pending-evidence','goal-request-ledger',
-    ].includes(command);
-  const store = new Store(join(home,'missions.sqlite'),{readOnly:diagnostic});
-  const engine = new Engine(store,new LazyExecutor(store));
-  try {
-    let result: unknown;
-    if (command === 'create') {
-      // create has no positional id; include all arguments in flags.
-      const f = flags(argv.slice(1));
-      const workspace = resolve(option(f,'workspace'));
-      if (!statSync(workspace).isDirectory()) throw new Error('Workspace must be a directory');
-      const sandbox = option(f,'sandbox','read-only');
-      const mode = option(f,'mode','supervised');
-      if (!['read-only','workspace-write'].includes(sandbox)) throw new Error('Invalid sandbox');
-      if (!['supervised','autopilot'].includes(mode)) throw new Error('Invalid mode');
-      const request:CreateMission = {
-        goal:option(f,'goal'),acceptance:f['--accept'] || [],workspace,
-        sandbox:sandbox as Sandbox,mode:mode as CreateMission['mode'],
-        maxTurns:Number(option(f,'max-turns','10')),
-        requestKey:option(f,'request-key',randomUUID()),
-        checks:f['--checks-file'] ? JSON.parse(readFileSync(resolve(option(f,'checks-file')),'utf8')) as VerificationCheck[] : [],
-      };
-      if(!Array.isArray(request.checks)) throw new Error('Checks file must contain an array of verification checks');
-      result = engine.create(request);
-    } else if (command === 'chat-create') {
-      const f=flags(argv.slice(1));
-      const url=normalizeChatGPTUrl(option(f,'url'));
-      const mission=engine.create({
-        goal:option(f,'goal'),acceptance:f['--accept']||[],
-        workspace:'',sandbox:'read-only',mode:'supervised',
-        maxTurns:Number(option(f,'max-turns','30')),
-        requestKey:option(f,'request-key',randomUUID()),checks:[],
-      });
-      const previous=store.chatLink(mission.id);
-      if(previous && previous!==url) throw new Error('Idempotency key already belongs to a different ChatGPT conversation');
-      const linked=store.linkChat(mission.id,url,mission.version);
-      result={...linked,handoff:renderChatGPTHandoff(linked.mission,linked.url)};
-    } else if (command === 'telegram-anchor' && id === '--clear') {
+  const home=stateHome();
+  const readOnly=['channel-status','channel-drain-status','pi-health','pi-evidence',
+    'browser-binding-health','goal-request-ledger','list','show','events'].includes(command)||
+    (command==='recover'&&rest.length===0);
+  const store=new Store(join(home,'missions.sqlite'),{readOnly});
+  try{
+    let result:unknown;
+    if(command==='list')result=store.list();
+    else if(command==='show')result=store.get(uuid(id,'Mission'));
+    else if(command==='events')result=store.events(uuid(id,'Mission'));
+    else if (command === 'telegram-anchor' && id === '--clear') {
       store.setMeta('telegram.chatgpt.anchorUrl','');
       store.setMeta('telegram.chatgpt.browserId','');
       result={configured:false,note:'The Telegram fresh-chat launcher has been locally revoked.'};
@@ -222,28 +180,6 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
         throw new Error('Anchor ChatGPT tab must be idle with a visible composer');
       setTelegramChatAnchor(store,url,browserId);
       result={configured:true,note:'Approved browser launch profile saved. New tasks create separate fresh Chats; the source tab is never sent a message.'};
-    } else if (command === 'telegram-agent-workspace' && id === '--clear') {
-      store.setMeta('telegram.agent.workspace','');
-      result={configured:false,note:'Native executor workspace authorization revoked.'};
-    } else if (command === 'telegram-agent-workspace') {
-      const f=flags(argv.slice(1));
-      const workspace=resolve(option(f,'workspace'));
-      if(!statSync(workspace).isDirectory())throw new Error('Approved native executor workspace must exist');
-      store.setMeta('telegram.agent.workspace',workspace);
-      result={configured:true,workspace,mode:'read-only',
-        note:'Native executor is optional; verify the selected plugin enforces read-only tools independently.'};
-    } else if (command === 'plugin-register') {
-      const f=flags(argv.slice(1));
-      result=await registerExecutorPlugin(store,option(f,'path'));
-    } else if (command === 'plugin-list') {
-      result={default:defaultExecutorId(store),installed:registeredExecutorPlugins(store)};
-    } else if (command === 'plugin-default') {
-      setDefaultExecutor(store,option(flags(argv.slice(1)),'id'));
-      result={default:defaultExecutorId(store)};
-    } else if (command === 'plugin-remove') {
-      const pluginId=option(flags(argv.slice(1)),'id');
-      removeExecutorPlugin(store,pluginId);
-      result={removed:pluginId,note:'Registration cleared, external files and prior mission bindings unchanged.'};
     } else if (command === 'telegram-pi-config' && id === '--clear') {
       store.setMeta('telegram.pi.sshHost','');
       store.setMeta('telegram.pi.project','');
@@ -257,9 +193,6 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       store.setMeta('telegram.pi.project',config.project);
       result={configured:true,route:config,
         note:'PI uses a fixed SSH → sudo pictl infer --stdin --json command with no tools. No credentials stored here; requires pre-authorized SSH and remote pictl.'};
-    } else if (command === 'telegram-build-project' && id === '--clear') {
-      store.setMeta('telegram.build.project','');
-      result={configured:false,note:'No future /build command may start until locally re-approved.'};
     } else if (command === 'telegram-build-project' && id === '--allow') {
       if(rest.length!==1||!store.getMeta('telegram.pi.sshHost'))
         throw new Error('A configured PI route and exactly one --allow path are required');
@@ -274,13 +207,6 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
     } else if (command === 'telegram-build-project' && id === '--list') {
       if(rest.length!==0)throw new Error('No arguments allowed with --list');
       result={repositories:approvedBuildRepositories(store)};
-    } else if (command === 'telegram-build-project') {
-      const project=validateRemoteProjectPath(option(flags(argv.slice(1)),'project'));
-      if(!store.getMeta('telegram.pi.sshHost')||project!==store.getMeta('telegram.pi.project'))
-        throw new Error('Build project must exactly match the configured PI remote project');
-      store.setMeta('telegram.build.project',project);
-      approveBuildRepository(store,project);
-      result={configured:true,project,note:'The owner may opt into project changes with /build. This is a ChatGPT authorization prompt, not an operating-system sandbox.'};
     } else if (command === 'telegram-identify') {
       const token=process.env.MISSION_RELAY_TELEGRAM_BOT_TOKEN;
       if(!token) throw new Error('Set MISSION_RELAY_TELEGRAM_BOT_TOKEN privately in the local process environment');
@@ -293,8 +219,7 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       const owner=Number(process.env.MISSION_RELAY_TELEGRAM_USER_ID);
       const chat=Number(process.env.MISSION_RELAY_TELEGRAM_CHAT_ID);
       const runtimeProof=verifiedRuntimeProvenance();
-      const bridge=new TelegramBridge(store,engine,new TelegramHttpTransport(token),owner,chat,
-        (missionId)=>executorPreflight(store,missionId),
+      const bridge=new TelegramBridge(store,new TelegramHttpTransport(token),owner,chat,
         undefined,undefined,undefined,runtimeProof);
       const controller=new AbortController();
       const shutdown=()=>controller.abort();
@@ -350,31 +275,10 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       if(!id||!/^[0-9a-f-]{36}$/i.test(id)||rest.length)
         throw new Error('Provide exactly one PI Mission UUID');
       result=inspectPiEvidence(store,id);
-    } else if (command === 'pi-chain-evidence') {
-      if(!id||!/^[0-9a-f-]{36}$/i.test(id)||rest.length)
-        throw new Error('Provide exactly one PI Mission UUID');
-      result=inspectPiChainEvidence(store,id);
     } else if (command === 'goal-request-ledger') {
       if(!id||!/^[0-9a-f-]{36}$/i.test(id)||rest.length)
         throw new Error('Provide exactly one Goal UUID');
       result=inspectGoalRequestLedger(store,id);
-    } else if (command === 'doctor') {
-      result=await executorPreflight(store);
-      if (!(result as {ok:boolean}).ok) process.exitCode=2;
-    }
-    else if (command === 'list') result = engine.list();
-    else if (command === 'archive-settled') {
-      if(id||rest.length)throw new Error('archive-settled takes no arguments');
-      result={...store.archiveSettledMissions(),mode:'non-destructive',
-        note:'Mission records and all audit events remain available via list/show/events.'};
-    }
-    else if (command === 'browser-list') {
-      const browsers=await listBrowsers();
-      result=browsers.map(b=>({id:b.id,browser:b.browser,activeTabs:b.activeTabs,playwriterVersion:b.playwriterVersion}));
-    } else if (command === 'browser-candidates') {
-      result={scope:'selected Playwriter-connected Chrome profile',
-        warning:'Only enabled tabs are observable; inventory does not require or imply any tab-group membership.',
-        candidates:await listConnectedChatCandidates(option(flags(argv.slice(1)),'browser-id'))};
     } else if (command === 'browser-binding-health' && id) {
       if(!/^[0-9a-f-]{36}$/i.test(id)||rest.length)
         throw new Error('Provide exactly one bound Mission UUID');
@@ -390,546 +294,121 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
         linkedUrl,receipt:store.chatBrowserTurn(id),
         enabledChatCandidates:candidates,
       });
-    } else if(command==='browser-pending-evidence'&&id) {
-      if(!/^[0-9a-f-]{36}$/i.test(id)||rest.length)
-        throw new Error('Provide exactly one bound Mission UUID');
-      const mission=store.get(id),receipt=store.chatBrowserTurn(id);
-      const linkedUrl=store.chatLink(id),browserId=store.chatBrowserBinding(id);
-      const lastReservation=store.events(id).filter(e=>e.type==='chatgpt.browser_reserved').at(-1);
-      const rp=lastReservation?.payload as {requestKey?:string;promptSha256?:string}|undefined;
-      if(!linkedUrl||!browserId||!receipt||
-         !['reserved','uncertain'].includes(receipt.status)||
-         receipt.newConversation===true||!lastReservation||
-         rp?.requestKey!==receipt.requestKey||rp.promptSha256!==receipt.promptSha256)
-        throw new Error('No single linked, original-conversation pending Send with an intact reservation; no browser read attempted');
-      const candidates=await withReadOnlyDeadline(
-        listConnectedChatCandidates(browserId,linkedUrl));
-      const binding=inspectBrowserBinding({missionId:id,missionState:mission.state,
-        turnCount:mission.turnCount,linkedUrl,receipt,
-        enabledChatCandidates:candidates});
-      if(binding.binding!=='exact_connected')
-        throw new Error('Original linked browser tab is not uniquely exposed; no browser read attempted');
-      const prior=store.events(id).filter(e=>
-        ['chatgpt.browser_observed','chatgpt.browser_turn_recovered',
-         'chatgpt.browser_rollover_recovered'].includes(e.type)).at(-1);
-      const priorPlan=store.piPlan(id);
-      const priorAnswerSha=priorPlan?.round===mission.turnCount
-        ?priorPlan.responseSha256
-        :(prior?.payload as {assistantSha256?:string}|undefined)?.assistantSha256??null;
-      const session=await withReadOnlyDeadline(connectChatPage(linkedUrl,{browserId}),
-        30_000,late=>late.close());
-      result=await withBrowserSession(session,async page=>{
-        const first=await withReadOnlyDeadline(inspectChatPage(page,linkedUrl));
-        const userSha=await withReadOnlyDeadline(lastVisibleUserPromptSha256(page));
-        await new Promise(resolve=>setTimeout(resolve,3000));
-        const second=await withReadOnlyDeadline(inspectChatPage(page,linkedUrl));
-        const secondUserSha=await withReadOnlyDeadline(lastVisibleUserPromptSha256(page));
-        return assessPendingBrowserAnswer({missionId:id,round:mission.turnCount+1,
-          reservationEventId:lastReservation.id,
-          reservationPromptSha256:receipt.promptSha256,
-          latestUserSha256:userSha===secondUserSha?userSha:null,
-          lastObservedAnswerSha256:priorAnswerSha,first,second});
-      });
-    }
-    else if (command === 'show' && id) result = engine.get(id);
-    else if (command === 'events' && id) result = store.events(id);
-    else if (command === 'link-chat' && id) {
-      const f=flags(rest);
-      result=store.linkChat(id,option(f,'url'),Number(option(f,'revision')));
-    }
-    else if (command === 'handoff' && id) {
-      const url=store.chatLink(id);
-      if(!url) throw new Error('No linked ChatGPT conversation; use link-chat locally first');
-      result={conversationUrl:url,handoff:renderChatGPTHandoff(engine.get(id),url)};
-    }
-    else if (command === 'browser-bind' && id) {
-      const f=flags(rest);
-      const browserId=option(f,'browser-id');
+    } else if (command === 'browser-list') {
       const browsers=await listBrowsers();
-      if(!browsers.some(b=>b.id===browserId))
-        throw new Error('Selected browser ID is not connected to the local Playwriter relay');
-      result=store.bindChatBrowser(id,browserId,Number(option(f,'revision')));
-    }
-    else if (command === 'browser-probe' && id) {
-      const url=store.chatLink(id);
-      if(!url) throw new Error('Mission has no linked ChatGPT conversation');
+      result=browsers.map(b=>({id:b.id,browser:b.browser,activeTabs:b.activeTabs,playwriterVersion:b.playwriterVersion}));
+    } else if (command==='recover'){
+      const id=uuid(argv[1],'Mission');
       const f=flags(rest);
-      const bound=store.chatBrowserBinding(id);
-      if(!bound) throw new Error('Pin this ChatGPT Mission to an explicitly approved Chrome profile with browser-bind before probing');
-      const selection=f['--browser-id']?option(f,'browser-id'):bound??undefined;
-      if(bound && selection!==bound) throw new Error('Browser override conflicts with the bound Mission Chrome profile');
-      const session=await connectChatPage(url,{browserId:selection});
-      result=await withBrowserSession(session,async page=>{
-        const snapshot=await inspectChatPage(page,url);
-        return {...snapshot,lastAssistant:snapshot.lastAssistant.slice(-600),
-          lastAssistantSha256:createHash('sha256').update(snapshot.lastAssistant).digest('hex'),
-          missionId:id};
-      });
-    }
-    else if (command === 'browser-send' && id) {
-      const f=flags(rest);
-      const url=store.chatLink(id);
-      if(!url) throw new Error('Mission has no linked ChatGPT conversation');
-      const revision=Number(option(f,'revision'));
-      const requestKey=option(f,'request-key');
-      const prompt=readFileSync(resolve(option(f,'prompt-file')),'utf8').trim();
-      if(!prompt || prompt.length>12000) throw new Error('Browser prompt must contain 1–12000 characters');
-      const timeoutMs=Number(option(f,'timeout-ms','3600000'));
-      const bound=store.chatBrowserBinding(id);
-      if(!bound) throw new Error('Pin this ChatGPT Mission to an explicitly approved Chrome profile with browser-bind before sending');
-      const browserId=f['--browser-id']?option(f,'browser-id'):bound??undefined;
-      if(bound && browserId!==bound) throw new Error('Browser override conflicts with the bound Mission Chrome profile');
-      const session=await connectChatPage(url,{browserId});
-      result=await withBrowserSession(session,async page=>{
-        const receipt=await executeBrowserTurn({store,missionId:id,revision,requestKey,
-          page,url,prompt,timeoutMs});
-        const {lastAssistant: _fullText,...safeReceipt}=receipt;
-        return safeReceipt;
-      });
-    }
-    else if (command === 'browser-drive' && id) {
-      const f=flags(rest);
-      const url=store.chatLink(id);
-      if(!url) throw new Error('Mission has no linked ChatGPT conversation');
-      const turns=Number(option(f,'turns','3'));
-      if(!Number.isInteger(turns)||turns<1||turns>MAX_RELAY_CHAT_TURNS)
-        throw new Error(`Drive turns must be 1–${MAX_RELAY_CHAT_TURNS}`);
-      const prefix=option(f,'request-prefix');
-      if(!/^[\w.-]{1,120}$/.test(prefix)) throw new Error('Request prefix must be 1–120 safe characters');
-      const timeoutMs=Number(option(f,'timeout-ms','3600000'));
-      const bound=store.chatBrowserBinding(id);
-      if(!bound) throw new Error('Pin this ChatGPT Mission to an explicitly approved Chrome profile with browser-bind before continuing');
-      const browserId=f['--browser-id']?option(f,'browser-id'):bound??undefined;
-      if(bound && browserId!==bound) throw new Error('Browser override conflicts with the bound Mission Chrome profile');
-      const revision=Number(option(f,'revision'));
-      const session=await connectChatPage(url,{browserId});
-      result=await withBrowserSession(session,async page=>{
-        const outcome=await driveChatConversation({store,missionId:id,revision,
-          requestPrefix:prefix,turns,page,url,timeoutMs});
-        return {missionId:id,...outcome,
-          note:'Flow markers are untrusted hints; no claim of independent completion verification.'};
-      });
-    }
-    else if (command === 'browser-reconcile' && id) {
-      if(!flags(rest)['--acknowledge-side-effects']) throw new Error('Explicit --acknowledge-side-effects is required');
-      if(!['reserved','uncertain'].includes(store.chatBrowserTurn(id)?.status??''))
-        throw new Error('No interrupted browser turn to reconcile');
-      const m=store.reconcileChatBrowserTurn(id);
-      result={...m,note:'Original browser request will never be replayed and no answer was credited. PI resume needs a separately verified original checkpoint; merely reconciling an ambiguous Send does not authorize another Send. If no complete answer exists, use a new owner-authorized Goal instead of resetting counters.'};
-    }
-    else if (command === 'browser-recover-turn' && id) {
-      const f=flags(rest);
-      if(!f['--acknowledge-side-effects'])
-        throw new Error('Explicit --acknowledge-side-effects is required after inspecting the real ChatGPT conversation');
-      const revision=Number(option(f,'revision'));
-      const m=store.get(id),url=store.chatLink(id),record=store.chatBrowserTurn(id);
-      const bound=store.chatBrowserBinding(id);
-      const uncertain=m.state==='NEEDS_RECONCILIATION'&&record?.status==='uncertain';
-      const abandoned=store.isAbandonedBrowserReservation(id);
-      if(!url||!bound||!record||m.version!==revision||(!uncertain&&!abandoned)||
-        record.newConversation===true)
-        throw new Error('No eligible uncertain or dead-owner reserved existing-chat turn; a live owner must finish its own Send');
-      // PI-authored continuations cannot be reconstructed from the mission goal.
-      // The original exact submitted prompt hash is already durable in SQLite.
-      // Compare it with the latest visible user turn; never accept a quote of
-      // an earlier prompt or replay the uncertain Send.
-      const session=await withReadOnlyDeadline(connectChatPage(url,{browserId:bound}),
-        30_000,late=>late.close());
-      const answer=await withBrowserSession(session,async page=>{
-        const first=await withReadOnlyDeadline(inspectChatPage(page,url));
-        if(first.generating||!first.composerReady||!first.lastAssistant.trim()||
-          !['DONE','NEXT','BLOCKED','HANDOFF'].includes(browserDecision(first.lastAssistant))||
-          !matchesReservedPromptHash(await withReadOnlyDeadline(lastVisibleUserPromptSha256(page)),record.promptSha256))
-          throw new Error('Original chat does not show the exact reserved user request and a complete marked assistant reply');
-        await new Promise(resolve=>setTimeout(resolve,3000));
-        const second=await withReadOnlyDeadline(inspectChatPage(page,url));
-        if(second.generating||!second.composerReady||second.lastAssistant!==first.lastAssistant||
-          !matchesReservedPromptHash(await withReadOnlyDeadline(lastVisibleUserPromptSha256(page)),record.promptSha256))
-          throw new Error('Original ChatGPT reply was unstable or no longer corresponds to the reserved request');
-        return second.lastAssistant;
-      });
-      const assistantSha256=createHash('sha256').update(answer).digest('hex');
-      const recovered=store.recoverObservedBrowserTurn(id,revision,{
-        requestPromptSha256:record.promptSha256,assistantSha256,summary:answer,
-      });
-      result={...recovered,assistantSha256,verifiedDecision:browserDecision(answer),
-        note:abandoned?
-          'Recovered a dead-owner original reservation after independent read-only browser verification. No second Send; old reservation preserved; PI still must review this answer.':
-          'Recovered the observed original-chat reply with no new Send. Historical uncertain event preserved; model DONE is not independent verification.'};
-    }
-    else if (command === 'browser-correct-attribution' && id) {
-      const f=flags(rest);
-      if(!f['--acknowledge-side-effects'])
-        throw new Error('Explicit --acknowledge-side-effects is required for immutable attribution correction');
-      const revision=Number(option(f,'revision'));
-      const m=store.get(id),record=store.chatBrowserTurn(id),url=store.chatLink(id);
-      const bound=store.chatBrowserBinding(id),plan=store.piPlan(id);
-      if(m.version!==revision||m.state!=='PAUSED'||m.stopRequested||
-        record?.status!=='observed'||!url||!bound||!plan||
-        plan.round!==m.turnCount||plan.responseSha256!==record.assistantSha256)
-        throw new Error('Attribution correction requires the original latest PI observed receipt and exact revision');
-      const session=await withReadOnlyDeadline(connectChatPage(url,{browserId:bound}),
-        30_000,late=>late.close());
-      const answer=await withBrowserSession(session,async page=>{
-        const first=await withReadOnlyDeadline(inspectChatPage(page,url));
-        if(first.generating||!first.composerReady||
-          !['DONE','NEXT','BLOCKED','HANDOFF'].includes(browserDecision(first.lastAssistant))||
-          !matchesReservedPromptHash(await withReadOnlyDeadline(lastVisibleUserPromptSha256(page)),record.promptSha256))
-          throw new Error('Live ChatGPT does not show a complete reply to the original reserved request');
-        const firstSha=createHash('sha256').update(first.lastAssistant).digest('hex');
-        if(firstSha===record.assistantSha256)
-          throw new Error('Live assistant answer matches the original receipt; there is no proven attribution error');
-        await new Promise(resolve=>setTimeout(resolve,3000));
-        const second=await withReadOnlyDeadline(inspectChatPage(page,url));
-        if(second.generating||!second.composerReady||
-          second.lastAssistant!==first.lastAssistant||
-          !matchesReservedPromptHash(await withReadOnlyDeadline(lastVisibleUserPromptSha256(page)),record.promptSha256))
-          throw new Error('Corrected answer did not remain stable on the exact original request');
-        return second.lastAssistant;
-      });
-      const assistantSha256=createHash('sha256').update(answer).digest('hex');
-      const corrected=store.correctPiBrowserAttribution(id,revision,{
-        requestPromptSha256:record.promptSha256,assistantSha256,summary:answer,
-      });
-      result={missionId:id,state:corrected.state,revision:corrected.version,
-        round:corrected.turnCount,assistantSha256,
-        note:'Historical browser/PI events preserved. No new Send or turn credited. Original PI decision is invalid until corrected answer is independently re-reviewed.'};
-    }
-    else if (command === 'browser-retry-pre-send-rollover' && id) {
-      const f=flags(rest);
-      if(!f['--acknowledge-side-effects']||Object.keys(f).some(
-        k=>!['--revision','--acknowledge-side-effects'].includes(k)))
-        throw new Error('Explicit acknowledgement and only --revision are required for one-shot pre-Send recovery');
-      const revision=Number(option(f,'revision'));
-      const m=store.get(id),r=store.chatBrowserTurn(id),url=store.chatLink(id),
-        browserId=store.chatBrowserBinding(id),plan=store.piPlan(id);
-      if(m.version!==revision||m.state!=='NEEDS_RECONCILIATION'||
-        r?.status!=='uncertain'||!r.newConversation||!url||!browserId||
-        !plan||plan.round!==m.turnCount)
-        throw new Error('No eligible original, uncertain new-chat request at this revision');
-      // A Goal-bound Send has immutable private prompt bytes. Never rebuild
-      // them from a later, potentially revised PI/Goal instruction.
-      const prompt=store.reservedBrowserPrompt(id,r.requestKey)?.prompt;
-      if(!prompt||createHash('sha256').update(prompt.trim()).digest('hex')!==r.promptSha256)
-        throw new Error('Original private versioned prompt snapshot absent or corrupt; no browser operation');
-      const events=store.events(id),prior=events.filter(e=>
-        e.type==='chatgpt.browser_observed'&&
-        (e.payload as {round?:number}).round===m.turnCount).at(-1);
-      const priorKey=(prior?.payload as {requestKey?:string}|undefined)?.requestKey;
-      const priorReservation=events.find(e=>e.type==='chatgpt.browser_reserved'&&
-        (e.payload as {requestKey?:string}).requestKey===priorKey);
-      const expectedUser=(priorReservation?.payload as {promptSha256?:string}|undefined)?.promptSha256;
-      const expectedAnswer=(prior?.payload as {assistantSha256?:string}|undefined)?.assistantSha256;
-      if(!expectedUser||!expectedAnswer)
-        throw new Error('Prior observed source request has no exact original evidence');
-      const session=await withReadOnlyDeadline(connectChatPage(url,{browserId}),
-        30_000,late=>late.close());
-      result=await withBrowserSession(session,async page=>{
-        const inspectSource=async()=>{
-          const snapshot=await withReadOnlyDeadline(inspectChatPage(page,url));
-          const user=await withReadOnlyDeadline(lastVisibleUserPromptSha256(page));
-          if(snapshot.generating||!snapshot.composerReady||
-            user!==expectedUser||
-            createHash('sha256').update(snapshot.lastAssistant).digest('hex')!==expectedAnswer)
-            throw new Error('Original source Chrome user/assistant bytes do not match the last observed PI checkpoint');
-          return snapshot.lastAssistant;
-        };
-        const first=await inspectSource();
-        await new Promise(resolve=>setTimeout(resolve,2600));
-        if(await inspectSource()!==first)
-          throw new Error('Source Chrome changed during two independent pre-Send observations');
-        // Playwriter can expose only extension-enabled Chrome targets. Any
-        // already visible new chat with the same original prompt is a hard
-        // reason to stop and use read-only rollover recovery instead.
-        const targets=page.context().pages().filter(p=>!p.isClosed());
-        for(const candidate of targets){
-          if(candidate===page)continue;
-          if(candidate.url()==='https://chatgpt.com/'||
-            candidate.url()==='https://chatgpt.com'||candidate.url()==='about:blank')
-            throw new Error('A possibly unfinished new-chat bootstrap tab exists; inspect it before retry');
-          if(candidate.url().startsWith('https://chatgpt.com/c/') &&
-            await withReadOnlyDeadline(lastVisibleUserPromptSha256(candidate))===r.promptSha256)
-            throw new Error('Original reserved user prompt is already visible in another tab; do not resend');
-        }
-        // Recheck source immediately before the durable one-shot intent.
-        if(await inspectSource()!==first)
-          throw new Error('Original source changed immediately before the one-shot intent');
-        // Read-only browser bootstrap comes BEFORE the one-shot intent. If
-        // network hydration fails again, do not consume the sole authorized
-        // Send attempt. Close only this newly created, still-unsent page.
-        const newPage=await page.context().newPage();
-        let intent:ReturnType<typeof store.authorizePreSendRolloverOnce>;
-        try{
-          await prepareNewChatOrigin(newPage);
-          if(await inspectSource()!==first)
-            throw new Error('Original source changed during read-only new-tab bootstrap');
-          intent=store.authorizePreSendRolloverOnce(id,revision,{
-            originalPromptSha256:r.promptSha256,
-            sourcePromptSha256:expectedUser,sourceAnswerSha256:expectedAnswer,
-          });
-        }catch(error){
-          // Page identity is owned by this very invocation; no composer was
-          // filled or clicked. Do not touch older/user-created ChatGPT tabs.
-          if(!newPage.isClosed())await newPage.close().catch(()=>{});
-          throw error;
-        }
-        // Exactly one Send attempt after the durable intent, reusing the
-        // already hydrated owned origin. If any later step fails, keep the
-        // original uncertain request and this one-shot intent. An actually
-        // sent, uncredited reply needs read-only browser-recover-rollover.
-        const output=await submitNewChatTurn(newPage,prompt,undefined,true);
-        const latest=await withReadOnlyDeadline(lastVisibleUserPromptSha256(newPage));
-        if(latest!==r.promptSha256||output.receipt.generating||
-          browserDecision(output.receipt.lastAssistant)==='UNMARKED')
-          throw new Error('New-chat response is not independently attributable; original uncertain request preserved');
-        const answer=output.receipt.lastAssistant;
-        const recovered=store.recoverObservedBrowserRollover(id,revision,{
-          requestPromptSha256:r.promptSha256,newChatUrl:output.url,
-          assistantSha256:createHash('sha256').update(answer).digest('hex'),
-          summary:answer,
+      const modes=['--accept-reply','--retry','--abandon'].filter(k=>f[k]);
+      if(modes.length===0){
+        if(Object.keys(f).length)throw new Error('Diagnosis takes no options');
+        result=diagnose(store,id!);
+      }else if(modes.length>1)throw new Error('Choose exactly one of --accept-reply, --retry, --abandon');
+      else if(modes[0]==='--abandon'){
+        result={...diagnose(store,store.abandonUncertainRequest(id!,Number(option(f,'revision'))).id),
+          note:'No answer credited and nothing resent. Continue the Goal from Telegram with /goal-continue.'};
+      }else if(modes[0]==='--retry'){
+        const revision=Number(option(f,'revision'));
+        const m=store.get(id!),receipt=store.chatBrowserTurn(id!);
+        const url=store.chatLink(id!),browserId=store.chatBrowserBinding(id!);
+        if(m.version!==revision||!receipt||!['observed','reconciled'].includes(receipt.status)||
+          !url||!browserId||!m.lastError)
+          throw new Error('Retry needs a Mission stopped by an error at a settled step (see recover <mission>)');
+        const read=await stableRead(store,id!,url,browserId,(answer,userSha)=>{
+          if(userSha!==receipt.promptSha256||
+            createHash('sha256').update(answer).digest('hex')!==receipt.assistantSha256)
+            throw new Error('Live Chat does not match the settled request and reply');
         });
-        return {missionId:id,state:recovered.state,version:recovered.version,
-          observedTurns:recovered.turnCount,intentEventId:intent.intentEventId,
-          originalRequestKeyReused:true,originalUncertainEventPreserved:true,
-          recoveredAnswerSha256:createHash('sha256').update(answer).digest('hex'),
-          note:'One first real Send after proven pre-Send navigation failure, credited to the ORIGINAL reserved request. No duplicate reservation, no second Send. Worker must independently PI-review this reply.'};
-      });
+        const cleared=store.clearSettledPiInterruption(id!,revision,{
+          requestPromptSha256:read.userSha!,
+          assistantSha256:createHash('sha256').update(read.answer).digest('hex')});
+        result={...diagnose(store,cleared.id),note:'Error cleared; the Worker re-reads the Chat before any next step.'};
+      }else if(f['--new-url']){
+        const revision=Number(option(f,'revision'));
+        const newUrl=normalizeChatGPTUrl(option(f,'new-url'));
+        const m=store.get(id),oldUrl=store.chatLink(id),record=store.chatBrowserTurn(id);
+        const bound=store.chatBrowserBinding(id);
+        const uncertain=m.state==='NEEDS_RECONCILIATION'&&record?.status==='uncertain';
+        const abandoned=store.isAbandonedBrowserRolloverReservation(id);
+        if(!oldUrl||!bound||!record||m.version!==revision||(!uncertain&&!abandoned)||
+          newUrl===oldUrl)
+          throw new Error('No eligible uncertain or dead-owner reserved new-chat rollover at this Mission revision; a live owner must settle its original Send');
+        const oldSession=await withReadOnlyDeadline(connectChatPage(oldUrl,{browserId:bound}),
+          30_000,late=>late.close());
+        const prompt=await withBrowserSession(oldSession,async page=>{
+          const source=await withReadOnlyDeadline(inspectChatPage(page,oldUrl));
+          if(source.generating||!source.composerReady)
+            throw new Error('Original ChatGPT source tab is not idle');
+          // Inspection only: the reserved prompt is never sent again.
+          return reservedRequestPrompt(store,id,record.requestKey);
+        });
+        const promptSha256=createHash('sha256').update(prompt.trim()).digest('hex');
+        if(promptSha256!==record.promptSha256)
+          throw new Error('Reconstructed handoff prompt hash differs from the durable reserved request');
+        const newSession=await withReadOnlyDeadline(connectChatPage(newUrl,{browserId:bound}),
+          30_000,late=>late.close());
+        const answer=await withBrowserSession(newSession,async page=>{
+          const first=await withReadOnlyDeadline(inspectChatPage(page,newUrl));
+          if(first.generating||!['DONE','NEXT','BLOCKED','HANDOFF'].includes(browserDecision(first.lastAssistant))||
+            !matchesSubmittedUserPrompt(await withReadOnlyDeadline(lastVisibleUserPromptSha256(page)),prompt))
+            throw new Error('New conversation is not a complete reply to the exact reserved prompt');
+          await new Promise(resolve=>setTimeout(resolve,2600));
+          const second=await withReadOnlyDeadline(inspectChatPage(page,newUrl));
+          if(second.generating||second.lastAssistant!==first.lastAssistant||
+            !matchesSubmittedUserPrompt(await withReadOnlyDeadline(lastVisibleUserPromptSha256(page)),prompt))
+            throw new Error('New ChatGPT reply was not stable or its submitted prompt changed');
+          return second.lastAssistant;
+        });
+        const assistantSha256=createHash('sha256').update(answer).digest('hex');
+        const recovered=store.recoverObservedBrowserRollover(id,revision,{
+          requestPromptSha256:promptSha256,newChatUrl:newUrl,assistantSha256,summary:answer,
+        });
+        result={...recovered,assistantSha256,verifiedNewUrl:newUrl,
+          note:abandoned?
+            'Recovered a dead-owner reserved new-chat response after independent old/new page readback; no second Send and no invented uncertainty event. PI review remains required.':
+            'Reconciled after independent old/new page readback; prior request was not replayed.'};
+      }else{
+        const revision=Number(option(f,'revision'));
+        const m=store.get(id),url=store.chatLink(id),record=store.chatBrowserTurn(id);
+        const bound=store.chatBrowserBinding(id);
+        const uncertain=m.state==='NEEDS_RECONCILIATION'&&record?.status==='uncertain';
+        const abandoned=store.isAbandonedBrowserReservation(id);
+        if(!url||!bound||!record||m.version!==revision||(!uncertain&&!abandoned)||
+          record.newConversation===true)
+          throw new Error('No eligible uncertain or dead-owner reserved existing-chat turn; a live owner must finish its own Send');
+        // PI-authored continuations cannot be reconstructed from the mission goal.
+        // The original exact submitted prompt hash is already durable in SQLite.
+        // Compare it with the latest visible user turn; never accept a quote of
+        // an earlier prompt or replay the uncertain Send.
+        const session=await withReadOnlyDeadline(connectChatPage(url,{browserId:bound}),
+          30_000,late=>late.close());
+        const answer=await withBrowserSession(session,async page=>{
+          const first=await withReadOnlyDeadline(inspectChatPage(page,url));
+          if(first.generating||!first.composerReady||!first.lastAssistant.trim()||
+            !['DONE','NEXT','BLOCKED','HANDOFF'].includes(browserDecision(first.lastAssistant))||
+            !matchesReservedPromptHash(await withReadOnlyDeadline(lastVisibleUserPromptSha256(page)),record.promptSha256))
+            throw new Error('Original chat does not show the exact reserved user request and a complete marked assistant reply');
+          await new Promise(resolve=>setTimeout(resolve,3000));
+          const second=await withReadOnlyDeadline(inspectChatPage(page,url));
+          if(second.generating||!second.composerReady||second.lastAssistant!==first.lastAssistant||
+            !matchesReservedPromptHash(await withReadOnlyDeadline(lastVisibleUserPromptSha256(page)),record.promptSha256))
+            throw new Error('Original ChatGPT reply was unstable or no longer corresponds to the reserved request');
+          return second.lastAssistant;
+        });
+        const assistantSha256=createHash('sha256').update(answer).digest('hex');
+        const recovered=store.recoverObservedBrowserTurn(id,revision,{
+          requestPromptSha256:record.promptSha256,assistantSha256,summary:answer,
+        });
+        result={...recovered,assistantSha256,verifiedDecision:browserDecision(answer),
+          note:abandoned?
+            'Recovered a dead-owner original reservation after independent read-only browser verification. No second Send; old reservation preserved; PI still must review this answer.':
+            'Recovered the observed original-chat reply with no new Send. Historical uncertain event preserved; model DONE is not independent verification.'};
+      }
     }
-    else if(command==='browser-resume-pending-retry'&&id){
-      const f=flags(rest);
-      if(f['--acknowledge-side-effects']?.[0]!=='true')
-        throw new Error('Explicit --acknowledge-side-effects required');
-      const revision=Number(option(f,'revision'));
-      if(!Number.isSafeInteger(revision)||revision<0)
-        throw new Error('Valid Mission revision required');
-      const record=store.chatBrowserTurn(id);
-      const m=record?.newConversation===true
-        ?store.resumeUncertainNewChatRetry(id,revision)
-        :store.resumeUncertainExistingChatRetry(id,revision);
-      result={missionId:id,revision:m.version,state:m.state,
-        stopRequested:m.stopRequested,
-        note:'Original request is preserved; only the enrolled Worker may inspect and perform one same-message UI Retry. No Send or Retry was executed by this command.'};
-    }
-    else if(command==='browser-start-new-chat'&&id){
-      const f=flags(rest);
-      if(f['--acknowledge-side-effects']?.[0]!=='true')
-        throw new Error('Explicit --acknowledge-side-effects required to click the native UI');
-      const revision=Number(option(f,'revision'));
-      if(!Number.isSafeInteger(revision)||revision<0)
-        throw new Error('Valid original Mission revision required');
-      const mission=store.get(id),record=store.chatBrowserTurn(id);
-      const url=store.chatLink(id),browserId=store.chatBrowserBinding(id);
-      if(mission.version!==revision||!mission.stopRequested||
-        mission.state!=='NEEDS_RECONCILIATION'||!record||
-        record.status!=='uncertain'||record.newConversation===true||
-        !url||!browserId)
-        throw new Error('Native new-chat recovery needs the original paused, uncertain existing-Chat request');
-      const session=await withReadOnlyDeadline(connectChatPage(url,{browserId}),30_000,
-        late=>late.close());
-      result=await withBrowserSession(session,async page=>{
-        const check=async()=>{
-          const current=await withReadOnlyDeadline(inspectChatPage(page,url));
-          return !current.generating&&current.composerReady&&
-            await withReadOnlyDeadline(lastVisibleUserPromptSha256(page))===record.promptSha256&&
-            await withReadOnlyDeadline(visibleConversationLengthLimit(page));
-        };
-        if(!await check())throw new Error('Exact native maximum-length UI or original user prompt not verified');
-        await new Promise(resolve=>setTimeout(resolve,1500));
-        if(!await check())throw new Error('Maximum-length UI or original request changed during stability check');
-        const clicked=await clickConversationLengthStartOnce(page,url,true,
-          ()=>store.claimConversationLengthStartIntent(
-            id,revision,record.requestKey,record.promptSha256,true));
-        if(!clicked)throw new Error('Original native Start new chat button was unavailable or intent already used; do not click twice');
-        store.recordConversationLengthStartClicked(id,record.requestKey,record.promptSha256);
-        return {missionId:id,originalRequestKey:record.requestKey,
-          nativeStartClicked:true,composerSend:false,originalAnswerCredited:false,
-          originalReservationPreserved:true,
-          note:'Native Start new chat was clicked once. Original uncredited Send remains uncertain and locked; new-chat context and any continued work require separate verified settlement, never an automatic duplicate Send.'};
-      });
-    }
-    else if(command==='browser-send-native-draft'&&id){
-      const f=flags(rest);
-      if(f['--acknowledge-side-effects']?.[0]!=='true')
-        throw new Error('Explicit --acknowledge-side-effects required for the first native draft Send');
-      const revision=Number(option(f,'revision'));
-      if(!Number.isSafeInteger(revision)||revision<0)
-        throw new Error('Valid original Mission revision required');
-      const m=store.get(id),r=store.chatBrowserTurn(id);
-      const browserId=store.chatBrowserBinding(id);
-      if(m.version!==revision||m.state!=='NEEDS_RECONCILIATION'||
-        !m.stopRequested||!r||r.status!=='uncertain'||!browserId)
-        throw new Error('Native draft Send requires the original stopped, unchanged uncertain Mission');
-      const snapshot=store.reservedBrowserPrompt(id,r.requestKey);
-      if(!snapshot||createHash('sha256').update(snapshot.prompt.trim()).digest('hex')!==r.promptSha256)
-        throw new Error('Native prefilled draft does not have an immutable original request snapshot');
-      // The exact draft, not the UI URL alone, identifies the authorized
-      // native tab. Do not navigate to or fill an unknown ChatGPT origin.
-      const session=await withReadOnlyDeadline(
-        connectNativePrefilledDraft(browserId,r.promptSha256),30_000,
-        late=>late.close());
-      result=await withBrowserSession(session,async page=>{
-        const check=async()=>await withReadOnlyDeadline(
-          nativePrefilledDraftSha256(page))===r.promptSha256;
-        if(!await check())throw new Error('Native draft changed during initial readback');
-        await new Promise(resolve=>setTimeout(resolve,1500));
-        if(!await check())throw new Error('Native draft changed between independent reads');
-        const clicked=await clickNativePrefilledSendOnce(page,r.promptSha256,
-          ()=>store.claimNativePrefilledSendIntent(id,revision,r.requestKey,r.promptSha256),
-          ()=>store.recordNativePrefilledSendClicked(id,r.requestKey,r.promptSha256));
-        if(!clicked)throw new Error('Native draft missing, Send not ready, or one-shot intent already spent; no repeated Send');
-        return {missionId:id,originalRequestKey:r.requestKey,
-          nativeDraftSendClicked:true,originalPromptSha256:r.promptSha256,
-          originalAnswerCredited:false,originalReservationPreserved:true,
-          note:'One native prefilled draft Send was clicked. The original request is still uncertain; the enrolled Worker must independently inspect the new direct conversation and completed reply before PI continuation. Never click Send again on an ambiguous outcome.'};
-      });
-    }
-    else if (command === 'browser-recover-rollover' && id) {
-      const f=flags(rest);
-      if(!f['--acknowledge-side-effects'])
-        throw new Error('Explicit --acknowledge-side-effects is required after reviewing both browser conversations');
-      const revision=Number(option(f,'revision'));
-      const newUrl=normalizeChatGPTUrl(option(f,'new-url'));
-      const m=store.get(id),oldUrl=store.chatLink(id),record=store.chatBrowserTurn(id);
-      const bound=store.chatBrowserBinding(id);
-      const uncertain=m.state==='NEEDS_RECONCILIATION'&&record?.status==='uncertain';
-      const abandoned=store.isAbandonedBrowserRolloverReservation(id);
-      if(!oldUrl||!bound||!record||m.version!==revision||(!uncertain&&!abandoned)||
-        newUrl===oldUrl)
-        throw new Error('No eligible uncertain or dead-owner reserved new-chat rollover at this Mission revision; a live owner must settle its original Send');
-      const oldSession=await withReadOnlyDeadline(connectChatPage(oldUrl,{browserId:bound}),
-        30_000,late=>late.close());
-      const prompt=await withBrowserSession(oldSession,async page=>{
-        const source=await withReadOnlyDeadline(inspectChatPage(page,oldUrl));
-        if(source.generating||!source.composerReady)
-          throw new Error('Original ChatGPT source tab is not idle');
-        const parent=store.piChainParent(id);
-        const reconstruct={
-          goal:m.goal,acceptance:m.acceptance,sandbox:m.sandbox,workspace:m.workspace,
-          nextInstruction:m.nextInstruction,turnCount:m.turnCount,
-          missionRequestKey:m.requestKey,reservedRequestKey:record.requestKey,
-          sourceAnswer:source.lastAssistant,adopted:store.chatAdoption(id)!==null,
-          chainParent:parent!==null,
-          piManaged:store.getMeta(`pi.autopilot.enabled.${id}`)==='1',
-          piPlan:browserRolloverPiPlan(store,id),
-          goalBound:new GoalLedger(store).missionGoalId(id)!==null,
-        };
-        // New Goal work prompts were snapshot atomically before their Send;
-        // render them from the immutable versioned copy, never mutable Goal
-        // state. Older compact/legacy reservations have no snapshot and MUST
-        // still reconstruct using their original byte-exact, SHA-checked form.
-        // This is inspection only: neither path authorizes a new Send/Retry.
-        const versioned=store.reservedBrowserPrompt(id,record.requestKey);
-        return versioned?.prompt??
-          exactReservedRolloverPrompt(reconstruct,record.promptSha256).prompt;
-      });
-      const promptSha256=createHash('sha256').update(prompt.trim()).digest('hex');
-      if(promptSha256!==record.promptSha256)
-        throw new Error('Reconstructed handoff prompt hash differs from the durable reserved request');
-      const newSession=await withReadOnlyDeadline(connectChatPage(newUrl,{browserId:bound}),
-        30_000,late=>late.close());
-      const answer=await withBrowserSession(newSession,async page=>{
-        const first=await withReadOnlyDeadline(inspectChatPage(page,newUrl));
-        if(first.generating||!['DONE','NEXT','BLOCKED','HANDOFF'].includes(browserDecision(first.lastAssistant))||
-          !matchesSubmittedUserPrompt(await withReadOnlyDeadline(lastVisibleUserPromptSha256(page)),prompt))
-          throw new Error('New conversation is not a complete reply to the exact reserved prompt');
-        await new Promise(resolve=>setTimeout(resolve,2600));
-        const second=await withReadOnlyDeadline(inspectChatPage(page,newUrl));
-        if(second.generating||second.lastAssistant!==first.lastAssistant||
-          !matchesSubmittedUserPrompt(await withReadOnlyDeadline(lastVisibleUserPromptSha256(page)),prompt))
-          throw new Error('New ChatGPT reply was not stable or its submitted prompt changed');
-        return second.lastAssistant;
-      });
-      const assistantSha256=createHash('sha256').update(answer).digest('hex');
-      const recovered=store.recoverObservedBrowserRollover(id,revision,{
-        requestPromptSha256:promptSha256,newChatUrl:newUrl,assistantSha256,summary:answer,
-      });
-      result={...recovered,assistantSha256,verifiedNewUrl:newUrl,
-        note:abandoned?
-          'Recovered a dead-owner reserved new-chat response after independent old/new page readback; no second Send and no invented uncertainty event. PI review remains required.':
-          'Reconciled after independent old/new page readback; prior request was not replayed.'};
-    }
-    else if (command === 'run' && id) {
-      if(store.chatLink(id)) throw new Error('Mission is linked to ChatGPT; use browser control, not a native executor');
-      const preflight=await executorPreflight(store,id);
-      if(!preflight.ok) throw new Error(preflight.message);
-      result = await engine.run(id);
-    }
-    else if (command === 'pi-resume' && id) {
-      const f=flags(rest);
-      if(!f['--acknowledge-side-effects'])
-        throw new Error('PI autonomous resume needs explicit --acknowledge-side-effects');
-      const revision=Number(option(f,'revision'));
-      result=store.resumePausedPiCheckpoint(id,revision);
-    }
-    else if ((command === 'pi-recheck-successor'||command === 'pi-recheck-capacity'||
-      command === 'pi-recheck-timeout'||command === 'pi-recheck-browser') && id) {
-      const f=flags(rest);
-      if(!f['--acknowledge-side-effects'])
-        throw new Error('Explicit --acknowledge-side-effects required for PI interruption repair');
-      const revision=Number(option(f,'revision'));
-      const m=store.get(id),receipt=store.chatBrowserTurn(id);
-      const capacity=command==='pi-recheck-capacity'||command==='pi-recheck-timeout';
-      const timeout=command==='pi-recheck-timeout';
-      const browser=command==='pi-recheck-browser';
-      const url=store.chatLink(id),browserId=store.chatBrowserBinding(id);
-      if(m.version!==revision||m.state!=='PAUSED'||m.stopRequested||
-        (!capacity&&!browser&&m.lastError!==PI_SUCCESSOR_CHECKPOINT_MISMATCH)||
-        (capacity&&!m.lastError?.includes(timeout
-          ?'Model inference timed out after 120 seconds'
-          :'Pi maintenance or a global task is active'))||
-        (browser&&(![PI_CLOSED_PAGE_READ_ERROR,PI_NEXT_SOURCE_PREFLIGHT_ERROR].includes(m.lastError??'')||
-          store.piPlan(id)?.round!==m.turnCount||
-          !['NEXT','HANDOFF'].includes(store.piPlan(id)?.action??'')))||
-        !receipt||!['observed','reconciled'].includes(receipt.status)||
-        !url||!browserId||(!capacity&&!browser&&!store.piChainParent(id))||
-        !store.hasVerifiedPiBrowserCheckpoint(id))
-        throw new Error(browser
-          ?'No eligible settled pre-Send browser interruption at this revision'
-          :'No eligible settled successor false-mismatch interruption at this revision');
-      const session=await withReadOnlyDeadline(connectChatPage(url,{browserId}),
-        30_000,late=>late.close());
-      const independentlyRead=await withBrowserSession(session,async page=>{
-        const read=async()=>{
-          const snapshot=await withReadOnlyDeadline(inspectChatPage(page,url));
-          const promptSha=await withReadOnlyDeadline(lastVisibleUserPromptSha256(page));
-          const answerSha=createHash('sha256').update(snapshot.lastAssistant).digest('hex');
-          if(snapshot.generating||!snapshot.composerReady||
-            !['DONE','NEXT','BLOCKED','HANDOFF'].includes(browserDecision(snapshot.lastAssistant))||
-            promptSha!==receipt.promptSha256||answerSha!==receipt.assistantSha256)
-            throw new Error('Live Chrome does not match the original settled user/answer SHAs');
-          return {promptSha,answerSha,answer:snapshot.lastAssistant};
-        };
-        const first=await read();
-        await new Promise(resolve=>setTimeout(resolve,3000));
-        const second=await read();
-        if(first.answer!==second.answer)
-          throw new Error('Live successor answer changed between independent browser reads');
-        return {requestPromptSha256:second.promptSha,assistantSha256:second.answerSha};
-      });
-      const repaired=browser
-        ?store.clearSettledPiBrowserReadInterruption(id,revision,independentlyRead)
-        :capacity?store.clearHistoricPiCapacityInterruption(id,revision,independentlyRead)
-        :store.clearVerifiedPiSuccessorMismatch(id,revision,independentlyRead);
-      result={missionId:id,state:repaired.state,revision:repaired.version,
-        round:repaired.turnCount,stopRequested:repaired.stopRequested,
-        assistantSha256:independentlyRead.assistantSha256,
-        note:browser?'Exact settled pre-Send browser interruption cleared after two independent browser reads; no Send, original Worker must independently recheck before NEXT.':
-          capacity?'Original PI inference interruption revalidated and cleared without Send or PI decision; original Worker must independently reread the settled answer.':
-          'One false parent-vs-successor checkpoint interruption cleared. No Send, owner pause release or PI decision. Original Worker must independently re-read the live browser.'};
-    }
-    else if (command === 'pause' && id) result = engine.pause(id);
-    else if (command === 'resume' && id) result = engine.resume(id);
-    else if (command === 'cancel' && id) result = engine.cancel(id);
-    else if (command === 'instruct' && id) result = engine.instruct(id,option(flags(rest),'text'));
-    else if (command === 'reconcile' && id) {
-      if(store.chatLink(id) && ['reserved','uncertain'].includes(store.chatBrowserTurn(id)?.status??''))
-        throw new Error('Interrupted ChatGPT browser dispatch requires browser-reconcile, which clears the Mission and conversation lock atomically');
-      result=engine.reconcile(id,Boolean(flags(rest)['--acknowledge-side-effects']));
-    }
-    else throw new Error('Unknown command or missing mission ID; run help');
+    else throw new Error('Unknown command or missing argument; run help');
     console.log(JSON.stringify(result,null,2));
-    if (command === 'run' && (result as {state?:string})?.state === 'NEEDS_RECONCILIATION') process.exitCode = 2;
-  } finally { store.close(); }
+  }finally{store.close();}
 }
 
-main().catch(error=>{console.error(`mission-relay: ${error instanceof Error ? error.message : String(error)}`);process.exitCode=1;});
+main().catch(error=>{console.error(`mission-relay: ${error instanceof Error?error.message:String(error)}`);process.exitCode=1;});

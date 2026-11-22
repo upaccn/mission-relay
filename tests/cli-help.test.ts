@@ -15,6 +15,7 @@ test('CLI help reports the package version and current eight-Send ceiling',()=>{
   assert.equal(result.error,undefined,result.error?.message);
   assert.equal(result.status,0,result.stderr);
   assert.ok(result.stdout.startsWith(`Mission Relay v${packageVersion}\n`));
-  assert.match(result.stdout,/current 8-send chat segmentation/);
-  assert.doesNotMatch(result.stdout,/10-send chat segmentation/);
+  assert.match(result.stdout,/at most 8 Relay Sends/);
+  assert.match(result.stdout,/recover <mission> --abandon/);
+  assert.doesNotMatch(result.stdout,/32|pi-resume|browser-drive|chat-create/);
 });

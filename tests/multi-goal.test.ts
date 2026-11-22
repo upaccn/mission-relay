@@ -6,23 +6,17 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import type {Page} from 'playwriter';
 import {Store} from '../src/core/store.js';
-import {Engine} from '../src/core/engine.js';
 import {GoalLedger} from '../src/core/goal-store.js';
 import {approveBuildRepository,isApprovedBuildRepository,revokeBuildRepository,
   approvedBuildRepositories,declaredSourceMatchesScope,
   hasIsolatedRepositoryGrant,repositoriesOverlap} from '../src/core/build-scopes.js';
 import {TelegramBridge,type TelegramUpdate,type TelegramTransport} from '../src/plugins/telegram.js';
 import type {PiPlanner} from '../src/core/pi-planner.js';
-import type {AgentAdapter} from '../src/core/types.js';
 
 const ORIGIN='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
 const REPO_A='/srv/projects/first-product';
 const REPO_B='/srv/projects/second-product';
 const browserId='install:Chrome:synthetic';
-const never:AgentAdapter={
-  async execute(){throw new Error('No native executor may run');},
-  async verify(){throw new Error('No native verifier may run');},
-};
 
 test('an explicitly declared Goal source cannot inherit a different approved /build default',async()=>{
   const r=multiRig();try{
@@ -46,7 +40,7 @@ test('an explicitly declared Goal source cannot inherit a different approved /bu
     r.setUpdates([r.message(802,`/goal-build --repo ${REPO_B} ${objective}`)]);
     await r.bridge.pollOnce(0);
     assert.equal(new GoalLedger(r.store).listGoals().length,1);
-    const mission=r.engine.list().find(m=>m.goal===objective)!;
+    const mission=r.store.list().find(m=>m.goal===objective)!;
     assert.equal(mission.workspace,REPO_B);
   }finally{await r.idle();r.close();}
 });
@@ -77,7 +71,7 @@ test('historical overlapping grants fail the final SQLite Send fence without cha
     assert.equal(hasIsolatedRepositoryGrant(r.store,REPO_A),false);
     const m=r.store.create({goal:'Repository checkout isolation',acceptance:['No mixed write'],
       workspace:REPO_A,sandbox:'workspace-write',mode:'supervised',
-      maxTurns:0,requestKey:'legacy-overlap',checks:[]});
+      requestKey:'legacy-overlap',checks:[]});
     const linked=r.store.linkChat(m.id,ORIGIN,m.version).mission;
     const bound=r.store.bindChatBrowser(m.id,browserId,linked.version).mission;
     r.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
@@ -91,9 +85,9 @@ test('historical overlapping grants fail the final SQLite Send fence without cha
 test('a legacy misbound Goal is blocked before recovery opens Chrome or reserves another Send',async()=>{
   const r=multiRig();try{
     const objective=`Build X\n源码工作目录：${REPO_B}（实际目标）`;
-    const m=r.engine.create({goal:objective,acceptance:['Never use wrong repository'],
+    const m=r.store.create({goal:objective,acceptance:['Never use wrong repository'],
       workspace:REPO_A,sandbox:'workspace-write',mode:'supervised',
-      maxTurns:0,requestKey:'legacy-misbound',checks:[]});
+      requestKey:'legacy-misbound',checks:[]});
     const linked=r.store.linkChat(m.id,ORIGIN,m.version).mission;
     const bound=r.store.bindChatBrowser(m.id,browserId,linked.version).mission;
     r.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
@@ -117,7 +111,7 @@ test('a legacy misbound Goal is blocked before recovery opens Chrome or reserves
 function multiRig(){
   const dir=mkdtempSync(join(tmpdir(),'relay-multi-goal-'));
   const file=join(dir,'missions.sqlite');
-  const store=new Store(file),engine=new Engine(store,never);
+  const store=new Store(file);
   store.setMeta('telegram.pi.project',REPO_A);
   store.setMeta('telegram.build.project',REPO_A);
   store.setMeta('telegram.pi.sshHost','configured-test-route');
@@ -126,7 +120,7 @@ function multiRig(){
   store.setMeta('telegram.chatgpt.browserId',browserId);
   const anchorMission=store.create({goal:'Preapproved browser launch source',
     acceptance:['Browser launches'],workspace:'',sandbox:'read-only',
-    mode:'supervised',maxTurns:1,requestKey:'anchor',checks:[]});
+    mode:'supervised',requestKey:'anchor',checks:[]});
   const linked=store.linkChat(anchorMission.id,ORIGIN,anchorMission.version).mission;
   store.bindChatBrowser(anchorMission.id,browserId,linked.version);
 
@@ -207,8 +201,7 @@ function multiRig(){
       if(!page)throw new Error('Unknown independently bound ChatGPT tab');
       return {page,close:async()=>{}};
     };
-  const newController=()=>new TelegramBridge(store,new Engine(store,never),transport,1001,2001,
-    async()=>{throw new Error('No native executor');},connect,planner);
+  const newController=()=>new TelegramBridge(store,transport,1001,2001,connect,planner);
   const bridge=newController();
   const message=(id:number,value:string):TelegramUpdate=>({
     update_id:id,message:{text:value,from:{id:1001},chat:{id:2001,type:'private'}},
@@ -220,7 +213,7 @@ function multiRig(){
       await new Promise(resolve=>setTimeout(resolve,30));
     }
   };
-  return {store,file,engine,bridge,newController,replies,sends,sessions,message,idle,
+  return {store,file,bridge,newController,replies,sends,sessions,message,idle,
     connectionAttempts,loseOriginalAnchor:()=>{originalAnchorAvailable=false;},
     failNextSend:()=>{failNextSend=true;},
     setUpdates:(items:TelegramUpdate[])=>{updates=items;},
@@ -239,8 +232,8 @@ test('two durable write Goals rotate A→B→A→B on one Worker with separate r
     await r.bridge.pollOnce(0);
     const ledger=new GoalLedger(r.store),goals=ledger.listGoals();
     assert.equal(goals.length,2);
-    const a=r.engine.list().find(m=>m.goal.startsWith('Goal A:'))!;
-    const b=r.engine.list().find(m=>m.goal.startsWith('Goal B:'))!;
+    const a=r.store.list().find(m=>m.goal.startsWith('Goal A:'))!;
+    const b=r.store.list().find(m=>m.goal.startsWith('Goal B:'))!;
     assert.notEqual(a.id,b.id);
     assert.equal(a.workspace,REPO_A);
     assert.equal(b.workspace,REPO_B);
@@ -305,9 +298,9 @@ test('two durable write Goals rotate A→B→A→B on one Worker with separate r
 test('a terminal prior Mission does not strand the next queued Goal on the single Worker',async()=>{
   const r=multiRig();
   try{
-    const prior=r.engine.create({goal:'Prior Mission reached a verified terminal blocker',
+    const prior=r.store.create({goal:'Prior Mission reached a verified terminal blocker',
       acceptance:['Keep the original terminal receipt'],workspace:'',sandbox:'read-only',
-      mode:'supervised',maxTurns:0,requestKey:'terminal-prior',checks:[]});
+      mode:'supervised',requestKey:'terminal-prior',checks:[]});
     const priorLinked=r.store.linkChat(prior.id,ORIGIN,prior.version).mission;
     const priorBound=r.store.bindChatBrowser(prior.id,browserId,priorLinked.version).mission;
     r.store.setMeta(`pi.autopilot.enabled.${prior.id}`,'1');
@@ -323,8 +316,8 @@ test('a terminal prior Mission does not strand the next queued Goal on the singl
     assert.equal(r.store.piPlan(prior.id)?.action,'BLOCKED');
 
     const objective='Next independent product delivery Goal';
-    const next=r.engine.create({goal:objective,acceptance:['Implement and verify the next product'],
-      workspace:REPO_B,sandbox:'workspace-write',mode:'supervised',maxTurns:0,
+    const next=r.store.create({goal:objective,acceptance:['Implement and verify the next product'],
+      workspace:REPO_B,sandbox:'workspace-write',mode:'supervised',
       requestKey:'terminal-next-goal',checks:[]});
     const nextLinked=r.store.linkChat(next.id,ORIGIN,next.version).mission;
     const nextBound=r.store.bindChatBrowser(next.id,browserId,nextLinked.version).mission;
@@ -349,9 +342,9 @@ test('a failed terminal Telegram notification cannot starve the next queued Goal
   const r=multiRig();
   try{
     r.store.setMeta('telegram.notifications_cursor',String(r.store.maxEventId()));
-    const prior=r.engine.create({goal:'Prior Mission reached a verified terminal blocker',
+    const prior=r.store.create({goal:'Prior Mission reached a verified terminal blocker',
       acceptance:['Keep the original terminal receipt'],workspace:'',sandbox:'read-only',
-      mode:'supervised',maxTurns:0,requestKey:'terminal-notification-prior',checks:[]});
+      mode:'supervised',requestKey:'terminal-notification-prior',checks:[]});
     const priorLinked=r.store.linkChat(prior.id,ORIGIN,prior.version).mission;
     const priorBound=r.store.bindChatBrowser(prior.id,browserId,priorLinked.version).mission;
     r.store.setMeta(`pi.autopilot.enabled.${prior.id}`,'1');
@@ -367,8 +360,8 @@ test('a failed terminal Telegram notification cannot starve the next queued Goal
       action:'BLOCKED',summary:'The prior Mission is terminal; no continuation is authorized',nextPrompt:''});
 
     const objective=`Next independent product delivery Goal\nRepository: ${REPO_B}`;
-    const next=r.engine.create({goal:objective,acceptance:['Implement and verify the next product'],
-      workspace:REPO_B,sandbox:'workspace-write',mode:'supervised',maxTurns:0,
+    const next=r.store.create({goal:objective,acceptance:['Implement and verify the next product'],
+      workspace:REPO_B,sandbox:'workspace-write',mode:'supervised',
       requestKey:'terminal-notification-next',checks:[]});
     const nextLinked=r.store.linkChat(next.id,ORIGIN,next.version).mission;
     const nextBound=r.store.bindChatBrowser(next.id,browserId,nextLinked.version).mission;
@@ -398,8 +391,8 @@ test('the Worker applies a queued owner pause before dispatching a READY Goal',a
   const r=multiRig();
   try{
     const objective=`Owner-paused queued Goal\nRepository: ${REPO_B}`;
-    const mission=r.engine.create({goal:objective,acceptance:['Do not send after owner pause'],
-      workspace:REPO_B,sandbox:'workspace-write',mode:'supervised',maxTurns:0,
+    const mission=r.store.create({goal:objective,acceptance:['Do not send after owner pause'],
+      workspace:REPO_B,sandbox:'workspace-write',mode:'supervised',
       requestKey:'owner-pause-before-dispatch',checks:[]});
     const linked=r.store.linkChat(mission.id,ORIGIN,mission.version).mission;
     const bound=r.store.bindChatBrowser(mission.id,browserId,linked.version).mission;
@@ -432,7 +425,7 @@ test('per-repository authorization survives a SQLite reopen and explicit revocat
     assert.deepEqual(approvedBuildRepositories(r.store),[REPO_A]);
     const m=r.store.create({goal:'Write only to second product',acceptance:['Protected write'],
       workspace:REPO_B,sandbox:'workspace-write',mode:'supervised',
-      maxTurns:2,requestKey:'revocation-check',checks:[]});
+      requestKey:'revocation-check',checks:[]});
     const linked=r.store.linkChat(m.id,ORIGIN,m.version).mission;
     const bound=r.store.bindChatBrowser(m.id,browserId,linked.version).mission;
     r.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
@@ -449,7 +442,7 @@ test('duplicate Goal intake cannot relink the original conversation or mutate re
     const api=r.bridge as unknown as {enqueueGoal:(task:string,key:string,write:boolean)=>string};
     const task=`--repo ${REPO_B} A uniquely authorized second repository Goal`;
     api.enqueueGoal(task,'duplicate-500',true);
-    const m=r.engine.list().find(x=>x.requestKey==='telegram-goal-duplicate-500')!;
+    const m=r.store.list().find(x=>x.requestKey==='telegram-goal-duplicate-500')!;
     const destination='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174555';
     r.store.linkChat(m.id,destination,m.version);
     const unchanged=r.store.get(m.id),binding=r.store.chatLink(m.id);
@@ -475,7 +468,7 @@ test('a fresh Telegram update repeating the same active Goal is de-duplicated, w
     const second=api.enqueueGoal(`--repo ${REPO_B} ${sameObjective}`,'owner-update-03',true);
     assert.match(second,/Task accepted/);
     assert.equal(new GoalLedger(r.store).listGoals().length,2);
-    assert.deepEqual(r.engine.list().filter(m=>m.goal===sameObjective)
+    assert.deepEqual(r.store.list().filter(m=>m.goal===sameObjective)
       .map(m=>m.workspace).sort(),[REPO_A,REPO_B]);
     assert.throws(()=>api.enqueueGoal('--repo /srv/projects/unauthorized No access',
       'owner-update-04',true),/locally approved repository/);
@@ -491,8 +484,8 @@ test('owner-paused queued Goal remains visible in /list and can be resumed by it
       inboxMissions:()=>Array<{id:string}>;
     };
     api.enqueueGoal(`--repo ${REPO_B} Pause and resume test`,'owner-pause-50',true);
-    const goal=r.engine.list().find(m=>m.goal==='Pause and resume test')!;
-    r.store.pausePiChain(goal.id);
+    const goal=r.store.list().find(m=>m.goal==='Pause and resume test')!;
+    r.store.pauseGoalMission(goal.id);
     const selected=api.inboxMissions().findIndex(m=>m.id===goal.id)+1;
     assert.ok(selected>0,'Paused Goal must remain in actionable inbox');
     r.setUpdates([r.message(810,'/list'),r.message(811,`/status ${selected}`)]);
@@ -501,9 +494,12 @@ test('owner-paused queued Goal remains visible in /list and can be resumed by it
     assert.ok(r.replies.some(reply=>reply.includes('Task status: Paused')));
     r.setUpdates([r.message(812,`/resume ${selected}`)]);
     await r.bridge.pollOnce(0);
-    assert.equal(r.store.get(goal.id).state,'READY');
     assert.equal(r.store.get(goal.id).stopRequested,false);
-    assert.equal(r.store.chatBrowserTurn(goal.id),null);
+    await r.idle();
+    const keys=r.store.events(goal.id).filter(e=>e.type==='chatgpt.browser_reserved')
+      .map(e=>(e.payload as {requestKey?:string}).requestKey);
+    assert.ok(keys.length>=1,'the resumed Goal is dispatched by the Worker');
+    assert.equal(new Set(keys).size,keys.length,'no request is ever reserved twice');
   }finally{r.close();}
 });
 
@@ -522,6 +518,7 @@ test('/goal-status resolves latest Goal and stable numeric entries from /goals w
     assert.ok(names[1]!.includes('Second independently tracked build'));
     assert.ok(names[2]!.includes('First independently tracked build'));
     assert.ok(r.replies.some(reply=>reply.includes('Use /goal-status 2')));
+    await r.idle();
   }finally{r.close();}
 });
 
@@ -530,21 +527,21 @@ test('owner pause survives SQLite restart and only explicit checkpoint resume cl
   try{
     const m=r.store.create({goal:'Pause this queued owner Goal',
       acceptance:['Resume only when owner requests'],workspace:REPO_A,
-      sandbox:'workspace-write',mode:'supervised',maxTurns:0,
+      sandbox:'workspace-write',mode:'supervised',
       requestKey:'pause-restart-owner',checks:[]});
     r.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
-    r.store.pausePiChain(m.id);
+    r.store.pauseGoalMission(m.id);
     assert.equal(r.store.get(m.id).stopRequested,true);
     const reopened=new Store(r.file,{readOnly:true});
     try{
       assert.equal(reopened.get(m.id).stopRequested,true);
       assert.equal(reopened.get(m.id).state,'PAUSED');
     }finally{reopened.close();}
-    const resumed=r.store.resumePiChain(m.id);
+    const resumed=r.store.resumeGoalMission(m.id);
     assert.equal(resumed.stopRequested,false);
     assert.equal(resumed.state,'READY');
     assert.equal(r.store.chatBrowserTurn(m.id),null);
-    assert.throws(()=>r.store.resumePiChain(m.id),/owner-paused/);
+    assert.throws(()=>r.store.resumeGoalMission(m.id),/owner-paused/);
   }finally{r.close();}
 });
 
@@ -562,7 +559,7 @@ test('/goal-continue reopens a BLOCKED Goal on the same graph with a fresh queue
     await recover();
     const ledger=new GoalLedger(r.store);
     const goal=ledger.listGoals()[0]!;
-    const first=r.engine.list().find(m=>m.goal===goal.objective)!;
+    const first=r.store.list().find(m=>m.goal===goal.objective)!;
     assert.equal(ledger.getGoal(goal.id).status,'BLOCKED');
     assert.equal(r.store.piPlan(first.id)?.action,'BLOCKED');
     const firstEvents=r.store.events(first.id).length,sendsBefore=r.sends.length;
@@ -577,7 +574,7 @@ test('/goal-continue reopens a BLOCKED Goal on the same graph with a fresh queue
     const graph=ledger.graph(goal.id);
     assert.ok(graph.plans.every(p=>p.status==='SUPERSEDED'));
     assert.ok(graph.events.some(e=>e.type==='goal.owner_continued'));
-    const next=r.engine.list().find(m=>m.requestKey==='telegram-goal-continue-903')!;
+    const next=r.store.list().find(m=>m.requestKey==='telegram-goal-continue-903')!;
     assert.equal(next.state,'READY');
     assert.equal(ledger.missionGoalId(next.id),goal.id);
     assert.equal(next.workspace,REPO_A);
@@ -589,7 +586,7 @@ test('/goal-continue reopens a BLOCKED Goal on the same graph with a fresh queue
     r.setUpdates([r.message(903,'/goal-continue 1 Independent verification is now available'),
       r.message(904,'/goal-continue 1 again')]);
     await r.bridge.pollOnce(0);
-    assert.equal(r.engine.list().filter(m=>ledger.missionGoalId(m.id)===goal.id).length,2);
+    assert.equal(r.store.list().filter(m=>ledger.missionGoalId(m.id)===goal.id).length,2);
     assert.ok(r.replies.some(x=>/only reopens a BLOCKED Goal/.test(x)));
     await recover();
     const continued=r.sends[sendsBefore]!;

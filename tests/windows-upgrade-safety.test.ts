@@ -214,7 +214,6 @@ test('GMK pull-only upgrade is ordered behind the SQLite drain and never install
     'Verify-UpgradeSQLiteContinuity',
     "Write-UpgradeEvidence 'fenced_acceptance_verified'",
     'Release-VerifiedChannelDrain $drainId $ExpectedSha',
-    'pi-resume $ResumeMissionId',
   ];
   let previous=-1;
   for(const step of steps){
@@ -265,12 +264,8 @@ test('GMK pull-only upgrade is ordered behind the SQLite drain and never install
     'Unrecognized legacy rollback bytes must be rejected before any maintenance drain');
   assert.match(upgrade,/Release-VerifiedChannelDrain \$drainId \$oldSha/,
     'Rollback may release only after fresh atomic attestation of the restored original Worker');
-  const preReleaseChrome=upgrade.indexOf('browser-binding-health $ResumeMissionId');
-  const releaseProof=upgrade.indexOf("Write-UpgradeEvidence 'fenced_acceptance_verified'");
-  assert.ok(preReleaseChrome>0&&preReleaseChrome<releaseProof,
-    'Original browser binding must be read back under drain before optional PI resume');
-  assert.ok(upgrade.indexOf('pi-resume $ResumeMissionId')>releaseProof,
-    'PI resume is permitted only after the fenced acceptance stage');
+  assert.doesNotMatch(script,/ResumeMissionId|pi-resume/,
+    'An upgrade never resumes a paused Goal; the owner resumes it from Telegram');
   assert.match(script,/function Release-VerifiedChannelDrain[\s\S]*channel-drain-release-verified/);
   assert.match(upgrade,/if \(\$LASTEXITCODE -ne 0 -or \$head -cne \$ExpectedSha\)/);
   assert.match(upgrade,/git -C \$root reset --hard \$oldSha/);

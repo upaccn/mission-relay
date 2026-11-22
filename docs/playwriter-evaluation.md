@@ -12,16 +12,14 @@ evidence of Chrome tab-group membership.
 1. Install and enable [Playwriter](https://playwriter.dev/docs/installation)
    in the intended Chrome profile. Enable the exact ChatGPT tab.
 2. Install project dependencies with `npm ci` and build with `npm run build`.
-3. Confirm the available profile and ChatGPT conversation, then bind that
-   profile to the particular Mission. Do not guess profile identity from an
-   account email or a tab group.
+3. Confirm the available profile, then pin it as the profile in which Goal
+   Chats are opened. Every new Goal Mission inherits this binding. Do not
+   guess profile identity from an account email or a tab group.
 
 ```sh
 node dist/cli.js browser-list
-node dist/cli.js browser-candidates --browser-id <approved-browser-id>
-node dist/cli.js browser-bind <mission-id> --browser-id <approved-browser-id> --revision <current-revision>
+node dist/cli.js telegram-anchor --url <ChatGPT-conversation-URL> --browser-id <approved-browser-id>
 node dist/cli.js browser-binding-health <mission-id>
-node dist/cli.js browser-probe <mission-id>
 ```
 
 A zero enabled-tab count does **not** mean the Chrome window closed. Restore
@@ -48,9 +46,8 @@ valid local profile binding.
   at most one UI Retry for the *already submitted message*, after the exact
   prompt and conversation are revalidated. The retry intent commits to SQLite
   **before** the click and survives Worker restarts. An owner pause or
-  maintenance drain defers the click. A stopped uncertain original request
-  requires the narrowly scoped, revision-checked recovery described in
-  [Operations](operations.md); the release command itself never clicks.
+  maintenance drain defers the click. A stopped uncertain request is settled
+  with `recover` (see [Operations](operations.md)), which never clicks Send.
 - Each ChatGPT conversation permits at most **8 observed Relay Sends**.
   Further work uses a distinct, independently verified Chat URL after a
   bounded handoff. A newly created tab is retained until the destination
@@ -62,7 +59,7 @@ valid local profile binding.
 ```sh
 node dist/cli.js pi-health
 node dist/cli.js browser-binding-health <mission-id>
-node dist/cli.js browser-pending-evidence <mission-id>
+node dist/cli.js recover <mission-id>
 node dist/cli.js channel-status
 ```
 

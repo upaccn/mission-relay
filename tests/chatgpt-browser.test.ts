@@ -5,7 +5,6 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {Store} from '../src/core/store.js';
-import {Engine} from '../src/core/engine.js';
 import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUrl,
   bootstrapMissingChatAnchor,
   chatTabTargetSha256,
@@ -19,15 +18,33 @@ import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUr
   CONNECTION_INTERRUPTED_TEXT,MESSAGE_DELIVERY_TIMEOUT_TEXT,
   INTERRUPTED_WAIT_GRACE_MS,MAX_INTERRUPTED_WAIT_MS,
   ACTIVE_REPLY_OBSERVATION_INTERVAL_MS,
-  submitChatTurn,submitNewChatTurn,prepareNewChatOrigin,waitForNewChatSendReady,
+  submitChatTurn,submitNewChatTurn,waitForNewChatSendReady,
   DEFAULT_BROWSER_TURN_TIMEOUT_MS,MAX_BROWSER_TURN_TIMEOUT_MS,type BrowserSession} from '../src/plugins/chatgpt-browser.js';
-import {executeBrowserTurn,executeBrowserRollover,driveChatConversation,browserDecision,browserFreshTaskPrompt,
+import {executeBrowserTurn,executeBrowserRollover,browserDecision,
   retireSupersededRelayTab,
   MAX_FRESH_CHAT_TASK_CHARS,executorTaskGoal,
-  browserNewChatPrompt,browserRolloverRecoveryPrompt,exactReservedRolloverPrompt,
-  browserContinuationPrompt} from '../src/core/browser-controller.js';
-import type {AgentAdapter} from '../src/core/types.js';
+  browserGoalPlanningPrompt,reservedRequestPrompt} from '../src/core/browser-controller.js';
 import type {Page} from 'playwriter';
+
+const PROMPT='Continue the synthetic task. End with exactly one standalone Mission Relay marker.';
+/** Same-Chat turns over the real executeBrowserTurn, stopping at the first
+ * non-NEXT marker. Tests use it for DOM behaviour; rollover lives in PI. */
+async function drive(input:{store:Store;missionId:string;revision:number;requestPrefix:string;
+  turns:number;page:Page;url:string;timeoutMs?:number}){
+  const turnsObserved:Array<{flowSignal:string;responseSha256:string;responseExcerpt:string;turnCount:number}>=[];
+  let revision=input.revision,state='';
+  for(let i=0;i<input.turns;i++){
+    const outcome=await executeBrowserTurn({store:input.store,missionId:input.missionId,revision,
+      requestKey:`${input.requestPrefix}-${i+1}`,page:input.page,url:input.url,
+      prompt:PROMPT,timeoutMs:input.timeoutMs,requireFinalMarker:true});
+    revision=outcome.revision;state=outcome.state;
+    const flowSignal=browserDecision(outcome.lastAssistant);
+    turnsObserved.push({flowSignal,responseSha256:outcome.assistantSha256,
+      responseExcerpt:outcome.assistantExcerpt,turnCount:outcome.turnCount});
+    if(flowSignal!=='NEXT')break;
+  }
+  return {turnsObserved,state};
+}
 
 const SHA=createHash('sha256').update('test browser prompt').digest('hex');
 
@@ -136,8 +153,7 @@ test('coordinator-only heading and third-person owner boilerplate are omitted fr
   assert.ok(!preview.includes('PI decides all orchestration.'));
   assert.ok(!preview.includes('这是所有者明确授权'));
   assert.ok(!preview.includes('The owner authorized'));
-  assert.ok(!browserFreshTaskPrompt(goal).includes('PI decides all orchestration.'));
-  assert.ok(!browserNewChatPrompt(goal,['verify'],'summary',null).includes('PI decides all orchestration.'));
+  assert.ok(!browserGoalPlanningPrompt(goal,['verify']).includes('PI decides all orchestration.'));
   assert.ok(goal.includes('PI decides all orchestration.'),'PI retains the full owner goal');
   assert.equal(executorTaskGoal('Plain objective, with no separate planning section.'),
     'Plain objective, with no separate planning section.');
@@ -171,52 +187,26 @@ test('failed missing-anchor bootstrap closes only the owned unusable tab',async(
   assert.equal(closed,1);
 });
 
-test('new owner task accepts a Telegram-length /build goal but rejects oversize goals',()=>{
+test('Goal planning prompt accepts a Telegram-length objective but rejects oversize goals',()=>{
   const workspace='/srv/projects/mission-relay';
   const goal='中'.repeat(MAX_FRESH_CHAT_TASK_CHARS);
-  const prompt=browserFreshTaskPrompt(goal,workspace);
+  const prompt=browserGoalPlanningPrompt(goal,['verified'],workspace);
   assert.ok(prompt.includes(goal));
   assert.ok(prompt.includes(workspace));
   assert.ok(prompt.length<=12000);
-  assert.throws(()=>browserFreshTaskPrompt(goal+'中',workspace),/1–4000 characters/);
-  assert.throws(()=>browserFreshTaskPrompt(' \n ',workspace),/1–4000 characters/);
+  assert.throws(()=>browserGoalPlanningPrompt(goal+'中',['verified'],workspace),/1–4000 characters/);
+  assert.throws(()=>browserGoalPlanningPrompt(' \n ',['verified'],workspace),/1–4000 characters/);
 });
 
-test('five-turn handoff retains long owner goal, PI direction and exact recovery prompt within browser budget',()=>{
-  const workspace='/srv/projects/mission-relay';
-  const goal='Long owner task: '+'中'.repeat(MAX_FRESH_CHAT_TASK_CHARS-17);
-  const acceptance=['Implement the approved project, run tests and verify Git/CI'];
-  const summary='s'.repeat(1000),instruction='n'.repeat(1500),answer='a'.repeat(6000);
-  const prompt=browserNewChatPrompt(goal,acceptance,summary,instruction,answer,workspace);
-  assert.ok(prompt.length<=12000,`Handoff overflowed: ${prompt.length}`);
-  assert.ok(prompt.includes(goal));
-  assert.ok(prompt.includes(instruction));
-  assert.ok(prompt.includes(workspace));
-  assert.ok(prompt.includes('[MIDDLE OMITTED]'));
-  assert.ok(!prompt.includes('a'.repeat(1000)),
-    'New conversation must not inherit a multi-thousand-character previous assistant answer');
-  const oldFormat=browserNewChatPrompt(goal,acceptance,summary,instruction,answer,
-    workspace,undefined,true);
-  assert.ok(oldFormat.length-prompt.length>3000,
-    'Compact handoff should remove several thousand characters of redundant history');
-  assert.equal(prompt,browserNewChatPrompt(goal,acceptance,summary,instruction,answer,workspace),
-    'Rollover retry must recreate the exact same user prompt');
-});
-
-test('PI handoff carries an exact audited SHA/round, never an invented Git commit or long transcript',()=>{
-  const source='Prior analysis evidence '+ 'X'.repeat(9000);
-  const responseSha256=createHash('sha256').update(source).digest('hex');
-  const prompt=browserNewChatPrompt('Finish release',['Full tests and CI'],
-    'Verified checkpoints and remaining work','Check Git HEAD in the real repository',
-    source,'/srv/projects/mission-relay',{round:5,responseSha256});
-  assert.match(prompt,/PI-reviewed browser receipt: round 5; full answer SHA-256/);
-  assert.ok(prompt.includes(responseSha256));
-  assert.ok(prompt.includes('Verify Git SHA, CI and deployment with tools'));
-  assert.ok(!prompt.includes('X'.repeat(900)));
-  assert.ok(prompt.includes('[MIDDLE OMITTED]'));
-  assert.throws(()=>browserNewChatPrompt('Finish release',['Full tests and CI'],
-    'Summary','Check Git HEAD',source+' changed',null,{round:5,responseSha256}),
-  /PI-reviewed full answer SHA/);
+test('a reserved first Goal Send is reconstructable exactly; an unknown request never is',()=>{
+  const f=fixture();try{
+    const m=f.store.get(f.linked.id);
+    const expected=browserGoalPlanningPrompt(m.goal,m.acceptance,null);
+    f.store.reserveChatBrowserTurn(m.id,m.version,`${m.requestKey}-1`,
+      createHash('sha256').update(expected.trim()).digest('hex'));
+    assert.equal(reservedRequestPrompt(f.store,m.id,`${m.requestKey}-1`),expected);
+    assert.throws(()=>reservedRequestPrompt(f.store,m.id,`${m.requestKey}-2`),/No matching active browser receipt/);
+  }finally{f.cleanup();}
 });
 
 test('ChatGPT accessible user transcript decorations are excluded from prompt identity hashing',()=>{
@@ -330,58 +320,6 @@ test('Recovery binds the latest visible user to the durable PI-authored reservat
   assert.equal(matchesReservedPromptHash(null,reserved),false);
 });
 
-test('A timed-out first PI /build new-chat Send is reconstructable without replay',()=>{
-  const goal='Implement the next Mission Relay feature and test it';
-  const workspace='/srv/projects/mission-relay';
-  const reserved='telegram-pi-123-1';
-  const recovered=browserRolloverRecoveryPrompt({
-    goal,acceptance:['Tests pass'],sandbox:'workspace-write',workspace,
-    turnCount:0,nextInstruction:null,missionRequestKey:'telegram-pi-123',
-    reservedRequestKey:reserved,sourceAnswer:'Unrelated anchor reply',
-    adopted:false,chainParent:false,piManaged:true,piPlan:null,
-  });
-  assert.equal(recovered,browserFreshTaskPrompt(goal,workspace));
-  assert.ok(recovered.includes(`Task scope: implement and test code in ${workspace}`));
-  assert.throws(()=>browserRolloverRecoveryPrompt({
-    goal,acceptance:['Tests pass'],sandbox:'workspace-write',workspace,
-    turnCount:0,nextInstruction:null,missionRequestKey:'telegram-pi-123',
-    reservedRequestKey:'mismatched',sourceAnswer:'Unrelated anchor reply',
-    adopted:false,chainParent:false,piManaged:true,piPlan:null,
-  }),/exact verified previous plan/);
-});
-
-test('Recovery of a PI-controlled later new chat reconstructs the exact planned prompt',()=>{
-  const answer='Verified prior source findings\n[MISSION_RELAY:NEXT]';
-  const sha=createHash('sha256').update(answer).digest('hex');
-  const plan={action:'NEXT' as const,summary:'Reviewed available evidence',
-    nextPrompt:'Implement tests on the next stage',responseSha256:sha,round:8,
-    reviewedDirectiveIds:[]};
-  const input={goal:'Build Mission Relay',acceptance:['Ship source'],
-    sandbox:'workspace-write' as const,workspace:'/srv/projects/mission-relay',
-    turnCount:8,nextInstruction:null,missionRequestKey:'pi-long',
-    reservedRequestKey:'pi-long-9',sourceAnswer:answer,
-    adopted:false,chainParent:false,piManaged:true,piPlan:plan};
-  assert.equal(browserRolloverRecoveryPrompt(input),
-    browserNewChatPrompt(input.goal,input.acceptance,plan.summary,
-      plan.nextPrompt,answer,input.workspace,
-      {round:plan.round,responseSha256:plan.responseSha256}));
-  assert.equal(browserRolloverRecoveryPrompt(input,true),
-    browserNewChatPrompt(input.goal,input.acceptance,plan.summary,
-      plan.nextPrompt,answer,input.workspace,undefined,true),
-    'Old reserved new-tab prompts must remain reconstructable without a new Send');
-  assert.notEqual(browserRolloverRecoveryPrompt(input),browserRolloverRecoveryPrompt(input,true));
-  const reservedSha=(s:string)=>createHash('sha256').update(s.trim()).digest('hex');
-  const compact=browserRolloverRecoveryPrompt(input);
-  const legacy=browserRolloverRecoveryPrompt(input,true);
-  assert.deepEqual(exactReservedRolloverPrompt(input,reservedSha(compact)),
-    {prompt:compact,format:'compact'});
-  assert.deepEqual(exactReservedRolloverPrompt(input,reservedSha(legacy)),
-    {prompt:legacy,format:'legacy'});
-  assert.throws(()=>exactReservedRolloverPrompt(input,reservedSha('Unrelated reserved Send')),
-    /Neither compact nor legacy handoff matches/);
-  assert.throws(()=>browserRolloverRecoveryPrompt({...input,
-    sourceAnswer:answer+'\nHuman changed the conversation'}),/exact verified previous plan/);
-});
 test('Same assistant text counts as a new response only with changed message identity',()=>{
   const old={url:'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',
     assistantCount:2,userCount:2,composerReady:true,generating:false,
@@ -421,18 +359,13 @@ test('PI continuation must not credit a previous assistant re-rendered after the
     'A genuinely changed reply remains observable');
 });
 const URL='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
-const never:AgentAdapter={
-  async execute(){throw new Error('Codex must not run');},
-  async verify(){throw new Error('Codex verifier must not run');},
-};
 function fixture(){
   const dir=mkdtempSync(join(tmpdir(),'relay-browser-turn-'));
   const store=new Store(join(dir,'state.sqlite'));
-  const engine=new Engine(store,never);
   const base=store.create({goal:'Browser test',acceptance:['Assistant response observed'],
-    sandbox:'read-only',mode:'supervised',maxTurns:3,workspace:'',requestKey:'test'});
+    sandbox:'read-only',mode:'supervised',workspace:'',requestKey:'test'});
   const linked=store.linkChat(base.id,URL,base.version).mission;
-  return {dir,store,engine,linked,cleanup:()=>{store.close();rmSync(dir,{recursive:true,force:true});}};
+  return {dir,store,linked,cleanup:()=>{store.close();rmSync(dir,{recursive:true,force:true});}};
 }
 
 test('Browser turn is durably reserved before any external interaction',()=>{
@@ -474,7 +407,7 @@ test('SQLite refuses a ninth same-chat Send even after restart and only credits 
   let store=new Store(join(dir,'state.sqlite'));
   try {
     const m=store.create({goal:'Exercise eight-turn boundary',acceptance:['No ninth same-chat Send'],
-      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:14,requestKey:'chat-ceiling'});
+      workspace:'',sandbox:'read-only',mode:'supervised',requestKey:'chat-ceiling'});
     const linked=store.linkChat(m.id,URL,m.version).mission;
     for(let round=1;round<=8;round++){
       const key=`limit-${round}`;
@@ -559,7 +492,7 @@ test('A pre-existing ChatGPT response-load error is not mistaken for the newly s
 test('Recover a confirmed complete existing-chat reply atomically with no duplicate browser send',()=>{
   const f=fixture();try{
     const competitor=f.store.create({goal:'Other mission',acceptance:['Single writer'],
-      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:2,requestKey:'existing-recovery-other'});
+      workspace:'',sandbox:'read-only',mode:'supervised',requestKey:'existing-recovery-other'});
     const second=f.store.linkChat(competitor.id,URL,competitor.version).mission;
     f.store.reserveChatBrowserTurn(f.linked.id,f.linked.version,'recover-existing',SHA);
     const uncertain=f.store.finishChatBrowserTurn(f.linked.id,'recover-existing',
@@ -608,7 +541,7 @@ test('Failed recovered-response audit insert rolls back turn credit, lock and SH
     assert.equal(f.store.events(f.linked.id).filter(e=>e.type==='mission.reconciled').length,0);
     assert.equal(f.store.events(f.linked.id).filter(e=>e.type==='chatgpt.browser_turn_recovered').length,0);
     const competitor=f.store.create({goal:'Other',acceptance:['Single writer'],
-      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:2,requestKey:'existing-recovery-blocked'});
+      workspace:'',sandbox:'read-only',mode:'supervised',requestKey:'existing-recovery-blocked'});
     const linked=f.store.linkChat(competitor.id,URL,competitor.version).mission;
     assert.throws(()=>f.store.reserveChatBrowserTurn(linked.id,linked.version,'cannot-send',SHA),
       /Another Mission owns/);
@@ -638,15 +571,11 @@ test('Interrupted browser send remains ambiguous across restart, and never auto-
     f.store.update(active.id,active.version,{ownerPid:999999},'test.simulate_dead_process');
     f.store.close();closed=true;
     const reopened=new Store(join(f.dir,'state.sqlite'));
-    const engine=new Engine(reopened,never);
     assert.equal(reopened.chatBrowserTurn(active.id)?.status,'reserved');
     assert.throws(()=>reopened.reserveChatBrowserTurn(active.id,reopened.get(active.id).version,'req-1',SHA),/Cannot run|already used/);
     // An operator must inspect the real page, then deliberately reconcile the interrupted external send.
-    const paused=engine.reconcile(active.id,true);
+    const paused=reopened.reconcileChatBrowserTurn(active.id);
     assert.equal(paused.state,'PAUSED');
-    // Crash-reserved records require explicit acknowledgement before another request.
-    assert.throws(()=>reopened.reserveChatBrowserTurn(active.id,paused.version,'req-2',SHA),/may have been submitted/);
-    reopened.reconcileChatBrowserTurn(active.id);
     assert.equal(reopened.chatBrowserTurn(active.id)?.status,'reconciled');
     reopened.close();
   }finally{if(!closed)f.store.close();rmSync(f.dir,{recursive:true,force:true});}
@@ -659,11 +588,9 @@ test('An uncertain send can be reconciled manually, not retried with its request
       {kind:'uncertain',error:'Connection lost after Send click'});
     assert.equal(failed.state,'NEEDS_RECONCILIATION');
     assert.equal(failed.turnCount,0);
-    assert.throws(()=>f.engine.run(f.linked.id),/external ChatGPT conversation/);
-    const paused=f.engine.reconcile(f.linked.id,true);
-    assert.equal(paused.state,'PAUSED');
-    assert.throws(()=>f.store.reserveChatBrowserTurn(paused.id,paused.version,'req-2',SHA),/may have been submitted/);
-    const reconciled=f.store.reconcileChatBrowserTurn(paused.id);
+    const reconciled=f.store.reconcileChatBrowserTurn(f.linked.id);
+    assert.equal(reconciled.state,'PAUSED');
+    const paused=reconciled;
     assert.throws(()=>f.store.reserveChatBrowserTurn(paused.id,reconciled.version,'req-1',SHA),/already used/);
     const next=f.store.reserveChatBrowserTurn(paused.id,reconciled.version,'req-2',SHA);
     assert.equal(next.state,'RUNNING');
@@ -673,7 +600,7 @@ test('An uncertain send can be reconciled manually, not retried with its request
 test('Browser reconciliation atomically clears an uncertain Mission and conversation lock',()=>{
   const f=fixture();try {
     const competitor=f.store.create({goal:'Another browser Mission',acceptance:['No replay'],
-      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:2,requestKey:'atomic-competitor'});
+      workspace:'',sandbox:'read-only',mode:'supervised',requestKey:'atomic-competitor'});
     const second=f.store.linkChat(competitor.id,URL,competitor.version).mission;
     f.store.reserveChatBrowserTurn(f.linked.id,f.linked.version,'atomic-first',SHA);
     const uncertain=f.store.finishChatBrowserTurn(f.linked.id,'atomic-first',
@@ -698,7 +625,7 @@ test('Browser reconciliation atomically clears an uncertain Mission and conversa
 test('A failed reconciliation audit insert rolls back state, both events and the conversation lock',()=>{
   const f=fixture();try {
     const competitor=f.store.create({goal:'Blocked competitor',acceptance:['Single writer'],
-      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:2,requestKey:'rollback-competitor'});
+      workspace:'',sandbox:'read-only',mode:'supervised',requestKey:'rollback-competitor'});
     const second=f.store.linkChat(competitor.id,URL,competitor.version).mission;
     f.store.reserveChatBrowserTurn(f.linked.id,f.linked.version,'rollback-first',SHA);
     const uncertain=f.store.finishChatBrowserTurn(f.linked.id,'rollback-first',
@@ -735,7 +662,7 @@ test('Atomic reconciliation refuses an active owner and permits a crashed owner 
 test('Only one Mission may write to the same ChatGPT conversation at a time',()=>{
   const f=fixture();try{
     const second=f.store.create({goal:'Second mission',acceptance:['More browser work'],
-      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:3,requestKey:'second'});
+      workspace:'',sandbox:'read-only',mode:'supervised',requestKey:'second'});
     const linkedSecond=f.store.linkChat(second.id,URL,second.version).mission;
     f.store.reserveChatBrowserTurn(f.linked.id,f.linked.version,'first',SHA);
     assert.throws(()=>f.store.reserveChatBrowserTurn(linkedSecond.id,linkedSecond.version,'second',SHA),
@@ -749,16 +676,13 @@ test('Only one Mission may write to the same ChatGPT conversation at a time',()=
 test('Uncertain browser send retains the conversation-wide lock until manual reconciliation',()=>{
   const f=fixture();try{
     const second=f.store.create({goal:'Competing mission',acceptance:['No duplicate ChatGPT send'],
-      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:3,requestKey:'competitor'});
+      workspace:'',sandbox:'read-only',mode:'supervised',requestKey:'competitor'});
     const linkedSecond=f.store.linkChat(second.id,URL,second.version).mission;
     f.store.reserveChatBrowserTurn(f.linked.id,f.linked.version,'first',SHA);
     f.store.finishChatBrowserTurn(f.linked.id,'first',{kind:'uncertain',error:'Transport crashed'});
     assert.throws(()=>f.store.reserveChatBrowserTurn(linkedSecond.id,linkedSecond.version,'second',SHA),
       /Another Mission owns/);
-    const paused=f.engine.reconcile(f.linked.id,true);
-    assert.throws(()=>f.store.linkChat(paused.id,'https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000',paused.version),
-      /Reconcile previous browser dispatch/);
-    f.store.reconcileChatBrowserTurn(paused.id);
+    f.store.reconcileChatBrowserTurn(f.linked.id);
     const active=f.store.reserveChatBrowserTurn(linkedSecond.id,linkedSecond.version,'second',SHA);
     assert.equal(active.state,'RUNNING');
   }finally{f.cleanup();}
@@ -775,9 +699,9 @@ test('Browser identity binding is revisioned, idempotent and immutable during un
     const active=f.store.reserveChatBrowserTurn(f.linked.id,linked.mission.version,'bound-first',SHA);
     assert.throws(()=>f.store.bindChatBrowser(f.linked.id,'install:Chrome:other',active.version),/inactive unfinished/);
     f.store.finishChatBrowserTurn(f.linked.id,'bound-first',{kind:'uncertain',error:'Unknown click outcome'});
-    const paused=f.engine.reconcile(f.linked.id,true);
+    const paused=f.store.get(f.linked.id);
     assert.throws(()=>f.store.bindChatBrowser(f.linked.id,'install:Chrome:other',paused.version),
-      /Reconcile the previous browser dispatch/);
+      /inactive unfinished|Reconcile the previous browser dispatch/);
     const reconciled=f.store.reconcileChatBrowserTurn(paused.id);
     const other=f.store.bindChatBrowser(f.linked.id,'install:Chrome:other',reconciled.version);
     assert.equal(other.browserId,'install:Chrome:other');
@@ -1231,31 +1155,6 @@ class SyntheticNewChatPage extends SyntheticChatPage {
   }
 }
 
-test('pre-Send read-only new Chat origin bootstrap never fills or clicks the composer',async()=>{
-  class Counting extends SyntheticNewChatPage {
-    navigations=0;
-    override async goto(url:string){this.navigations++;await super.goto(url);}
-  }
-  const page=new Counting();
-  await prepareNewChatOrigin(page as unknown as Page);
-  assert.equal(page.url(),'https://chatgpt.com/');
-  assert.equal(page.navigations,1);
-  assert.equal(page.sends,0);
-  assert.equal(page.prompt,'');
-  const result=await submitNewChatTurn(page as unknown as Page,
-    'Single first prompt on prepared owned tab',12000,true);
-  assert.equal(result.url,NEXT_CHAT_URL);
-  assert.equal(page.navigations,1,
-    'No second navigation may occur after the one-shot Send authorization');
-  assert.equal(page.sends,1,'Prepared bootstrap remains a single actual Send');
-  const navigated=new Counting();
-  navigated.currentUrl=NEXT_CHAT_URL;
-  await assert.rejects(()=>submitNewChatTurn(navigated as unknown as Page,
-    'Never resend after navigating to an existing chat',12000,true),
-    /Prepared ChatGPT tab no longer has the authorized origin/);
-  assert.equal(navigated.navigations,0);
-  assert.equal(navigated.sends,0);
-});
 test('new Chat Send waits through transient disabled hydration and clicks exactly once',async()=>{
   class Hydrating extends SyntheticNewChatPage {
     buttonChecks=0;
@@ -1275,34 +1174,6 @@ test('new Chat Send waits through transient disabled hydration and clicks exactl
   assert.equal(page.sends,1,'Only one Send click after editor hydration');
 });
 
-test('hydration refuses a previously submitted request or changed new-chat origin',async()=>{
-  class Ambiguous extends SyntheticNewChatPage {
-    override locator(selector:string):any {
-      const node=super.locator(selector);
-      if(!selector.includes('send-button'))return node;
-      const wrapped:any={...node,isEnabled:async()=>false};
-      wrapped.first=()=>wrapped;
-      return wrapped;
-    }
-  }
-  const timeout=new Ambiguous();
-  await prepareNewChatOrigin(timeout as unknown as Page);
-  await assert.rejects(()=>waitForNewChatSendReady(timeout as unknown as Page,5),
-    /bounded hydration/);
-  assert.equal(timeout.sends,0);
-  const navigated=new Ambiguous();
-  await prepareNewChatOrigin(navigated as unknown as Page);
-  navigated.currentUrl=NEXT_CHAT_URL;
-  await assert.rejects(()=>waitForNewChatSendReady(navigated as unknown as Page),
-    /navigated before clicking Send/);
-  assert.equal(navigated.sends,0);
-  const submitted=new Ambiguous();
-  await prepareNewChatOrigin(submitted as unknown as Page);
-  submitted.sends=1;
-  await assert.rejects(()=>waitForNewChatSendReady(submitted as unknown as Page),
-    /already shows a submitted user message/);
-  assert.equal(submitted.sends,1,'Must not submit an additional message');
-});
 class FlakyNewChatAssistantPage extends SyntheticNewChatPage {
   remainingTimeouts=1;
   override locator(selector:string):any {
@@ -1457,53 +1328,6 @@ class DistinctLastNewChatPage extends RelayOwnedIntermediatePage {
   }
 }
 
-test('a verified second rollover retires only its prior Relay-owned tab, never the owner source',async()=>{
-  for(const failClose of [false,true]){
-    const f=fixture();try{
-      const source=new SourceWithNewTab();
-      let ownerSourceCloses=0;
-      (source as unknown as {close:()=>Promise<void>}).close=async()=>{ownerSourceCloses++;};
-      source.reply='First completed stage\n[MISSION_RELAY:HANDOFF]';
-      const intermediate=new RelayOwnedIntermediatePage();
-      intermediate.reply='Second completed stage\n[MISSION_RELAY:HANDOFF]';
-      intermediate.failClose=failClose;
-      const destination=new DistinctLastNewChatPage();
-      destination.reply='Third stage finished\n[MISSION_RELAY:DONE]';
-      intermediate.nextPage=destination as unknown as Page;
-      source.destination=intermediate;
-      const result=await driveChatConversation({store:f.store,missionId:f.linked.id,
-        revision:f.linked.version,requestPrefix:`owned-tab-retire-${failClose}`,
-        turns:3,page:source as unknown as Page,url:URL,timeoutMs:12000});
-      assert.equal(result.turnsObserved.length,3);
-      assert.equal(ownerSourceCloses,0,'The caller-owned original tab is never disposable');
-      assert.equal(intermediate.closeCalls,1,'Only the old confirmed Relay-owned tab is retired');
-      assert.equal(destination.closeCalls,0,'The active destination remains open');
-      assert.equal(source.sends,1);
-      assert.equal(intermediate.sends,1);
-      assert.equal(destination.sends,1);
-      assert.equal(f.store.chatLink(f.linked.id),destination.url());
-      assert.equal(f.store.events(f.linked.id).filter(e=>e.type==='chatgpt.browser_migrated').length,2);
-      const firstMigration=f.store.events(f.linked.id)
-        .find(e=>e.type==='chatgpt.browser_migrated')!.payload as
-        {newTabTargetSha256?:string};
-      assert.equal(firstMigration.newTabTargetSha256,
-        createHash('sha256').update('ABCDEFABCDEFABCDEFABCDEFABCDEF12').digest('hex'),
-        'New-tab physical identity is committed with its observed URL, never as raw Target ID');
-      const retirements=f.store.events(f.linked.id).filter(e=>e.type==='chatgpt.browser_tab_retired');
-      assert.equal(retirements.length,failClose?0:1,
-        'Only a positive owned-Page closed readback may append a retirement receipt');
-      if(!failClose){
-        const receipt=retirements[0]!.payload as Record<string,unknown>;
-        assert.deepEqual(Object.keys(receipt).sort(),[
-          'activeUrlSha256','migrationEventId','observedEventId','retiredUrlSha256']);
-        assert.equal(receipt.retiredUrlSha256,createHash('sha256').update(NEXT_CHAT_URL).digest('hex'));
-      }
-      assert.equal(f.store.chatBrowserTurn(f.linked.id)?.status,'observed',
-        'Best-effort cleanup failure cannot corrupt the committed browser answer');
-    }finally{f.cleanup();}
-  }
-});
-
 test('owned tab cleanup refuses to close navigated, already closed or active destination tabs',async()=>{
   let closes=0;
   let closed=false;
@@ -1526,184 +1350,6 @@ test('owned tab cleanup refuses to close navigated, already closed or active des
   assert.equal(await retireSupersededRelayTab(unconfirmed,destination,NEXT_CHAT_URL),false,
     'A resolved close() without isClosed() is not a durable close receipt');
   assert.equal(falseCloseCalls,1);
-});
-
-test('browser-drive fifth-to-sixth preflight bounds both source snapshots and both prompt reads',()=>{
-  const controller=readFileSync('src/core/browser-controller.ts','utf8');
-  const start=controller.indexOf('export async function driveChatConversation(');
-  assert.ok(start>=0);
-  const drive=controller.slice(start);
-  const beforeReservation=drive.slice(0,drive.indexOf('const prompt:string='));
-  assert.match(beforeReservation,/first=await withReadOnlyDeadline\(inspectChatPage\(page,url\)\)/);
-  assert.match(beforeReservation,/second=await withReadOnlyDeadline\(inspectChatPage\(page,url\)\)/);
-  assert.equal((beforeReservation.match(/withReadOnlyDeadline\(lastVisibleUserPromptSha256\(page\)\)/g)||[]).length,2);
-  assert.ok(drive.indexOf('withReadOnlyDeadline')<drive.indexOf('const prompt:string='),
-    'A hung read must fail before an irreversible browser Send reservation');
-});
-
-test('HANDOFF marker creates one new authorized tab, sends task context and atomically migrates the Mission',async()=>{
-  const f=fixture();try {
-    const source=new SourceWithNewTab();
-    source.reply='Verified facts and last decision. Open a new context for the next step.\n[MISSION_RELAY:HANDOFF]';
-    source.destination.reply='New conversation continuation acknowledged.\n[MISSION_RELAY:DONE]';
-    assert.equal(browserDecision(source.reply),'HANDOFF');
-    const done=await driveChatConversation({store:f.store,missionId:f.linked.id,
-      revision:f.linked.version,requestPrefix:'rollover-success',turns:3,
-      page:source as unknown as Page,url:URL,timeoutMs:12000});
-    assert.equal(done.turnsObserved.length,2);
-    assert.equal(done.turnsObserved[0]?.flowSignal,'HANDOFF');
-    assert.equal(done.turnsObserved[1]?.flowSignal,'DONE');
-    assert.equal(source.created,1);
-    assert.equal(source.sends,1);
-    assert.equal(source.destination.sends,1);
-    assert.equal(source.url(),URL,'Original user tab must remain open and unchanged');
-    assert.equal(f.store.chatLink(f.linked.id),NEXT_CHAT_URL);
-    assert.equal(f.store.get(f.linked.id).state,'PAUSED');
-    assert.equal(f.store.get(f.linked.id).turnCount,2);
-    assert.ok(source.destination.prompt.includes('Verified facts and last decision'));
-    assert.ok(source.destination.prompt.includes('Browser test'));
-    assert.equal(f.store.events(f.linked.id).filter(x=>x.type==='chatgpt.browser_migrated').length,1);
-    assert.equal(f.store.events(f.linked.id).filter(x=>x.type==='chatgpt.browser_observed').length,2);
-    assert.throws(()=>f.store.reserveChatBrowserTurn(f.linked.id,
-      f.store.get(f.linked.id).version,'rollover-success-2',SHA),/already used/);
-  }finally{f.cleanup();}
-});
-
-test('manual NEXT and HANDOFF refuse a changed source before a second Send or new tab',async()=>{
-  for(const marker of ['NEXT','HANDOFF'] as const){
-    const f=fixture();try{
-      const source=new SourceWithNewTab();
-      source.reply=`Complete previous observation\n[MISSION_RELAY:${marker}]`;
-      const original=source.locator.bind(source);
-      source.locator=(selector:string)=>{
-        const node=original(selector);
-        if(!selector.includes('data-message-author-role="assistant"'))return node;
-        const edited:any={...node,innerText:async()=>
-          f.store.get(f.linked.id).turnCount===1
-            ? 'An intervening human edited this ChatGPT answer'
-            : node.innerText()};
-        edited.first=()=>edited;edited.last=()=>edited;
-        return edited;
-      };
-      await assert.rejects(()=>driveChatConversation({store:f.store,
-        missionId:f.linked.id,revision:f.linked.version,
-        requestPrefix:`manual-source-race-${marker.toLowerCase()}`,turns:3,
-        page:source as unknown as Page,url:URL,timeoutMs:12000}),
-      /Source ChatGPT history changed before (existing-chat|new-tab) Send reservation/);
-      assert.equal(source.sends,1,`${marker} must not submit to the changed source`);
-      assert.equal(source.created,0,`${marker} must not open a new tab`);
-      assert.equal(f.store.get(f.linked.id).turnCount,1);
-      assert.equal(f.store.chatBrowserTurn(f.linked.id)?.status,'observed');
-      assert.equal(f.store.events(f.linked.id)
-        .filter(e=>e.type==='chatgpt.browser_reserved').length,1);
-    }finally{f.cleanup();}
-  }
-});
-
-test('separate manual browser-drive batches auto-handoff after eight verified sends without a ninth old-chat Send',async()=>{
-  const f=fixture();try{
-    const base=f.store.create({goal:'Eight-turn browser load bound',
-      acceptance:['Keep long tasks in small chats'],workspace:'',
-      sandbox:'read-only',mode:'supervised',maxTurns:13,checks:[],requestKey:'manual-ten-limit'});
-    const linked=f.store.linkChat(base.id,URL,base.version).mission;
-    const page=new SourceWithNewTab();
-    await assert.rejects(driveChatConversation({store:f.store,missionId:linked.id,
-      revision:linked.version,requestPrefix:'manual-over-limit',turns:9,
-      page:page as unknown as Page,url:URL,timeoutMs:12000}),
-    /Drive turns must be 1–8/);
-    assert.equal(page.sends,0);
-    const originalLocator=page.locator.bind(page);
-    page.locator=(selector:string)=>{
-      const original=originalLocator(selector);
-      if(!selector.includes('send-button'))return original;
-      const changing:any={...original,click:async()=>{
-        await original.click();
-        page.reply=`Verified item ${page.sends}\n[MISSION_RELAY:NEXT]`;
-      }};
-      changing.first=()=>changing;
-      return changing;
-    };
-    for(let i=1;i<=8;i++){
-      const result=await driveChatConversation({store:f.store,missionId:linked.id,
-        revision:f.store.get(linked.id).version,requestPrefix:`manual-five-${i}`,turns:1,
-        page:page as unknown as Page,url:URL,timeoutMs:12000});
-      assert.equal(result.turnsObserved.length,1);
-      assert.equal(page.sends,i);
-      assert.equal(page.created,0);
-    }
-    assert.equal(f.store.piChatObservedTurns(linked.id),8);
-    page.reply='A human changed the old answer after the eighth verified Send';
-    await assert.rejects(driveChatConversation({store:f.store,missionId:linked.id,
-      revision:f.store.get(linked.id).version,requestPrefix:'manual-five-modified',turns:1,
-      page:page as unknown as Page,url:URL,timeoutMs:12000}),
-    /Chat-limit rollover refused: last visible ChatGPT exchange changed/);
-    assert.equal(page.sends,8);
-    assert.equal(page.created,0);
-    assert.equal(f.store.chatBrowserTurn(linked.id)?.status,'observed');
-    page.reply='Verified item 8\n[MISSION_RELAY:NEXT]';
-    page.destination.reply='Continued in the new chat with prior context.\n[MISSION_RELAY:DONE]';
-    const next=await driveChatConversation({store:f.store,missionId:linked.id,
-      revision:f.store.get(linked.id).version,requestPrefix:'manual-five-six',turns:1,
-      page:page as unknown as Page,url:URL,timeoutMs:12000});
-    assert.equal(next.turnsObserved.length,1);
-    assert.equal(page.sends,8,'No ninth Send in the original long chat');
-    assert.equal(page.created,1);
-    assert.equal(page.destination.sends,1);
-    assert.equal(f.store.chatLink(linked.id),NEXT_CHAT_URL);
-    assert.equal(f.store.piChatObservedTurns(linked.id),1);
-    assert.equal(f.store.events(linked.id).filter(e=>e.type==='chatgpt.browser_migrated').length,1);
-    assert.match(page.destination.prompt,/Verified item 8/);
-  }finally{f.cleanup();}
-});
-
-test('Telegram-scoped HANDOFF to a new chat creates only one terminal notification event',async()=>{
-  const f=fixture();try {
-    const source=new SourceWithNewTab();
-    source.reply='Validated context for a new conversation.\n[MISSION_RELAY:HANDOFF]';
-    source.destination.reply='Final verified acknowledgement.\n[MISSION_RELAY:DONE]';
-    const result=await driveChatConversation({store:f.store,missionId:f.linked.id,
-      revision:f.linked.version,requestPrefix:'telegram-200-1',turns:3,
-      page:source as unknown as Page,url:URL,timeoutMs:12000,
-      notificationMode:'telegram-final'});
-    assert.equal(result.turnsObserved.length,2);
-    assert.equal(result.turnsObserved[0]?.flowSignal,'HANDOFF');
-    assert.equal(result.turnsObserved[1]?.flowSignal,'DONE');
-    const events=f.store.events(f.linked.id);
-    const observed=events.filter(e=>e.type==='chatgpt.browser_observed');
-    const end=events.filter(e=>e.type==='chatgpt.browser_run_finished');
-    assert.equal(observed.length,2);
-    assert.equal(end.length,1);
-    assert.equal((end[0]!.payload as {flowSignal:string}).flowSignal,'DONE');
-    assert.equal((end[0]!.payload as {assistantSha256:string}).assistantSha256,
-      result.turnsObserved[1]?.responseSha256);
-    assert.equal(source.created,1);
-    assert.equal(source.destination.sends,1);
-    assert.equal(f.store.chatLink(f.linked.id),NEXT_CHAT_URL);
-  }finally{f.cleanup();}
-});
-
-test('Telegram browser batch stops at Mission budget even if ChatGPT ends NEXT',async()=>{
-  const f=fixture();try {
-    const base=f.store.create({goal:'Budgeted one-turn ChatGPT run',
-      acceptance:['One response; no further send'],workspace:'',sandbox:'read-only',
-      mode:'supervised',maxTurns:1,requestKey:'one-turn-budget'});
-    const linked=f.store.linkChat(base.id,URL,base.version).mission;
-    const page=new SyntheticChatPage();
-    page.reply='Only authorized one reply.\n[MISSION_RELAY:NEXT]';
-    const result=await driveChatConversation({store:f.store,missionId:linked.id,
-      revision:linked.version,requestPrefix:'telegram-budget-1',turns:3,
-      page:page as unknown as Page,url:URL,timeoutMs:10000,
-      notificationMode:'telegram-final'});
-    assert.equal(result.turnsObserved.length,1);
-    assert.equal(page.sends,1);
-    assert.equal(f.store.get(linked.id).turnCount,1);
-    assert.equal(f.store.get(linked.id).state,'PAUSED');
-    const events=f.store.events(linked.id);
-    assert.equal(events.filter(e=>e.type==='chatgpt.browser_reserved').length,1);
-    assert.equal(events.filter(e=>e.type==='chatgpt.browser_run_finished').length,1);
-    assert.equal((events.find(e=>e.type==='chatgpt.browser_run_finished')!.payload as
-      {flowSignal:string}).flowSignal,'NEXT');
-  }finally{f.cleanup();}
 });
 
 test('New ChatGPT first Send tolerates same-origin transitional URLs but refuses a different origin',async()=>{
@@ -1789,25 +1435,6 @@ test('New ChatGPT reply-load error is surfaced as ambiguous without repeat Send'
   assert.equal(page.sends,1);
 });
 
-test('A failed new-tab handoff remains uncertain with original link and no replay',async()=>{
-  const f=fixture();try {
-    const source=new SourceWithNewTab();
-    source.reply='Need a fresh conversation.\n[MISSION_RELAY:HANDOFF]';
-    source.rejectNewTab=true;
-    await assert.rejects(()=>driveChatConversation({store:f.store,missionId:f.linked.id,
-      revision:f.linked.version,requestPrefix:'rollover-denied',turns:3,
-      page:source as unknown as Page,url:URL,timeoutMs:10000}),/manual reconciliation/);
-    assert.equal(source.sends,1);
-    assert.equal(f.store.chatLink(f.linked.id),URL);
-    assert.equal(f.store.get(f.linked.id).state,'NEEDS_RECONCILIATION');
-    assert.equal(f.store.chatBrowserTurn(f.linked.id)?.status,'uncertain');
-    assert.equal(f.store.events(f.linked.id).filter(x=>x.type==='chatgpt.browser_migrated').length,0);
-    assert.equal(f.store.events(f.linked.id).filter(x=>x.type==='chatgpt.browser_reserved').length,2);
-    assert.throws(()=>f.store.reserveChatBrowserTurn(f.linked.id,
-      f.store.get(f.linked.id).version,'rollover-denied-2',SHA),/Cannot run|already used/);
-  }finally{f.cleanup();}
-});
-
 test('Rollover destination and observed receipt share one rollback-safe SQLite transaction',()=>{
   const f=fixture();try {
     f.store.reserveChatBrowserTurn(f.linked.id,f.linked.version,'rollover-atomic',SHA);
@@ -1864,7 +1491,7 @@ test('Rollover recovery refuses to steal a destination owned by another active M
     const uncertain=f.store.finishChatBrowserTurn(f.linked.id,'recover-collision',{
       kind:'uncertain',error:'New-tab answer was not yet observed'});
     const other=f.store.create({goal:'Independent observed tab',acceptance:['Check evidence'],
-      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:2,
+      workspace:'',sandbox:'read-only',mode:'supervised',
       checks:[],requestKey:'different-mission'});
     f.store.linkChat(other.id,NEXT_CHAT_URL,other.version);
     const input={requestPromptSha256:SHA,assistantSha256:SHA,
@@ -1874,7 +1501,7 @@ test('Rollover recovery refuses to steal a destination owned by another active M
     assert.equal(f.store.get(f.linked.id).state,'NEEDS_RECONCILIATION');
     assert.equal(f.store.chatLink(f.linked.id),URL);
     const cancelled=f.store.get(other.id);
-    f.engine.cancel(other.id,cancelled.version);
+    f.store.update(other.id,cancelled.version,{state:'CANCELLED'},'test.cancelled');
     assert.equal(f.store.recoverObservedBrowserRollover(f.linked.id,
       uncertain.version,input).turnCount,1);
   }finally{f.cleanup();}
@@ -1902,27 +1529,13 @@ test('Recovery audit write failure rolls back URL migration, turn and session lo
   }finally{f.cleanup();}
 });
 
-test('Handoff marker with no remaining turn budget does not create a tab or extend authority',async()=>{
-  const f=fixture();try {
-    const source=new SourceWithNewTab();
-    source.reply='Handoff needed but no more turns authorized.\n[MISSION_RELAY:HANDOFF]';
-    const done=await driveChatConversation({store:f.store,missionId:f.linked.id,
-      revision:f.linked.version,requestPrefix:'one-turn-only',turns:1,
-      page:source as unknown as Page,url:URL,timeoutMs:12000});
-    assert.equal(done.turnsObserved.length,1);
-    assert.equal(done.turnsObserved[0]?.flowSignal,'HANDOFF');
-    assert.equal(source.created,0);
-    assert.equal(f.store.chatLink(f.linked.id),URL);
-  }finally{f.cleanup();}
-});
-
 test('Playwriter browser controller uses the exact linked chat, sends once and records a paused receipt',async()=>{
   const f=fixture();try{
     const fake=new SyntheticChatPage(),page=fake as unknown as Page;
     const observed=await inspectChatPage(page,URL);
     assert.equal(observed.composerReady,true);
     assert.equal(observed.assistantCount,1);
-    const outcome=await driveChatConversation({store:f.store,missionId:f.linked.id,
+    const outcome=await drive({store:f.store,missionId:f.linked.id,
       revision:f.linked.version,requestPrefix:'synthetic',turns:3,page,url:URL,timeoutMs:10000});
     assert.equal(outcome.turnsObserved.length,1);
     assert.equal(outcome.turnsObserved[0]?.flowSignal,'DONE');
@@ -1930,25 +1543,9 @@ test('Playwriter browser controller uses the exact linked chat, sends once and r
     assert.equal(fake.sends,1);
     assert.equal(f.store.get(f.linked.id).turnCount,1);
     assert.equal(f.store.events(f.linked.id).filter(x=>x.type==='chatgpt.browser_observed').length,1);
-    await assert.rejects(()=>driveChatConversation({store:f.store,missionId:f.linked.id,
+    await assert.rejects(()=>drive({store:f.store,missionId:f.linked.id,
       revision:f.linked.version,requestPrefix:'synthetic',turns:1,page,url:URL,timeoutMs:10000}),/State conflict/);
     assert.equal(fake.sends,1);
-  }finally{f.cleanup();}
-});
-
-test('Browser-drive includes the latest owner instruction and consumes it once after observed reply',async()=>{
-  const f=fixture();try {
-    const note='Only inspect the next acceptance item; do not change files.';
-    const instructed=f.engine.instruct(f.linked.id,note,f.linked.version);
-    const fake=new SyntheticChatPage(),page=fake as unknown as Page;
-    const first=await driveChatConversation({store:f.store,missionId:f.linked.id,
-      revision:instructed.version,requestPrefix:'note-once',turns:1,page,url:URL,timeoutMs:10000});
-    assert.equal(first.turnsObserved.length,1);
-    assert.ok(fake.prompt.includes(`Owner instruction for this turn: ${note}`));
-    assert.equal(f.store.get(f.linked.id).nextInstruction,null);
-    assert.equal(f.store.chatBrowserTurn(f.linked.id)?.status,'observed');
-    assert.equal(f.store.events(f.linked.id).filter(x=>x.type==='chatgpt.browser_observed').length,1);
-    assert.ok(!browserContinuationPrompt('Test',['criterion'],false).includes(note));
   }finally{f.cleanup();}
 });
 
@@ -1958,7 +1555,7 @@ test('Long ChatGPT response receipts hash the complete answer, not its tail',asy
     fake.reply='Early verification details. '.repeat(240)+
       'Final observable result.\n[MISSION_RELAY:DONE]';
     assert.ok(fake.reply.length>4000);
-    const result=await driveChatConversation({store:f.store,missionId:f.linked.id,
+    const result=await drive({store:f.store,missionId:f.linked.id,
       revision:f.linked.version,requestPrefix:'long-answer-hash',turns:1,
       page,url:URL,timeoutMs:10000});
     const wholeHash=createHash('sha256').update(fake.reply).digest('hex');
@@ -1970,62 +1567,6 @@ test('Long ChatGPT response receipts hash the complete answer, not its tail',asy
     assert.equal(f.store.get(f.linked.id).lastSummary?.length,1000);
     assert.equal(result.turnsObserved[0]?.responseExcerpt.length,1000);
     assert.equal(fake.sends,1);
-  }finally{f.cleanup();}
-});
-
-test('An owner instruction updated after browser reservation survives the observed turn',()=>{
-  const f=fixture();try {
-    const old=f.engine.instruct(f.linked.id,'Old browser note',f.linked.version);
-    const active=f.store.reserveChatBrowserTurn(old.id,old.version,'note-during',SHA);
-    const revised=f.engine.instruct(f.linked.id,'New browser note',active.version);
-    const observed=f.store.finishChatBrowserTurn(f.linked.id,'note-during',{
-      kind:'observed',assistantSha256:SHA,consumedInstruction:'Old browser note'});
-    assert.equal(observed.version,revised.version+1);
-    assert.equal(observed.nextInstruction,'New browser note');
-    assert.equal(observed.turnCount,1);
-    assert.ok(browserContinuationPrompt(observed.goal,observed.acceptance,false,
-      observed.nextInstruction).includes('New browser note'));
-  }finally{f.cleanup();}
-});
-
-test('Repeated identical owner note during an active browser send is not accidentally consumed',()=>{
-  const f=fixture();try {
-    const note='Same instruction deliberately repeated by the owner';
-    const before=f.engine.instruct(f.linked.id,note,f.linked.version);
-    const active=f.store.reserveChatBrowserTurn(before.id,before.version,'note-duplicate',SHA);
-    f.engine.instruct(f.linked.id,note,active.version);
-    const done=f.store.finishChatBrowserTurn(f.linked.id,'note-duplicate',{
-      kind:'observed',assistantSha256:SHA,consumedInstruction:note});
-    assert.equal(done.nextInstruction,note);
-  }finally{f.cleanup();}
-});
-
-test('A failed or raw browser dispatch never consumes an unsent operator instruction',()=>{
-  const f=fixture();try {
-    const note='Review this later';
-    const instructed=f.engine.instruct(f.linked.id,note,f.linked.version);
-    f.store.reserveChatBrowserTurn(instructed.id,instructed.version,'raw-send',SHA);
-    const done=f.store.finishChatBrowserTurn(instructed.id,'raw-send',{
-      kind:'observed',assistantSha256:SHA});
-    assert.equal(done.nextInstruction,note,'Manual browser-send did not inject this note');
-    f.store.reserveChatBrowserTurn(done.id,done.version,'failed-followup',SHA);
-    const failed=f.store.finishChatBrowserTurn(done.id,'failed-followup',{
-      kind:'uncertain',error:'Lost relay',consumedInstruction:note});
-    assert.equal(failed.nextInstruction,note,'Ambiguous send cannot consume notes');
-    assert.equal(failed.state,'NEEDS_RECONCILIATION');
-  }finally{f.cleanup();}
-});
-
-test('Oversized browser instruction fails before reserving a browser turn',async()=>{
-  const f=fixture();try {
-    const tooLong=f.engine.instruct(f.linked.id,'x'.repeat(1501),f.linked.version);
-    const fake=new SyntheticChatPage();
-    await assert.rejects(()=>driveChatConversation({store:f.store,missionId:f.linked.id,
-      revision:tooLong.version,requestPrefix:'too-long-note',turns:1,
-      page:fake as unknown as Page,url:URL,timeoutMs:10000}),/exceeds 1500/);
-    assert.equal(fake.sends,0);
-    assert.equal(f.store.chatBrowserTurn(f.linked.id),null);
-    assert.equal(f.store.get(f.linked.id).state,'READY');
   }finally{f.cleanup();}
 });
 
@@ -2055,7 +1596,7 @@ test('Current ChatGPT accessible headings and Ask ChatGPT textbox work without l
     assert.equal(before.userCount,1);
     assert.equal(before.composerReady,true);
     assert.equal(before.lastAssistant,'Previous answer');
-    const done=await driveChatConversation({store:f.store,missionId:f.linked.id,
+    const done=await drive({store:f.store,missionId:f.linked.id,
       revision:f.linked.version,requestPrefix:'accessible',turns:2,page,url:URL,timeoutMs:10000});
     assert.equal(fake.sends,1);
     assert.equal(done.state,'PAUSED');
@@ -2070,7 +1611,7 @@ test('localized Chinese transcript headings, ProseMirror textbox and form submit
     const before=await inspectChatPage(page,URL);
     assert.equal(before.composerReady,true,
       'A unique role=textbox contenteditable composer is locale-independent');
-    const done=await driveChatConversation({store:f.store,missionId:f.linked.id,
+    const done=await drive({store:f.store,missionId:f.linked.id,
       revision:f.linked.version,requestPrefix:'localized-composer',turns:1,
       page,url:URL,timeoutMs:10000});
     assert.equal(fake.sends,1,'The localized form submit control is clicked exactly once');
@@ -2084,7 +1625,7 @@ test('hidden duplicate home composer does not block the unique visible thread an
     const fake=new DualComposerChatPage(),page=fake as unknown as Page;
     const initial=await inspectChatPage(page,URL);
     assert.equal(initial.composerReady,true);
-    const done=await driveChatConversation({store:f.store,missionId:f.linked.id,
+    const done=await drive({store:f.store,missionId:f.linked.id,
       revision:f.linked.version,requestPrefix:'visible-thread',turns:1,
       page,url:URL,timeoutMs:10000});
     assert.equal(fake.sends,1);
@@ -2096,7 +1637,7 @@ test('two visible composer editors are ambiguous and cannot reserve or send',asy
   const f=fixture();try{
     const fake=new DualComposerChatPage(true),page=fake as unknown as Page;
     assert.equal((await inspectChatPage(page,URL)).composerReady,false);
-    await assert.rejects(driveChatConversation({store:f.store,missionId:f.linked.id,
+    await assert.rejects(drive({store:f.store,missionId:f.linked.id,
       revision:f.linked.version,requestPrefix:'ambiguous-editor',turns:1,
       page,url:URL,timeoutMs:10000}),/ChatGPT tab is not ready|Source ChatGPT tab must be idle|composer/i);
     assert.equal(fake.sends,0);
@@ -2110,7 +1651,7 @@ test('Virtualized ChatGPT turn counts may decrease after send without losing the
     const before=await inspectChatPage(page,URL);
     assert.equal(before.userCount,5);
     assert.equal(before.assistantCount,5);
-    const result=await driveChatConversation({store:f.store,missionId:f.linked.id,
+    const result=await drive({store:f.store,missionId:f.linked.id,
       revision:f.linked.version,requestPrefix:'virtualized',turns:1,page,url:URL,timeoutMs:10000});
     const after=await inspectChatPage(page,URL);
     assert.equal(after.userCount,3);
@@ -2127,7 +1668,7 @@ test('A changed assistant reply without the submitted latest user prompt cannot 
     const fake=new MismatchedChatPage(),page=fake as unknown as Page;
     await assert.rejects(()=>executeBrowserTurn({store:f.store,missionId:f.linked.id,
       revision:f.linked.version,requestKey:'mismatch',page,url:URL,
-      prompt:browserContinuationPrompt('test',['evidence'],true),timeoutMs:10000,
+      prompt:PROMPT,timeoutMs:10000,
       requireFinalMarker:true}),/manual reconciliation/);
     assert.equal(fake.sends,1);
     assert.equal(f.store.get(f.linked.id).state,'NEEDS_RECONCILIATION');
@@ -2142,7 +1683,7 @@ test('With a 60-second poll, a 12-second deadline during an incomplete stream fa
     const started=Date.now();
     const markerArrival=setTimeout(()=>{fake.reply='Complete response after a long streaming pause.\n[MISSION_RELAY:DONE]';},4300);
     try {
-      await assert.rejects(()=>driveChatConversation({store:f.store,missionId:f.linked.id,
+      await assert.rejects(()=>drive({store:f.store,missionId:f.linked.id,
         revision:f.linked.version,requestPrefix:'streaming',turns:1,page,url:URL,timeoutMs:12000}),
         /manual reconciliation/);
       assert.ok(Date.now()-started>=4300,'The controller must wait past the partial response');
@@ -2159,7 +1700,7 @@ test('Missing final marker fails closed as an ambiguous send and cannot be repla
     fake.reply='An assistant reply was started but never reached its required final marker';
     await assert.rejects(()=>executeBrowserTurn({store:f.store,missionId:f.linked.id,
       revision:f.linked.version,requestKey:'no-final-marker',page,url:URL,
-      prompt:browserContinuationPrompt('test',['evidence'],true),timeoutMs:10000,
+      prompt:PROMPT,timeoutMs:10000,
       requireFinalMarker:true}),/manual reconciliation/);
     assert.equal(fake.sends,1);
     assert.equal(f.store.get(f.linked.id).state,'NEEDS_RECONCILIATION');
@@ -2215,7 +1756,6 @@ test('Browser driver stops without blindly continuing unmarked or blocked model 
   assert.equal(browserDecision('Can continue\n[M\u200B\u200BISSION_RELAY:NEXT]'),'NEXT');
   assert.equal(browserDecision('Can continue\n[M\u200B\u200BISSION_RELAY:NEXT]\nnot final'),'UNMARKED');
   assert.equal(browserDecision('All verified\n[MISSION_RELAY:DONE]'),'DONE');
-  assert.match(browserContinuationPrompt('test',['evidence'],true),/acceptance criteria:/i);
 });
 
 test('Browser inspection refuses navigation to another conversation',async()=>{

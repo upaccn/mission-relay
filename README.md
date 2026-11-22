@@ -1,20 +1,37 @@
 # Mission Relay
 
-Mission Relay coordinates long-running AI work across independently scoped projects. It combines persistent Goals, AI-assisted planning, ChatGPT browser execution and a single reliable task controller, with Telegram as the primary owner interface.
+Mission Relay runs long-lived AI Goals to a verifiable result. You give it a
+Goal in Telegram; a PI agent plans the work and reviews every step; ChatGPT
+in your own Chrome executes the current work package; one Worker keeps the
+whole loop safe, resumable and auditable.
 
 **Node.js 24+ · TypeScript · SQLite · Apache-2.0**
 
-## Features
+## How it works
 
-- **Long-running Goals:** persistent plans, work packages, acceptance criteria, PI review decisions and resumable execution history. Missions have no fixed turn ceiling.
-- **Independent project workspaces:** each writable Goal must specify an explicitly approved `--repo` path. Different approved repository roots cannot overlap, and every browser Send rechecks the Goal's immutable repository scope.
-- **Multi-Goal scheduling:** multiple Goals remain active or queued, each with its own Mission and ChatGPT conversation. One leased Worker dispatches browser work sequentially at safe checkpoints.
-- **PI-driven execution:** the configured PI agent plans and reviews the work; ChatGPT carries out the current approved work package in the owner's Playwriter-enabled Chrome tab. PI inherits its configured default model.
-- **Conversation handoff:** after 8 verified Relay sends in one ChatGPT conversation, further work uses a new conversation while retaining the Mission's durable context.
-- **Safe delivery and recovery:** exact request IDs, prompt and answer hashes, browser/tab binding, at-most-once sends, bounded existing-message UI Retry, owner pause/resume and recovery of verified replies.
-- **Operational controls:** SQLite-backed audit events, non-destructive automatic archival of settled history, GitHub CI qualification, maintenance-gated Windows upgrades, recoverable database backups and runtime SHA verification.
-- **CI-conscious autonomy:** routine iterations prefer local/approved native-host validation and batch metered CI pushes; private-repository workflow triggers are checked before pushes. Required release CI is still independently verified, not replaced by local-only assertions.
-- **Optional executor plugins:** add trusted native executors without bundling vendor SDKs or credentials into Core.
+```text
+Telegram /goal ──► Goal plan (PI) ──► work package ──► ChatGPT executes
+      ▲                                                     │
+      └──── result / blocker ◄── PI review: PASS · PARTIAL · REPLAN · BLOCKED
+```
+
+- **Goal-first.** Every task is a Goal with a durable plan, work packages and
+  acceptance criteria. The first ChatGPT turn is read-only discovery; PI then
+  approves a plan and selects one package at a time.
+- **PI decides, ChatGPT executes.** PI reviews each complete ChatGPT answer.
+  Passed work is carried forward across re-plans and given back to ChatGPT as
+  *established context*, so verified results are not re-audited.
+- **Done means done.** A Goal is DONE only when PI passes the final package
+  of its approved plan. A ChatGPT "DONE" marker alone never completes it.
+- **Blocked means fixable.** A Goal stops only on a real external barrier;
+  after you fix it, `/goal-continue` resumes the same Goal without
+  re-planning from scratch.
+- **No turn ceiling.** A Goal runs as long as it needs; each ChatGPT
+  conversation carries at most 8 Relay Sends, then work continues in a fresh
+  conversation.
+- **Never a duplicate Send.** Every request is reserved with an exact ID and
+  prompt SHA before it is sent. An ambiguous outcome is never resent; it is
+  verified or explicitly abandoned.
 
 ## Install
 
@@ -28,86 +45,59 @@ npm run build
 node dist/cli.js help
 ```
 
-The CLI uses Node's built-in SQLite; no external database, message broker or separate queue service is required. State lives in the OS user state directory by default and can be relocated with `MISSION_RELAY_HOME`.
+State lives in Node's built-in SQLite under the OS user state directory
+(`MISSION_RELAY_HOME` relocates it). No external database, broker or queue.
 
-`npm run check` includes a read-only repository-state gate. It verifies the
-package, lockfile, [STATE](STATE.md) and changelog versions, local documentation
-links, CI checks and top-level project isolation. Run `npm run state-check` to
-check these invariants independently of TypeScript compilation.
+## Set up
 
-## Configure your workflow
-
-1. Set up a private, owner-allowlisted Telegram channel and the approved PI connection using [Telegram setup](docs/telegram.md).
-2. Install and enable [Playwriter](docs/playwriter-evaluation.md) on the exact ChatGPT tabs you want Mission Relay to use, and bind the correct Chrome profile.
-3. Approve each writable project repository from the local operator environment:
+1. Configure the owner-allowlisted Telegram bot and the PI route — see
+   [Telegram setup](docs/telegram.md).
+2. Enable [Playwriter](docs/playwriter-evaluation.md) in the Chrome profile
+   that runs ChatGPT, then pin it: `telegram-anchor --url <chat> --browser-id <id>`.
+3. Approve each repository a Goal may change:
 
    ```bash
    node dist/cli.js telegram-build-project --allow /srv/projects/product-a
-   node dist/cli.js telegram-build-project --allow /srv/projects/product-b
-   node dist/cli.js telegram-build-project --list
    ```
 
-4. In Telegram, create independently scoped Goals:
+## Use (Telegram)
 
-   ```text
-   /goal-build --repo /srv/projects/product-a Implement and test feature A
-   /goal-build --repo /srv/projects/product-b Review and improve feature B
-   ```
-
-   Use `/goal <objective>` for a read-only Goal, or `/build <task>` for a task in the configured single-repository workspace.
-
-5. Use `/list`, `/status 2`, `/pause 2` and `/resume 2` to inspect and control work. Goal identifiers remain independent; the Telegram interface can use convenient numeric selectors.
-
-The repository approval governs Mission Relay's own authorization and prompts. It does **not** install an OS-level filesystem sandbox around ChatGPT or other executors; configure their filesystem permissions separately.
-
-## Browser and operations
-
-```bash
-node dist/cli.js browser-list
-node dist/cli.js browser-candidates --browser-id YOUR_CHROME_ID
-node dist/cli.js pi-health
-node dist/cli.js channel-status
+```text
+/goal <objective>                               read-only Goal
+/goal-build --repo /srv/projects/product-a <objective>
+<plain message>                                 note for the Goal in progress
+/goal-continue 2 <what changed>                 continue a blocked Goal
+/list · /status 2 · /pause 2 · /resume 2 · /goals · /history
 ```
 
-Mission Relay retains the original request if ChatGPT delivery is ambiguous; it never submits a fresh copy simply because a response timed out. A Playwriter tab count of zero means no tabs are currently attached to the extension, not necessarily that Chrome tabs have closed.
+Repository approval governs Mission Relay's own authorization and prompts.
+It is not an OS-level sandbox around ChatGPT; configure that separately.
 
-When ChatGPT shows its maximum-conversation-length notice, the enrolled Worker
-can recognize the exact native `Start new chat` button and record a one-shot
-UI click (separate from transport Retry). Owner-paused requests instead need
-explicit operator approval through `browser-start-new-chat` after a
-verified upgrade. The original unanswered Send remains uncredited and locked;
-opening the native new-chat UI alone is **not** verified context migration
-or permission to repeat a potentially executed work package.
-
-The maximum per-Chat Relay Send count is **8**; the ninth Send must start
-a verified separate Chat. After the native `Start new chat` action,
-ChatGPT can place the exact previous prompt in a new unsent draft. For an
-unpaused Mission, the enrolled Worker automatically verifies and submits it
-once. For an owner-paused incident, the revision-gated operator command
-`browser-send-native-draft` verifies the original prompt SHA and unique
-new Chat origin before **one** first Send.
-The Worker may later credit only a complete independently reobserved
-new-Chat answer; it must never replay an ambiguous click.
-
-For a cooperatively paused request that ended in an uncertain original ChatGPT delivery, the operator can use the revision-gated `browser-resume-pending-retry` command **after** an audited maintenance upgrade. It only releases the paused original message for inspection by the enrolled Worker; any UI Retry consumes the same durable one-shot budget and never replays a composer Send.
-
-For Windows scheduled-task deployment, SQLite maintenance, backup and rollback, see [Operations](docs/operations.md). For CI and software release qualification, run:
+## When something gets stuck
 
 ```bash
-node dist/cli.js software-release-status --sha <main-commit-sha> --run-id <github-actions-run>
+node dist/cli.js recover <mission>      # read-only diagnosis + the one safe next action
 ```
 
-Source checkout, GitHub release, and installed GMK Worker are separate
-boundaries. An active or uncertain browser Send blocks maintenance; a new
-source commit does not prove it has been deployed. Compare the installed
-source SHA through `channel-status` and use the guarded Windows upgrade only
-after its independent idle preflight.
+`recover` then offers exactly three actions, each requiring the current
+revision: `--accept-reply` (credit a complete reply ChatGPT already shows,
+read twice), `--retry` (clear an error at a settled step after two matching
+reads) and `--abandon` (give up an unverifiable request: no credit, no
+resend; the Goal becomes blocked for `/goal-continue`).
+
+## Operations
+
+Source checkout, GitHub release and the installed Worker are separate
+boundaries. Qualify a release with
+`software-release-status --sha <main-sha> --run-id <actions-run>`; deploy the
+Windows Worker only through the guarded upgrade in
+[Operations](docs/operations.md), which drains, backs up and verifies SQLite.
 
 ## Documentation
 
-- [Architecture](docs/architecture.md) — controller, Goal ledger, browser and executor boundaries
-- [Telegram](docs/telegram.md) — channel configuration and commands
-- [Browser integration](docs/playwriter-evaluation.md) — Playwriter setup and safe recovery
-- [Operations](docs/operations.md) — Windows Worker lifecycle, upgrades and backups
-- [Plugin API](docs/plugin-api.md) — optional native executors
+- [Architecture](docs/architecture.md) — controller, Goal ledger and browser boundaries
+- [Telegram](docs/telegram.md) — setup and commands
+- [Product UX](docs/product-ux.md) — what the owner sees
+- [Browser integration](docs/playwriter-evaluation.md) — Playwriter setup
+- [Operations](docs/operations.md) — Windows Worker lifecycle, upgrades, backups
 - [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [License](LICENSE)

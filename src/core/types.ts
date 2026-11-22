@@ -1,5 +1,3 @@
-export const PROTOCOL_VERSION = 1 as const;
-
 export type MissionState =
   | 'READY' | 'RUNNING' | 'VERIFYING' | 'PAUSED' | 'BLOCKED'
   | 'NEEDS_RECONCILIATION' | 'COMPLETED' | 'CANCELLED';
@@ -18,7 +16,6 @@ export interface CreateMission {
   workspace: string;
   sandbox: Sandbox;
   mode: MissionMode;
-  maxTurns: number;
   requestKey: string;
   checks?: VerificationCheck[];
 }
@@ -40,36 +37,10 @@ export interface Mission extends CreateMission {
   updatedAt: string;
 }
 
-export type Decision = {
-  status: 'continue' | 'candidate_complete' | 'blocked';
-  summary: string;
-  next_instruction: string;
-  evidence: string[];
-};
-
-export type Verification = {
-  accepted: boolean;
-  reason: string;
-  evidence: string[];
-};
-
 export interface MissionEvent {
   id: number;
   missionId: string;
   createdAt: string;
   type: string;
   payload: unknown;
-}
-
-export interface TurnInput {
-  mission: Mission;
-  prompt: string;
-  onThreadStarted: (id: string) => void;
-  onEvent?: (type: string) => void;
-}
-
-/** Agent runtimes are replaceable; mission state is not owned by an agent. */
-export interface AgentAdapter {
-  execute(input: TurnInput): Promise<Decision>;
-  verify(mission: Mission, decision: Decision): Promise<Verification>;
 }

@@ -164,7 +164,7 @@ export function authoredUserParagraphText(root:Node):string {
 }
 
 /** User-authored last visible prompt, excluding ChatGPT accessibility labels.
- * An adoption goal can be seeded from it without inventing a new task. */
+ */
 export async function lastVisibleUserPrompt(page:Page):Promise<string|null>{
   const legacy=page.locator(USER_SELECTOR);
   if(await legacy.count())return canonicalVisibleUserPrompt(
@@ -283,7 +283,7 @@ export async function listConnectedChatCandidates(browserId:string,
       // uses the original all-candidates behavior without this filter.
       try {if(!selectedUrl||selectedUrl===url)
         lastUserSha256=await lastVisibleUserPromptSha256(page);}
-      catch {/* A loading, inaccessible or unsupported DOM is not adoptable. */}
+      catch {/* A loading, inaccessible or unsupported DOM is not a candidate. */}
       result.push({url,urlSha256:createHash('sha256').update(url).digest('hex'),
         duplicate:pages.filter(item=>item.url===url).length!==1,lastUserSha256});
     }
@@ -564,7 +564,6 @@ async function inspectAfterSend(page:Page,url:string,
  * The banner is checked explicitly; never treat a generic Retry as authorization. */
 export const CONNECTION_INTERRUPTED_TEXT='Connection interrupted. Waiting for the complete answer';
 export const MESSAGE_DELIVERY_TIMEOUT_TEXT='Message delivery timed out. Please try again.';
-export const MESSAGE_STREAM_ERROR_TEXT='Error in message stream';
 export const MAX_CONVERSATION_LENGTH_TEXT=
   "You've reached the maximum length for this conversation, but you can keep talking by starting a new chat.";
 export type ChatGPTLongTaskBanner='interrupted'|'delivery-timeout'|'stream-error';
@@ -767,22 +766,6 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
       retryDelay,deadline-Date.now())));
   }
   throw new Error('ChatGPT response observation timed out; submission outcome is ambiguous');
-}
-
-/** Read-only first-party origin load for a NEW, explicitly owned tab.
- * Caller can test hydration before consuming a one-shot pre-Send recovery
- * authorization. This does not fill the composer or click Send. */
-export async function prepareNewChatOrigin(page:Page):Promise<void>{
-  await page.goto('https://chatgpt.com/',{waitUntil:'domcontentloaded',timeout:30000});
-  await page.waitForLoadState('load',{timeout:30000});
-  const url=page.url();
-  if(url!=='https://chatgpt.com/'&&url!=='https://chatgpt.com')
-    throw new Error('New ChatGPT tab did not open the authorized origin');
-  if(await userHeadings(page).count()||await page.locator(USER_SELECTOR).count())
-    throw new Error('Prepared new ChatGPT origin already contains a user message');
-  const composer=await composerLocator(page);
-  if(await composer.count()!==1||!await composer.isVisible())
-    throw new Error('New ChatGPT origin has no visible, unique authenticated composer');
 }
 
 /** A hydrated origin may expose a composer before its Send control is ready.

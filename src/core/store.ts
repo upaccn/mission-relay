@@ -6,7 +6,6 @@ import { hostname } from 'node:os';
 import type { CreateMission, Mission, MissionEvent, MissionState, VerificationCheck } from './types.js';
 import { normalizeChatGPTUrl } from './chatgpt-handoff.js';
 import {MAX_RELAY_CHAT_TURNS,MAX_CONVERSATION_LENGTH_ERROR} from './chat-limits.js';
-import {missionTurnsRemaining,missionTurnLimitReached} from './mission-turns.js';
 import {isApprovedBuildRepository,declaredSourceMatchesScope,hasIsolatedRepositoryGrant} from './build-scopes.js';
 import type {RuntimeProvenance} from './runtime-provenance.js';
 import {hasFinalMissionRelayMarker,missionRelayMarker} from './mission-marker.js';
@@ -49,52 +48,15 @@ export interface PiOwnerDirective {
   id:number;externalId:string;text:string;
 }
 export type PiPlanAction='NEXT'|'DONE'|'BLOCKED'|'HANDOFF';
-/** Exact old controller error caused by checking a successor's own observed
- * answer against its exhausted parent's different ChatGPT conversation. Only
- * a fresh, explicit, double-read browser hash attestation may clear it. */
-export const PI_SUCCESSOR_CHECKPOINT_MISMATCH=
+/** The live Chat no longer matches the last durable receipt. Only an explicit
+ * double-read (`recover --retry`) may clear it; nothing is ever resent. */
+export const PI_CHECKPOINT_MISMATCH=
   'PI recovery refused: current Chrome user/assistant turns differ from the last durable receipt';
-/** A closed Playwriter page reported during the read-only pre-Send history
- * check. Never infer that a subsequent request was submitted from this text;
- * the SQLite receipt and exact PI checkpoint must prove no new reservation. */
-export const PI_CLOSED_PAGE_READ_ERROR=
-  'locator.count: Target page, context or browser has been closed';
-/** Historic pre-Send guard may report this generic error when the visible
- * reply and original hashes are fine but the UI mounted a hidden duplicate
- * editor. Only a two-read operator checkpoint validation may clear it. */
+/** The pre-Send history check found a changed Chat; no request was reserved. */
 export const PI_NEXT_SOURCE_PREFLIGHT_ERROR=
   'PI next browser Send refused: visible ChatGPT history differs from the last observed receipt';
-/** Older in-flight observers could throw when a cooperative pause denied UI Retry. */
-export const PAUSED_DELIVERY_RETRY_ERROR=
-  'Delivery Retry requires the original active or timed-out request';
 
-/** Only exact, structured exit-2 PI capacity or model-timeout errors are
- * eligible for operator-attested checkpoint recovery. An arbitrary model,
- * authorization or browser error is never eligible. */
-function isHistoricPiCapacityInterruption(error:string|null):boolean {
-  // Keep recognizing the original deployed controller's prefixed error even
-  // after the host/provider name changes. Only the exact structured
-  // maintenance-capacity payload below can authorize this recovery path.
-  const match=/^[a-zA-Z][a-zA-Z0-9 -]{0,48} PI inference failed \(SSH exit 2\); no browser retry\. /.exec(error??'');
-  if(!match)return false;
-  try {
-    const parsed=JSON.parse(error!.slice(match[0].length)) as {ok?:unknown;error?:unknown};
-    return parsed?.ok===false&&(
-      parsed.error==='Pi maintenance or a global task is active'||
-      parsed.error==='Model inference timed out after 120 seconds');
-  }catch{return false;}
-}
 
-/** The ONLY old browser navigation failure that is control-flow-proven to
- * precede composer.fill() and Send.click(): submitNewChatTurn() invokes this
- * first, before ANY outgoing user message. Other errors/timeouts are never
- * permission to retry a possibly committed Send. */
-export function isPreSendNewChatOriginNavigationTimeout(error:string|null|undefined):boolean{
-  return typeof error==='string' &&
-    error.startsWith('page.goto: Timeout 30000ms exceeded.\nCall log:\n') &&
-    error.includes('navigating to "https://chatgpt.com/"') &&
-    error.includes('waiting until "domcontentloaded"');
-}
 export interface PiPlan {
   action:PiPlanAction;summary:string;nextPrompt:string;responseSha256:string;
   round:number;reviewedDirectiveIds:number[];
@@ -105,7 +67,7 @@ function fromRow(r: MissionRow): Mission {
     id: r.id, goal: r.goal, acceptance: JSON.parse(r.acceptance_json) as string[],
     checks: JSON.parse(r.checks_json) as VerificationCheck[],
     workspace: r.workspace, sandbox: r.sandbox, mode: r.mode,
-    maxTurns: r.max_turns, requestKey: r.request_key, state: r.state,
+    requestKey: r.request_key, state: r.state,
     version: r.version, turnCount: r.turn_count, threadId: r.thread_id,
     nextInstruction: r.next_instruction, lastSummary: r.last_summary,
     lastError: r.last_error, ownerPid: r.owner_pid, ownerHost: r.owner_host,
@@ -636,7 +598,7 @@ export class Store {
   piHealth(now=Date.now()):{
     observedAt:string;totalOutstanding:number;truncated:boolean;
     missions:Array<{
-      id:string;state:Mission['state'];turnCount:number;maxTurns:number;
+      id:string;state:Mission['state'];turnCount:number;
       currentChatObservedTurns:number;piDecision:string|null;
       piDecisionRound:number|null;browserReceipt:string|null;
       /** Reservation intent only; not proof of a new tab, Send or reply. */
@@ -654,7 +616,7 @@ export class Store {
       if(['READY','RUNNING','VERIFYING','NEEDS_RECONCILIATION'].includes(m.state))return true;
       if(m.state!=='PAUSED'||m.stopRequested)return false;
       const plan=this.piPlan(m.id);
-      return (missionTurnsRemaining(m.maxTurns,m.turnCount)&&(!plan||['NEXT','HANDOFF'].includes(plan.action)))||
+      return !plan||['NEXT','HANDOFF'].includes(plan.action)||
         !!m.lastError;
     });
     const priority=(m:Mission):number=>m.state==='RUNNING'||m.state==='VERIFYING'?0:
@@ -672,8 +634,6 @@ export class Store {
           'dead_owner_new_chat_reserved_inspect_only_do_not_resend':
         receipt?.status==='reserved'?'browser_answer_pending_do_not_resend':
         m.state==='READY'?'awaiting_controller_dispatch':
-        m.state==='PAUSED'&&m.lastError?.startsWith('Corrected answer attribution awaits')?
-          'corrected_answer_requires_pi_review':
         m.state==='PAUSED'&&m.lastError?'controller_interrupted':
         m.state==='PAUSED'&&this.getMeta(`pi.retry.sha.${m.id}`)===receipt?.assistantSha256&&
           this.getMeta(`pi.retry.request.${m.id}`)===receipt?.requestKey&&
@@ -685,7 +645,7 @@ export class Store {
         plan?.round!==m.turnCount?'awaiting_pi_review':
         m.state==='PAUSED'?'pi_checkpoint_ready':
         'controller_active_browser_progress_unverified';
-      return {id:m.id,state:m.state,turnCount:m.turnCount,maxTurns:m.maxTurns,
+      return {id:m.id,state:m.state,turnCount:m.turnCount,
         currentChatObservedTurns:this.piChatObservedTurns(m.id),
         piDecision:plan?.action??null,piDecisionRound:plan?.round??null,
         browserReceipt:receipt?.status??null,
@@ -716,28 +676,6 @@ export class Store {
   chatBrowserBinding(id:string):string|null {
     this.raw(id);
     return this.getMeta(`chatgpt.browser.binding.${id}`);
-  }
-  /** A native Mission must keep its originally chosen executor after restart,
-   * even if additional plugins are installed or the default later changes. */
-  bindNativeExecutor(id:string,pluginId:string):void {
-    if(!/^[a-z][a-z0-9]*(?:[.-][a-z][a-z0-9]*)+$/.test(pluginId))
-      throw new Error('Invalid executor plugin ID');
-    this.transaction(()=>{
-      const m=this.get(id);
-      if(this.chatLink(id))throw new Error('ChatGPT browser Mission cannot bind a native executor');
-      if(!['READY','RUNNING','VERIFYING','PAUSED'].includes(m.state))
-        throw new Error('Native executor binding requires an unfinished Mission');
-      const key=`executor.mission.${id}`;
-      const previous=this.getMeta(key);
-      if(previous&&previous!==pluginId)
-        throw new Error('Native Mission executor identity is immutable');
-      if(!previous){
-        if(m.threadId||m.turnCount>0)
-          throw new Error('Cannot bind an executor after unbound work has already started');
-        this.setMeta(key,pluginId);
-        this.event(id,'executor.plugin_bound',{pluginId});
-      }
-    });
   }
   bindChatBrowser(id:string,browserId:string,expectedVersion:number):{mission:Mission;browserId:string} {
     if(!/^[A-Za-z0-9:._-]{1,200}$/.test(browserId)) throw new Error('Invalid Playwriter browser ID');
@@ -830,11 +768,7 @@ export class Store {
       const uncertain=record?.status==='uncertain'&&m.state==='NEEDS_RECONCILIATION'&&
         m.ownerPid===null&&m.lastError===record.error;
       const oldChatTimeout=uncertain&&record?.newConversation!==true&&
-        (m.lastError==='ChatGPT response observation timed out; submission outcome is ambiguous'||
-         (m.lastError===PAUSED_DELIVERY_RETRY_ERROR&&
-          this.events(id).some(e=>e.type==='chatgpt.browser_existing_chat_retry_authorized'&&
-            (e.payload as {requestKey?:string;promptSha256?:string}).requestKey===requestKey&&
-            (e.payload as {promptSha256?:string}).promptSha256===promptSha256)));
+        m.lastError==='ChatGPT response observation timed out; submission outcome is ambiguous';
       const newChatTimeout=uncertain&&record?.newConversation===true&&
         m.lastError==='New ChatGPT reply observation timed out; creation outcome is ambiguous'&&
         this.chatBrowserBinding(id)!==null&&this.chatLink(id)!==null&&
@@ -972,7 +906,6 @@ export class Store {
           (e.payload as {round?:number;assistantSha256?:string}).round===m.turnCount&&
           (e.payload as {assistantSha256?:string}).assistantSha256===plan.responseSha256)||
         this.pendingPiOwnerDirectives(id).length>0||
-        !this.goalContinuationEligible(id)||
         (m.sandbox==='workspace-write'&&
           (!hasIsolatedRepositoryGrant(this,m.workspace)||
            !declaredSourceMatchesScope(m.goal,m.workspace))))
@@ -1029,8 +962,6 @@ export class Store {
         this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
         plan?.round!==m.turnCount||!['NEXT','HANDOFF'].includes(plan.action)||
         this.pendingPiOwnerDirectives(id).length>0||
-        !this.goalContinuationEligible(id)||
-        missionTurnLimitReached(m.maxTurns,m.turnCount)||
         (m.sandbox==='workspace-write'&&
           (!hasIsolatedRepositoryGrant(this,m.workspace)||
             !declaredSourceMatchesScope(m.goal,m.workspace)))||
@@ -1101,8 +1032,7 @@ export class Store {
     if(receipt.status!=='reconciled')return false;
     const round=this.get(id).turnCount;
     return this.events(id).some(event=>{
-      if(!['chatgpt.browser_turn_recovered','chatgpt.browser_rollover_recovered',
-        'chatgpt.browser_attribution_corrected'].includes(event.type))
+      if(!['chatgpt.browser_turn_recovered','chatgpt.browser_rollover_recovered'].includes(event.type))
         return false;
       const evidence=event.payload as {requestKey?:unknown;assistantSha256?:unknown;
         round?:unknown;independentlyInspected?:unknown}|null;
@@ -1123,7 +1053,7 @@ export class Store {
         throw new Error(`State conflict: expected v${revision}, current v${m.version}`);
       if(this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
         m.state!=='PAUSED'||!m.stopRequested||m.ownerPid!==null||
-        m.turnCount<1||missionTurnLimitReached(m.maxTurns,m.turnCount)||m.lastError||
+        m.turnCount<1||m.lastError||
         !receipt||!this.hasVerifiedPiBrowserCheckpoint(id)||
         (plan?.round===m.turnCount&&['DONE','BLOCKED'].includes(plan.action)))
         throw new Error('PI resume requires an owner-paused, settled, nonterminal browser checkpoint');
@@ -1132,9 +1062,6 @@ export class Store {
          !hasIsolatedRepositoryGrant(this,m.workspace)||
          !declaredSourceMatchesScope(m.goal,m.workspace)))
         throw new Error('PI repository approval was revoked or no longer matches its isolated Goal scope');
-      const parentId=this.piChainParent(id);
-      if(parentId&&this.get(parentId).stopRequested)
-        throw new Error('PI successor parent remains paused; resume the authorized lineage first');
       const now=new Date().toISOString();
       const updated=this.db.prepare(`UPDATE missions SET stop_requested=0,
         version=version+1,updated_at=? WHERE id=? AND version=?`)
@@ -1147,328 +1074,64 @@ export class Store {
       return this.get(id);
     });
   }
-  /** One-shot operator repair for an older controller that permanently paused
-   * after a closed page during the read-only NEXT preflight. The caller must
-   * independently read the exact original user and assistant SHA twice.
-   * This method never opens Chrome, reserves a request or dispatches a Send. */
-  clearSettledPiBrowserReadInterruption(id:string,revision:number,input:{
+  /** Operator `recover --retry`: clear the error of a PI Mission parked at a
+   * SETTLED checkpoint (observed or reconciled receipt, no Send in flight)
+   * after the caller re-read the live tab twice and both SHAs match the
+   * receipt. Only the error is cleared; the single Worker then re-reads the
+   * tab again before any further step. No Send, no PI decision, no owner
+   * pause release. */
+  clearSettledPiInterruption(id:string,revision:number,input:{
     requestPromptSha256:string;assistantSha256:string;
   }):Mission {
     return this.transaction(()=>{
-      const m=this.get(id),receipt=this.chatBrowserTurn(id),plan=this.piPlan(id);
-      const events=this.events(id),interrupted=events.at(-1),decision=events.at(-2);
-      const failure=interrupted?.payload as {reason?:unknown}|undefined;
-      const pi=decision?.payload as {round?:unknown;action?:unknown;
-        responseSha256?:unknown}|undefined;
+      const m=this.get(id),receipt=this.chatBrowserTurn(id);
       if(m.version!==revision||m.state!=='PAUSED'||m.stopRequested||
-        m.ownerPid!==null||m.turnCount<1||
-        missionTurnLimitReached(m.maxTurns,m.turnCount)||
-        ![PI_CLOSED_PAGE_READ_ERROR,PI_NEXT_SOURCE_PREFLIGHT_ERROR].includes(m.lastError??'')||
+        m.ownerPid!==null||!m.lastError||
         this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
-        this.channelDrainRequested('telegram')||!this.goalContinuationEligible(id)||
-        !receipt||receipt.status!=='observed'||
-        !this.hasVerifiedPiBrowserCheckpoint(id)||
+        this.channelDrainRequested('telegram')||
+        !receipt||!['observed','reconciled'].includes(receipt.status)||
         receipt.promptSha256!==input.requestPromptSha256||
         receipt.assistantSha256!==input.assistantSha256||
-        !plan||plan.round!==m.turnCount||
-        !['NEXT','HANDOFF'].includes(plan.action)||
-        plan.responseSha256!==receipt.assistantSha256||
-        interrupted?.type!=='pi.autopilot_interrupted'||
-        failure?.reason!==m.lastError||
-        decision?.type!=='pi.decision'||pi?.round!==m.turnCount||
-        pi?.action!==plan.action||pi?.responseSha256!==receipt.assistantSha256||
+        !this.hasVerifiedPiBrowserCheckpoint(id)||
         !this.chatLink(id)||!this.chatBrowserBinding(id)||
         (m.sandbox==='workspace-write'&&
           (!isApprovedBuildRepository(this,m.workspace)||
            !hasIsolatedRepositoryGrant(this,m.workspace)||
-           !declaredSourceMatchesScope(m.goal,m.workspace)))||
-        (this.piChainParent(id)!==null&&
-          this.get(this.piChainParent(id)!).stopRequested))
-        throw new Error('Browser read recovery requires the exact settled NEXT checkpoint and original authorization');
-      return this.update(id,revision,{lastError:null},
-        'pi.browser_checkpoint_revalidated',{
-          interruptedEventId:interrupted.id,decisionEventId:decision.id,
-          round:m.turnCount,requestKey:receipt.requestKey,
-          requestPromptSha256:receipt.promptSha256,
-          assistantSha256:receipt.assistantSha256,
-          requiresIndependentBrowserReadback:true,noBrowserSend:true,
-        });
-    });
-  }
-  /** Explicit owner release of a PAUSED, unresolved new-chat request. This
-   * authorizes the enrolled Worker to inspect ONE already-submitted message
-   * and its Retry control; it never sends or clicks from this CLI process. */
-  resumeUncertainNewChatRetry(id:string,revision:number):Mission {
-    return this.transaction(()=>{
-      const m=this.get(id),r=this.chatBrowserTurn(id),plan=this.piPlan(id);
-      if(m.version!==revision||m.state!=='NEEDS_RECONCILIATION'||
-        !m.stopRequested||m.ownerPid!==null||
-        m.lastError!=='New ChatGPT reply observation timed out; creation outcome is ambiguous'||
-        !r||r.status!=='uncertain'||r.newConversation!==true||r.error!==m.lastError||
-        !this.chatLink(id)||!this.chatBrowserBinding(id)||
-        r.urlHash!==createHash('sha256').update(this.chatLink(id)!).digest('hex')||
-        this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
-        (m.turnCount>0&&(!plan||plan.round!==m.turnCount||
-          !['NEXT','HANDOFF'].includes(plan.action)))||
-        this.pendingPiOwnerDirectives(id).length>0||
-        this.channelDrainRequested('telegram')||!this.goalContinuationEligible(id)||
-        (m.sandbox==='workspace-write'&&!isApprovedBuildRepository(this,m.workspace)))
-        throw new Error('Owner release requires one stopped, unchanged, originally submitted new-chat request');
-      this.requireUnspentBrowserReservation(id,r);
-      const now=new Date().toISOString();
-      const updated=this.db.prepare(`UPDATE missions SET stop_requested=0,
-        version=version+1,updated_at=? WHERE id=? AND version=?`).run(now,id,revision);
-      if(updated.changes!==1)throw new Error('New-chat recovery revision conflict');
-      this.event(id,'chatgpt.browser_new_chat_retry_authorized',{
-        requestKey:r.requestKey,promptSha256:r.promptSha256,
-        existingMessageOnly:true,noComposerSend:true,ownerAuthorized:true,
+           !declaredSourceMatchesScope(m.goal,m.workspace))))
+        throw new Error('Retry requires a PI Mission paused by an error at a settled, verified checkpoint');
+      return this.update(id,revision,{lastError:null},'pi.interruption_cleared',{
+        clearedError:m.lastError.slice(0,300),round:m.turnCount,requestKey:receipt.requestKey,
+        assistantSha256:receipt.assistantSha256,requiresIndependentBrowserReadback:true,
+        noBrowserSend:true,
       });
-      return this.get(id);
     });
   }
-  /** Owner releases a cooperative pause on one original existing-chat Send.
-   * Never clicks, sends, replaces a request or changes its browser receipt. */
-  resumeUncertainExistingChatRetry(id:string,revision:number):Mission {
+  /** Operator `recover --abandon`: settle an uncertain (or dead-owner reserved)
+   * request WITHOUT crediting any answer, end the Mission and mark its Goal
+   * BLOCKED so the owner continues it with /goal-continue. Never replays. */
+  abandonUncertainRequest(id:string,revision:number):Mission {
     return this.transaction(()=>{
-      const m=this.get(id),r=this.chatBrowserTurn(id),plan=this.piPlan(id);
-      const legacyPauseError=m.lastError===PAUSED_DELIVERY_RETRY_ERROR;
-      const timeoutError=m.lastError===
-        'ChatGPT response observation timed out; submission outcome is ambiguous';
-      const events=this.events(id);
-      const uncertain=events.filter(e=>e.type==='chatgpt.browser_uncertain'&&
-        (e.payload as {requestKey?:string}).requestKey===r?.requestKey).at(-1);
-      const pauseBeforeFailure=!!uncertain&&events.some(e=>
-        e.type==='mission.pause_requested'&&e.id<uncertain.id);
-      const url=this.chatLink(id);
-      if(m.version!==revision||m.state!=='NEEDS_RECONCILIATION'||
-        !m.stopRequested||m.ownerPid!==null||
-        !(timeoutError||(legacyPauseError&&pauseBeforeFailure))||
-        !r||r.status!=='uncertain'||r.newConversation===true||
-        r.error!==m.lastError||!url||!this.chatBrowserBinding(id)||
-        r.urlHash!==createHash('sha256').update(url).digest('hex')||
-        this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
-        m.turnCount<1||!plan||plan.round!==m.turnCount||
-        !['NEXT','HANDOFF'].includes(plan.action)||
-        this.pendingPiOwnerDirectives(id).length>0||
-        this.channelDrainRequested('telegram')||!this.goalContinuationEligible(id)||
-        (m.sandbox==='workspace-write'&&
-          (!isApprovedBuildRepository(this,m.workspace)||
-            !hasIsolatedRepositoryGrant(this,m.workspace)||
-            !declaredSourceMatchesScope(m.goal,m.workspace)))||
-        this.hasDeliveryRetryIntent(id,r.requestKey,r.promptSha256))
-        throw new Error('Owner release requires one stopped, unchanged existing-chat timeout and original approved scope');
-      this.requireUnspentBrowserReservation(id,r);
-      const now=new Date().toISOString();
-      const updated=this.db.prepare(`UPDATE missions SET stop_requested=0,
-        version=version+1,updated_at=? WHERE id=? AND version=?`).run(now,id,revision);
-      if(updated.changes!==1)throw new Error('Existing-chat recovery revision conflict');
-      this.event(id,'chatgpt.browser_existing_chat_retry_authorized',{
-        requestKey:r.requestKey,promptSha256:r.promptSha256,
-        existingMessageOnly:true,noComposerSend:true,ownerAuthorized:true,
-        legacyPausedClaim:legacyPauseError,
-      });
-      return this.get(id);
-    });
-  }
-  /** A narrowly scoped, append-only repair of an incorrect PI recovery
-   * interruption. The caller MUST first independently inspect the pinned
-   * live browser, twice, proving BOTH original user/assistant SHA-256s.
-   * This method cannot send a browser request, forge a PI plan, change an
-   * observed turn, or release an owner pause. The normal controller makes
-   * its own third read before any later Send. */
-  clearVerifiedPiSuccessorMismatch(id:string,revision:number,input:{
-    requestPromptSha256:string;assistantSha256:string;
-  }):Mission {
-    return this.transaction(()=>{
-      const m=this.get(id),receipt=this.chatBrowserTurn(id),plan=this.piPlan(id);
-      if(m.version!==revision)
-        throw new Error(`State conflict: expected v${revision}, current v${m.version}`);
-      if(this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
-        m.state!=='PAUSED'||m.stopRequested||m.ownerPid!==null||
-        m.lastError!==PI_SUCCESSOR_CHECKPOINT_MISMATCH||
-        m.turnCount<1||!this.piChainParent(id)||
-        !receipt||!this.hasVerifiedPiBrowserCheckpoint(id)||
-        receipt.promptSha256!==input.requestPromptSha256||
-        receipt.assistantSha256!==input.assistantSha256||
-        !this.chatLink(id)||!this.chatBrowserBinding(id)||
-        plan?.round===m.turnCount||
-        this.channelDrainRequested('telegram')||
-        !this.goalContinuationEligible(id))
-        throw new Error('PI successor recovery requires the same settled, unpaused, independently verified original checkpoint');
-      const parent=this.get(this.piChainParent(id)!);
-      if(parent.stopRequested||parent.lastError)
-        throw new Error('PI successor parent has an unresolved stop or error');
-      if(m.sandbox==='workspace-write'&&
-        (this.getMeta('telegram.build.project')!==m.workspace||
-         this.getMeta('telegram.pi.project')!==m.workspace))
-        throw new Error('PI build approval changed or was revoked; cannot recover');
-      return this.update(id,revision,{lastError:null},
-        'pi.autopilot_checkpoint_revalidated',{
-          round:m.turnCount,requestPromptSha256:receipt.promptSha256,
-          assistantSha256:receipt.assistantSha256,
-          requiresIndependentBrowserReadback:true,
-          reason:'fixed_successor_parent_receipt_selection',
-        });
-    });
-  }
-  /** Operator-attested one-time clearing of a structured PI inference interruption.
-   * The current Worker must independently read Chrome again and rerun only
-   * PI inference. Neither this method nor its CLI issues a browser Send. */
-  clearHistoricPiCapacityInterruption(id:string,revision:number,input:{
-    requestPromptSha256:string;assistantSha256:string;
-  }):Mission {
-    return this.transaction(()=>{
-      const m=this.get(id),receipt=this.chatBrowserTurn(id),plan=this.piPlan(id);
-      const events=this.events(id);
-      const interrupted=events.at(-1),invocation=events.at(-2),observed=events.at(-3);
-      const interruption=(interrupted?.payload??{}) as {reason?:unknown};
-      const intent=(invocation?.payload??{}) as {round?:unknown;responseSha256?:unknown};
-      const observation=(observed?.payload??{}) as {round?:unknown;assistantSha256?:unknown;
-        requestKey?:unknown};
-      if(m.version!==revision||m.state!=='PAUSED'||m.stopRequested||
-        m.ownerPid!==null||m.turnCount<1||missionTurnLimitReached(m.maxTurns,m.turnCount)||
-        !isHistoricPiCapacityInterruption(m.lastError)||
-        this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
-        this.channelDrainRequested('telegram')||!this.goalContinuationEligible(id)||
-        !receipt||receipt.status!=='observed'||!this.hasVerifiedPiBrowserCheckpoint(id)||
-        !this.chatLink(id)||!this.chatBrowserBinding(id)||
-        receipt.promptSha256!==input.requestPromptSha256||
-        receipt.assistantSha256!==input.assistantSha256||
-        plan?.round===m.turnCount||
-        interrupted?.type!=='pi.autopilot_interrupted'||interruption.reason!==m.lastError||
-        invocation?.type!=='pi.default_model_invocation_intent'||
-        intent.round!==m.turnCount||intent.responseSha256!==receipt.assistantSha256||
-        observed?.type!=='chatgpt.browser_observed'||
-        observation.round!==m.turnCount||observation.assistantSha256!==receipt.assistantSha256||
-        observation.requestKey!==receipt.requestKey||
-        this.piChainParent(id)&&this.get(this.piChainParent(id)!).stopRequested||
-        m.sandbox==='workspace-write'&&
-          (this.getMeta('telegram.build.project')!==m.workspace||
-           this.getMeta('telegram.pi.project')!==m.workspace))
-        throw new Error('PI capacity recovery requires the exact settled, unpaused original inference interruption');
-      return this.update(id,revision,{lastError:null},
-        m.lastError!.includes('Model inference timed out after 120 seconds')
-          ?'pi.autopilot_timeout_revalidated':'pi.autopilot_capacity_revalidated',{
-          interruptedEventId:interrupted.id,invocationEventId:invocation.id,
-          round:m.turnCount,requestKey:receipt.requestKey,
-          requestPromptSha256:receipt.promptSha256,
-          assistantSha256:receipt.assistantSha256,
-          requiresIndependentBrowserReadback:true,
-          noBrowserSend:true,
-        });
-    });
-  }
-  /** Correct only the latest *already credited* PI answer after independently
-   * observing the original request's exact user prompt and a different stable
-   * complete assistant response. This is NOT another Send or another round.
-   * Keep the original observation and PI decision immutable in the event log;
-   * the old PI plan must be reviewed again before dispatch can resume. */
-  correctPiBrowserAttribution(id:string,revision:number,input:{
-    requestPromptSha256:string;assistantSha256:string;summary:string;
-  }):Mission {
-    if(!/^[0-9a-f]{64}$/.test(input.requestPromptSha256)||
-      !/^[0-9a-f]{64}$/.test(input.assistantSha256)||!input.summary.trim()||
-      createHash('sha256').update(input.summary).digest('hex')!==input.assistantSha256)
-      throw new Error('Attribution correction requires exact hashes and the complete stable answer');
-    return this.transaction(()=>{
-      const m=this.get(id),record=this.chatBrowserTurn(id),plan=this.piPlan(id);
-      if(m.version!==revision||m.state!=='PAUSED'||m.stopRequested||m.turnCount<1||
-        this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
-        record?.status!=='observed'||!plan||plan.round!==m.turnCount||
-        record.promptSha256!==input.requestPromptSha256||
-        plan.responseSha256!==record.assistantSha256||
-        record.assistantSha256===input.assistantSha256)
-        throw new Error('Only the latest fully observed, mismatched PI checkpoint can be corrected');
-      if(this.events(id).some(e=>e.type==='chatgpt.browser_attribution_corrected'&&
-        (e.payload as {round?:number}).round===m.turnCount))
-        throw new Error('Attribution was already corrected; never overwrite historical correction');
-      const events=this.events(id);
-      const observed=[...events].reverse().find(e=>e.type==='chatgpt.browser_observed'&&
-        (e.payload as {round?:number}).round===m.turnCount);
-      const decision=[...events].reverse().find(e=>e.type==='pi.decision'&&
-        (e.payload as {round?:number}).round===m.turnCount);
-      const reservations=events.filter(e=>e.type==='chatgpt.browser_reserved'&&
-        (e.payload as {requestKey?:string}).requestKey===record.requestKey);
-      const reservation=reservations[0];
-      if(reservations.length!==1||!reservation||!observed||!decision||
-        reservation.id>=observed.id||observed.id>=decision.id||
-        (reservation.payload as {promptSha256?:string}).promptSha256!==record.promptSha256||
-        (observed.payload as {requestKey?:string;assistantSha256?:string}).requestKey!==record.requestKey||
-        (observed.payload as {assistantSha256?:string}).assistantSha256!==record.assistantSha256||
-        (decision.payload as {responseSha256?:string}).responseSha256!==record.assistantSha256||
-        (decision.payload as {responseSha256?:string}).responseSha256!==plan.responseSha256)
-        throw new Error('Original reservation, observation and PI decision cannot be independently linked');
-      const now=new Date().toISOString();
-      this.setMeta(this.browserTurnKey(id),JSON.stringify({...record,status:'reconciled',
-        assistantSha256:input.assistantSha256,observedAt:now}));
-      this.db.prepare(`UPDATE missions SET version=version+1,updated_at=?,
-        last_summary=?,last_error=? WHERE id=? AND version=?`)
-        .run(now,input.summary.slice(-1000),
-          'Corrected answer attribution awaits independent PI re-review; do not replay browser Send',id,m.version);
-      this.event(id,'chatgpt.browser_attribution_corrected',{
-        round:m.turnCount,requestKey:record.requestKey,
-        observedEventId:observed.id,decisionEventId:decision.id,
-        originalAssistantSha256:record.assistantSha256,
-        assistantSha256:input.assistantSha256,promptSha256:record.promptSha256,
-        independentlyInspected:true,originalEventsPreserved:true,
-      });
-      return this.get(id);
-    });
-  }
-  /** Initial adoption reads an existing human-written conversation; this is
-   * evidence of a browser snapshot, NEVER evidence that Relay sent a turn.
-   * No turn budget is consumed and no request key is reserved for dispatch. */
-  chatAdoption(id:string):{userSha256:string;assistantSha256:string}|null {
-    this.raw(id);
-    const item=this.getMeta(`chatgpt.browser.adoption.${id}`);
-    return item?JSON.parse(item) as {userSha256:string;assistantSha256:string}:null;
-  }
-  recordChatAdoption(id:string,revision:number,input:{userSha256:string;assistantSha256:string;summary:string}):Mission {
-    if(!/^[0-9a-f]{64}$/.test(input.userSha256)||
-      !/^[0-9a-f]{64}$/.test(input.assistantSha256)||!input.summary.trim())
-      throw new Error('Adoption requires a stable, nonempty ChatGPT answer and exact SHA-256s');
-    return this.transaction(()=>{
-      const m=this.get(id),url=this.chatLink(id);
-      if(m.version!==revision||m.state!=='READY'||m.turnCount!==0||!url||
-        !this.chatBrowserBinding(id)||this.chatBrowserTurn(id))
-        throw new Error('Initial browser adoption requires a new READY bound Mission without prior turns');
-      const current=this.list().filter(other=>other.id!==id&&
-        this.getMeta(`chatgpt.handoff.${other.id}`)===url&&
-        !['CANCELLED','COMPLETED'].includes(other.state));
-      if(current.length)throw new Error('Conversation is already linked to another active Mission');
-      const now=new Date().toISOString();
-      const urlHash=createHash('sha256').update(url).digest('hex');
-      if(this.getMeta(this.browserUrlLockKey(urlHash)))
-        throw new Error('Conversation is locked by another browser send');
-      const requestKey='initial-human-snapshot';
-      const record:ChatBrowserTurn={requestKey,promptSha256:input.userSha256,
-        urlHash,status:'observed',assistantSha256:input.assistantSha256,
-        createdAt:now,observedAt:now};
-      this.setMeta(this.browserTurnKey(id),JSON.stringify(record));
-      this.setMeta(`chatgpt.browser.adoption.${id}`,JSON.stringify({
-        userSha256:input.userSha256,assistantSha256:input.assistantSha256}));
-      this.db.prepare(`UPDATE missions SET state='PAUSED',version=version+1,
-        last_summary=?,updated_at=? WHERE id=? AND version=?`)
-        .run(input.summary.slice(-1000),now,id,m.version);
-      this.event(id,'chatgpt.browser_adopted',{
-        userSha256:input.userSha256,assistantSha256:input.assistantSha256,
-        humanOrigin:true,turnsSent:0});
-      return this.get(id);
-    });
-  }
-  /** Creation, canonical URL link, exact browser profile and human-origin
-   * snapshot are one all-or-nothing durable action. No orphan READY Mission
-   * remains if a later validation or audit insert fails. */
-  adoptHumanChat(input:CreateMission,url:string,browserId:string,evidence:{
-    userSha256:string;assistantSha256:string;summary:string;
-  }):Mission {
-    return this.transaction(()=>{
-      if(this.channelDrainRequested('telegram'))
-        throw new Error('Telegram maintenance drain active; new ChatGPT adoption is refused');
-      const created=this.create(input);
-      const linked=this.linkChat(created.id,url,created.version).mission;
-      const bound=this.bindChatBrowser(created.id,browserId,linked.version).mission;
-      return this.recordChatAdoption(created.id,bound.version,evidence);
+      const m=this.get(id);
+      if(m.version!==revision)throw new Error(`State conflict: expected v${revision}, current v${m.version}`);
+      const reconciled=this.reconcileChatBrowserTurn(id);
+      const ended=this.update(id,reconciled.version,{state:'CANCELLED',ownerPid:null,ownerHost:null,
+        lastError:'Operator abandoned an unverifiable request; continue the Goal with /goal-continue'},
+        'mission.request_abandoned',{noAnswerCredited:true,noReplay:true});
+      const goalId=this.getMeta(`goal.pi.binding.${id}`);
+      if(goalId){
+        const goal=this.db.prepare('SELECT status,version FROM goals WHERE id=?').get(goalId) as
+          {status:string;version:number}|undefined;
+        if(goal&&['ACTIVE','PAUSED'].includes(goal.status)){
+          const at=new Date().toISOString();
+          this.db.prepare("UPDATE goals SET status='BLOCKED',version=version+1,updated_at=? WHERE id=?")
+            .run(at,goalId);
+          this.db.prepare('INSERT INTO goal_events(goal_id,created_at,type,payload_json) VALUES(?,?,?,?)')
+            .run(goalId,at,'goal.status',JSON.stringify({from:goal.status,
+              to:'BLOCKED',previousVersion:goal.version,newVersion:goal.version+1,
+              reason:'request_abandoned',missionId:id}));
+        }
+      }
+      return ended;
     });
   }
   reserveChatBrowserTurn(id:string,revision:number,requestKey:string,promptSha256:string,
@@ -1499,7 +1162,7 @@ export class Store {
         if(ancestry.has(goalCursor))throw new Error('PI Goal binding lineage cycle');
         ancestry.add(goalCursor);
         completedGoal=this.getMeta(`goal.pi.binding.${goalCursor}`);
-        goalCursor=this.piChainParent(goalCursor);
+        goalCursor=null;
       }
       if(completedGoal&&this.db.prepare(
         'SELECT 1 FROM goal_completions WHERE goal_id=?').get(completedGoal))
@@ -1507,14 +1170,6 @@ export class Store {
       if(m.version!==revision) throw new Error(`State conflict: expected v${revision}, current v${m.version}`);
       if(!['READY','PAUSED'].includes(m.state)) throw new Error(`Cannot run browser turn in state ${m.state}`);
       if(m.stopRequested) throw new Error('Mission has a pending pause request; resume explicitly before another browser turn');
-      if(missionTurnLimitReached(m.maxTurns,m.turnCount)) throw new Error('Browser mission turn budget exhausted');
-      if(m.lastError?.startsWith('Corrected answer attribution awaits'))
-        throw new Error('PI must re-review corrected browser answer before any new Send');
-      const correctionPending=this.events(id).some(e=>
-        e.type==='chatgpt.browser_attribution_corrected'&&
-        (e.payload as {round?:number}).round===m.turnCount);
-      if(correctionPending&&this.piPlan(id)?.responseSha256!==this.chatBrowserTurn(id)?.assistantSha256)
-        throw new Error('Corrected PI browser answer has not received a matching new PI decision');
       // This is the final, atomic dispatch gate. A raw browser-send or future
       // controller path must not bypass the same-chat ceiling by omitting the
       // higher-level PI/browser-drive rotation check. A new-tab Send is
@@ -1535,10 +1190,9 @@ export class Store {
           if(seen.has(cursor))throw new Error('PI Goal binding lineage cycle');
           seen.add(cursor);
           linked=this.getMeta(`goal.pi.binding.${cursor}`);
-          cursor=this.piChainParent(cursor);
+          cursor=null;
         }
-        const pi=this.piPlan(id)??(this.piChainParent(id)?
-          this.piPlan(this.piChainParent(id)!):null);
+        const pi=this.piPlan(id);
         const row=this.db.prepare(`SELECT w.version,w.status,
           p.status AS plan_status,g.status AS goal_status,g.objective
           FROM goal_work_items w JOIN goal_plans p ON p.id=w.plan_id
@@ -1554,26 +1208,6 @@ export class Store {
           createHash('sha256').update(JSON.stringify(pi)).digest('hex')!==binding.piPlanSha256||
           this.pendingPiOwnerDirectives(id).length)
           throw new Error('Goal work package or PI checkpoint changed before Send reservation');
-      }
-      // The first child Send MUST open a distinct ChatGPT conversation. A raw
-      // browser-send must not bypass the PI controller and append to the
-      // predecessor's old chat. Recheck the chain source inside this same
-      // transaction: an owner pause/revocation during PI inference must win.
-      const parentId=m.turnCount===0?this.piChainParent(id):null;
-      if(parentId){
-        // A new owner note may arrive after PI planning but before UI preflight.
-        if(this.pendingPiOwnerDirectives(id).length)
-          throw new Error('PI successor has new owner notes; review before reserving a Send');
-        if(!options.newConversation)
-          throw new Error('PI successor first Send must open a new ChatGPT conversation');
-        const parent=this.get(parentId),plan=this.piPlan(parentId);
-        const receipt=this.chatBrowserTurn(parentId);
-        if(this.piChainSuccessor(parentId)!==id||parent.state!=='PAUSED'||
-          parent.stopRequested||parent.lastError||(parent.maxTurns===0||parent.turnCount!==parent.maxTurns)||
-          plan?.round!==parent.maxTurns||!['NEXT','HANDOFF'].includes(plan?.action??'')||
-          !receipt||receipt.assistantSha256!==plan?.responseSha256||
-          !this.hasVerifiedPiBrowserCheckpoint(parentId))
-          throw new Error('PI successor parent no longer has an approved, verified continuation checkpoint');
       }
       if(this.getMeta(`chatgpt.browser.request.${id}.${requestKey}`)) throw new Error('Browser request key already used; never resend');
       const prior=this.chatBrowserTurn(id);
@@ -1815,78 +1449,6 @@ export class Store {
       this.event(id,'chatgpt.browser_tab_retired',evidence);
     });
   }
-  /** Strict cross-Mission custody proof. The 32-turn predecessor must have
-   * created the precise source Chat itself, ended with a verified continuing
-   * decision, and have no active/pending Send. The successor must have
-   * independently committed its FIRST new-chat answer. Presence in SQLite
-   * does not prove a physical tab is closed or authorize unattended cleanup. */
-  private verifiedChainTabSource(childId:string,oldUrl:string,newUrl:string,
-    sourceTargetSha256:string|null):{
-    parentId:string;parentMigrationEventId:number;parentAnswerSha256:string;
-    migrationEventId:number;observedEventId:number;
-    retiredUrlSha256:string;activeUrlSha256:string;sourceTabTargetSha256:string;
-  }|null {
-    if(!sourceTargetSha256||!/^[0-9a-f]{64}$/.test(sourceTargetSha256))return null;
-    const parentId=this.piChainParent(childId);
-    if(!parentId||this.piChainSuccessor(parentId)!==childId)return null;
-    const previous=normalizeChatGPTUrl(oldUrl),active=normalizeChatGPTUrl(newUrl);
-    const retiredUrlSha256=createHash('sha256').update(previous).digest('hex');
-    const activeUrlSha256=createHash('sha256').update(active).digest('hex');
-    const parent=this.get(parentId),child=this.get(childId);
-    const parentReceipt=this.chatBrowserTurn(parentId),childReceipt=this.chatBrowserTurn(childId);
-    const plan=this.piPlan(parentId);
-    if(previous===active||this.chatLink(parentId)!==previous||
-      this.chatLink(childId)!==active||
-      this.chatBrowserBinding(parentId)!==this.chatBrowserBinding(childId)||
-      parent.turnCount!==32||parent.maxTurns!==32||parent.state!=='PAUSED'||
-      parent.ownerPid!==null||parent.stopRequested||parent.lastError||
-      !parentReceipt||parentReceipt.status!=='observed'||
-      !plan||plan.round!==32||!['NEXT','HANDOFF'].includes(plan.action)||
-      parentReceipt.assistantSha256!==plan.responseSha256||
-      !this.hasVerifiedPiBrowserCheckpoint(parentId)||
-      child.turnCount<1||!childReceipt||childReceipt.status!=='observed')
-      return null;
-    // A different Mission binding means the same page may be user-owned or
-    // part of an unrelated in-flight chain. Never touch that tab.
-    if(this.list().some(m=>m.id!==childId&&m.id!==parentId&&this.chatLink(m.id)===previous))
-      return null;
-    const pe=this.events(parentId),ce=this.events(childId);
-    const parentOrigin=pe.filter(e=>e.type==='chatgpt.browser_migrated'&&
-      (e.payload as {newUrlSha256?:string}).newUrlSha256===retiredUrlSha256).at(-1);
-    const limit=pe.find(e=>e.type==='pi.autopilot_finished'&&
-      (e.payload as {action?:string;round?:number}).action==='LIMIT'&&
-      (e.payload as {round?:number}).round===32);
-    const migrated=ce.find(e=>e.type==='chatgpt.browser_migrated');
-    const p=migrated?.payload as {requestKey?:string;previousUrlSha256?:string;
-      newUrlSha256?:string}|undefined;
-    const observed=ce.find(e=>e.type==='chatgpt.browser_observed'&&e.id>(migrated?.id??Infinity)&&
-      (e.payload as {requestKey?:string}).requestKey===p?.requestKey);
-    if(!parentOrigin||!limit||!migrated||!observed||
-      (parentOrigin.payload as {newTabTargetSha256?:string}).newTabTargetSha256!==sourceTargetSha256||
-      (observed.payload as {round?:number}).round!==1||
-      p?.previousUrlSha256!==retiredUrlSha256||p.newUrlSha256!==activeUrlSha256||
-      ce.some(e=>e.type==='chatgpt.browser_tab_retired'&&
-        (e.payload as {retiredUrlSha256?:string}).retiredUrlSha256===retiredUrlSha256))
-      return null;
-    return {parentId,parentMigrationEventId:parentOrigin.id,
-      parentAnswerSha256:plan.responseSha256,migrationEventId:migrated.id,
-      observedEventId:observed.id,retiredUrlSha256,activeUrlSha256,
-      sourceTabTargetSha256:sourceTargetSha256};
-  }
-  canRetirePiChainSourceTab(childId:string,oldUrl:string,newUrl:string,
-    sourceTargetSha256:string|null):boolean {
-    return this.verifiedChainTabSource(childId,oldUrl,newUrl,sourceTargetSha256)!==null;
-  }
-  /** Called only AFTER the executing controller reads Page.isClosed()=true.
-   * Both Mission lineages are checked again atomically. Never backfill. */
-  recordPiChainSourceTabRetired(childId:string,oldUrl:string,newUrl:string,
-    sourceTargetSha256:string|null):void {
-    this.transaction(()=>{
-      const evidence=this.verifiedChainTabSource(childId,oldUrl,newUrl,sourceTargetSha256);
-      if(!evidence)throw new Error('Cross-Mission tab retirement provenance was not verified');
-      this.event(childId,'chatgpt.browser_tab_retired',evidence);
-    });
-  }
   /** Commit the Mission state, browser record, conversation lock and both audit
    * events together. Accept an already PAUSED Mission for recovery of legacy
    * two-step reconciliations whose second transaction never committed. */
@@ -1915,79 +1477,6 @@ export class Store {
       return this.get(id);
     });
   }
-  /** One-shot operator-initiated FIRST actual Send after a provably pre-Send
-   * old navigation timeout. This records intent BEFORE any Chrome side
-   * effect and never turns the uncertain receipt into a fake observation.
-   * The external caller must re-read the pinned OLD source prompt+answer
-   * twice, check for any connected destination already holding the reserved
-   * prompt, and use only the original immutable prompt snapshot. A failure
-   * after this intent must be inspected, never automatically repeated. */
-  authorizePreSendRolloverOnce(id:string,revision:number,input:{
-    originalPromptSha256:string;sourcePromptSha256:string;
-    sourceAnswerSha256:string;
-  }):{missionId:string;revision:number;intentEventId:number}{
-    return this.transaction(()=>{
-      const m=this.get(id),r=this.chatBrowserTurn(id),url=this.chatLink(id),
-        plan=this.piPlan(id),events=this.events(id);
-      if(m.version!==revision||m.state!=='NEEDS_RECONCILIATION'||
-        m.ownerPid!==null||m.stopRequested||m.turnCount<1||
-        missionTurnLimitReached(m.maxTurns,m.turnCount)||!r||r.status!=='uncertain'||
-        r.newConversation!==true||!url||!this.chatBrowserBinding(id)||
-        r.urlHash!==createHash('sha256').update(url).digest('hex')||
-        r.promptSha256!==input.originalPromptSha256||
-        !isPreSendNewChatOriginNavigationTimeout(m.lastError)||
-        m.lastError!==r.error||
-        !plan||plan.round!==m.turnCount||
-        !['NEXT','HANDOFF'].includes(plan.action)||
-        this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
-        this.pendingPiOwnerDirectives(id).length>0||
-        this.channelDrainRequested('telegram')||
-        !this.goalContinuationEligible(id))
-        throw new Error('One-shot pre-Send recovery requires the exact old navigation timeout and an active, settled PI continuation');
-      // Preserve the original exhausted Chat limit for pre-upgrade
-      // reservations without permitting any NEW same-Chat sends past eight.
-      const initialReservation=events.find(e=>e.type==='chatgpt.browser_reserved'&&
-        (e.payload as {requestKey?:string}).requestKey===r.requestKey);
-      const storedLimit=(initialReservation?.payload as {perChatLimit?:number}|undefined)?.perChatLimit;
-      const expectedLimit=storedLimit??10;
-      if((storedLimit!==undefined&&storedLimit!==MAX_RELAY_CHAT_TURNS)||
-        this.piChatObservedTurns(id)!==expectedLimit)
-        throw new Error('Pre-Send new-chat recovery requires the exhausted original ChatGPT segment');
-      this.requireUnspentBrowserReservation(id,r);
-      const uncertain=events.filter(e=>e.type==='chatgpt.browser_uncertain'&&
-        (e.payload as {requestKey?:string}).requestKey===r.requestKey);
-      const previous=events.filter(e=>e.type==='chatgpt.browser_observed'&&
-        (e.payload as {round?:number}).round===m.turnCount).at(-1);
-      const previousKey=(previous?.payload as {requestKey?:string}|undefined)?.requestKey;
-      const priorSend=events.find(e=>e.type==='chatgpt.browser_reserved'&&
-        (e.payload as {requestKey?:string}).requestKey===previousKey);
-      const previousAnswer=(previous?.payload as {assistantSha256?:string}|undefined)?.assistantSha256;
-      const previousPrompt=(priorSend?.payload as {promptSha256?:string}|undefined)?.promptSha256;
-      if(uncertain.length!==1||!previous||!priorSend||
-        previous.id>=uncertain[0]!.id||priorSend.id>=previous.id||
-        previousAnswer!==input.sourceAnswerSha256||
-        previousPrompt!==input.sourcePromptSha256||
-        plan.responseSha256!==previousAnswer||
-        events.some(e=>e.type==='chatgpt.browser_pre_send_retry_intent'&&
-          (e.payload as {requestKey?:string}).requestKey===r.requestKey))
-        throw new Error('Pre-Send recovery has no unique prior source proof or has already been attempted');
-      if(m.sandbox==='workspace-write'&&
-        (this.getMeta('telegram.build.project')!==m.workspace||
-         this.getMeta('telegram.pi.project')!==m.workspace))
-        throw new Error('Approved PI workspace was revoked; pre-Send recovery refused');
-      this.event(id,'chatgpt.browser_pre_send_retry_intent',{
-        requestKey:r.requestKey,originalPromptSha256:r.promptSha256,
-        priorRound:m.turnCount,priorReservationEventId:priorSend.id,
-        priorObservationEventId:previous.id,
-        priorAssistantSha256:previousAnswer,
-        failure:'original_chatgpt_origin_navigation_timeout_before_send',
-        maxAttempts:1,noExistingSendClicked:true,
-        originalUncertainEvidencePreserved:true,
-      });
-      return {missionId:id,revision:m.version,
-        intentEventId:this.events(id).at(-1)!.id};
-    });
-  }
   /** Operator-confirmed recovery of a rollover whose first Send succeeded but
    * its browser observer failed or the original owner exited before recording
    * uncertainty. The caller must independently verify the
@@ -2011,7 +1500,6 @@ export class Store {
       if(!record||(!uncertain&&!deadReserved)||!oldUrl)
         throw new Error('Only an uncertain or dead-owner reserved new-chat migration may be recovered as observed');
       if(m.ownerPid!==null&&this.isOwnerAlive(m))throw new Error('A browser owner may still be active');
-      if(missionTurnLimitReached(m.maxTurns,m.turnCount))throw new Error('Recovery would exceed the authorized Mission turn budget');
       if(record.promptSha256!==input.requestPromptSha256||oldUrl===destination)
         throw new Error('Rollover request hash mismatch or destination is not a new conversation');
       this.requireUnspentBrowserReservation(id,record);
@@ -2065,7 +1553,6 @@ export class Store {
       if(!record||(!uncertain&&!deadReserved)||!url||record.newConversation===true)
         throw new Error('Only an uncertain or independently inspected dead-owner existing-chat request can be recovered');
       if(m.ownerPid!==null&&this.isOwnerAlive(m))throw new Error('Browser owner may still be active');
-      if(missionTurnLimitReached(m.maxTurns,m.turnCount))throw new Error('Recovery exceeds the authorized turn budget');
       if(record.promptSha256!==input.requestPromptSha256||
         record.urlHash!==createHash('sha256').update(url).digest('hex'))
         throw new Error('Observed reply cannot be linked to the exact original reserved prompt and chat');
@@ -2081,8 +1568,7 @@ export class Store {
       // credited as a new turn on either recovery path.
       const prior=this.events(id).filter(e=>
         ['chatgpt.browser_observed','chatgpt.browser_turn_recovered',
-          'chatgpt.browser_rollover_recovered',
-          'chatgpt.browser_attribution_corrected'].includes(e.type)).at(-1);
+          'chatgpt.browser_rollover_recovered'].includes(e.type)).at(-1);
       if(prior&&(prior.payload as {assistantSha256?:string}).assistantSha256===input.assistantSha256)
         throw new Error('Cannot distinguish recovered answer from a stale prior assistant re-render');
       const now=new Date().toISOString();
@@ -2116,21 +1602,8 @@ export class Store {
       if(['COMPLETED','CANCELLED','BLOCKED','NEEDS_RECONCILIATION'].includes(m.state))
         throw new Error('PI Mission cannot accept an instruction in its current state');
       const plan=this.piPlan(id);
-      // A new authenticated note addressing a just-exhausted Goal Mission
-      // belongs to its verified successor, not the historical 32/32 parent.
-      // Materialize/reuse ONLY an eligible Goal continuation; never wake an
-      // explicitly paused, terminal, or unbound historical Mission.
-      if((m.maxTurns>0&&m.turnCount===m.maxTurns)&&m.state==='PAUSED'&&!m.stopRequested&&
-        !m.lastError&&plan?.round===m.maxTurns&&
-        ['NEXT','HANDOFF'].includes(plan.action)&&
-        this.getMeta(`pi.autopilot.enabled.${id}`)==='1'&&
-        this.goalContinuationEligible(id)){
-        const child=this.createPiSuccessor(id);
-        if(child)return this.queuePiOwnerDirective(child.id,externalId,text);
-      }
-      if(plan?.round===m.turnCount &&
-        (['DONE','BLOCKED'].includes(plan.action)||missionTurnLimitReached(m.maxTurns,m.turnCount)))
-        throw new Error('PI Mission has already reached its terminal decision or turn budget');
+      if(plan?.round===m.turnCount&&['DONE','BLOCKED'].includes(plan.action))
+        throw new Error('PI Mission has already reached its terminal decision');
       const result=this.db.prepare(`INSERT OR IGNORE INTO pi_owner_directives
         (mission_id,external_id,text,received_at) VALUES(?,?,?,?)`)
         .run(id,externalId,text.trim(),new Date().toISOString());
@@ -2167,22 +1640,7 @@ export class Store {
       const ownCheckpoint=mission.state==='PAUSED'&&!mission.stopRequested&&
         mission.turnCount===round&&receipt?.assistantSha256===responseSha256&&
         this.hasVerifiedPiBrowserCheckpoint(id);
-      const adoption=round===0&&mission.turnCount===0&&mission.state==='PAUSED'&&
-        !mission.stopRequested&&this.chatAdoption(id)?.assistantSha256===responseSha256;
-      const parentId=round===0?this.piChainParent(id):null;
-      const parent=parentId?this.get(parentId):null;
-      const parentPlan=parentId?this.piPlan(parentId):null;
-      const inherited=round===0&&mission.state==='READY'&&!mission.stopRequested&&
-        mission.turnCount===0&&!receipt&&!!parentId&&
-        parent?.state==='PAUSED'&&!parent.stopRequested&&!parent.lastError&&
-        (parent.maxTurns>0&&parent.turnCount===parent.maxTurns)&&
-        this.piChainSuccessor(parentId)===id&&
-        parentPlan?.round===parent.maxTurns&&
-        ['NEXT','HANDOFF'].includes(parentPlan.action)&&
-        parentPlan.responseSha256===responseSha256&&
-        this.chatBrowserTurn(parentId)?.assistantSha256===responseSha256&&
-        this.hasVerifiedPiBrowserCheckpoint(parentId);
-      if(!ownCheckpoint&&!adoption&&!inherited)
+      if(!ownCheckpoint)
         throw new Error('PI invocation intent requires a verified, unchanged browser checkpoint');
       const exists=this.events(id).some(e=>e.type==='pi.default_model_invocation_intent'&&
         (e.payload as {round?:number;responseSha256?:string;argvSha256?:string}).round===round&&
@@ -2195,184 +1653,45 @@ export class Store {
       });
     });
   }
-  piChainParent(id:string):string|null {
-    this.raw(id);
-    return this.getMeta(`pi.chain.parent.${id}`);
-  }
-  piChainSuccessor(id:string):string|null {
-    this.raw(id);
-    return this.getMeta(`pi.chain.successor.${id}`);
-  }
-  /** A 32-turn LIMIT is not authority to keep running a Goal that was later
-   * completed, blocked or superseded. Check the CURRENT approved work inside
-   * the same SQLite transaction that creates its successor. Legacy unbound
-   * Missions keep their original continuation protocol. */
-  private goalContinuationEligible(id:string):boolean {
-    let cursor:string|null=id;
-    const seen=new Set<string>();
-    while(cursor){
-      if(seen.has(cursor))throw new Error('Goal PI Mission lineage cycle');
-      seen.add(cursor);
-      const goalId=this.getMeta(`goal.pi.binding.${cursor}`);
-      if(goalId){
-        const goal=this.db.prepare('SELECT objective,status FROM goals WHERE id=?')
-          .get(goalId) as {objective:string;status:string}|undefined;
-        if(!goal||goal.status!=='ACTIVE'||goal.objective!==this.get(id).goal.trim()||
-          this.db.prepare('SELECT 1 FROM goal_completions WHERE goal_id=?')
-            .get(goalId))return false;
-        const active=this.db.prepare(`SELECT w.id FROM goal_work_items w
-          JOIN goal_plans p ON p.id=w.plan_id AND p.goal_id=w.goal_id
-          WHERE w.goal_id=? AND p.status='APPROVED'
-            AND w.status IN ('IN_PROGRESS','REVIEW')`).all(goalId);
-        return active.length===1;
-      }
-      cursor=this.piChainParent(cursor);
-    }
-    return true;
-  }
-  /** Emergency stop propagates through every already-created successor so a
-   * pause on the original Telegram Mission cannot leave a READY child that
-   * automatically sends after the operator's stop. In-flight Sends still
-   * require their normal observation/reconciliation, never cancellation by
-   * guessing whether the remote side effect happened. */
-  pausePiChain(id:string):Mission {
+  /** Owner pause. A READY Goal Mission parks immediately; a running one stops
+   * cooperatively at its next safe point. An in-flight Send is never
+   * cancelled by guessing; it settles through normal observation first. */
+  pauseGoalMission(id:string):Mission {
     return this.transaction(()=>{
-      const visited=new Set<string>();
-      let cursor:string|null=id;
-      while(cursor){
-        if(visited.has(cursor))throw new Error('PI Mission lineage cycle detected');
-        visited.add(cursor);
-        const m=this.get(cursor);
-        if(this.getMeta(`pi.autopilot.enabled.${cursor}`)!=='1')
-          throw new Error('PI chain pause requires an enabled PI Mission');
-        if(!m.stopRequested&&!['COMPLETED','CANCELLED','BLOCKED'].includes(m.state))
-          this.update(cursor,m.version,{
-            stopRequested:true,...(m.state==='READY'?{state:'PAUSED' as const}:{})},
-            'mission.pause_requested',{reason:'Owner paused PI Mission lineage'});
-        cursor=this.piChainSuccessor(cursor);
-      }
+      const m=this.get(id);
+      if(this.getMeta(`pi.autopilot.enabled.${id}`)!=='1')
+        throw new Error('Pause requires a PI Goal Mission');
+      if(!m.stopRequested&&!['COMPLETED','CANCELLED','BLOCKED'].includes(m.state))
+        this.update(id,m.version,{
+          stopRequested:true,...(m.state==='READY'?{state:'PAUSED' as const}:{})},
+          'mission.pause_requested',{reason:'Owner paused Goal'});
       return this.get(id);
     });
   }
   /** Explicit owner action only. Stop flags are never cleared on restart or
    * scheduling. The original reservation must have settled and, if there was
    * a Send, its exact independently verified checkpoint must still exist. */
-  resumePiChain(id:string):Mission {
+  resumeGoalMission(id:string):Mission {
     return this.transaction(()=>{
       if(this.channelDrainRequested('telegram'))
         throw new Error('Maintenance drain forbids resuming a Goal');
-      const chain:string[]=[];
-      const visited=new Set<string>();
-      let cursor:string|null=id;
-      while(cursor){
-        if(visited.has(cursor))throw new Error('PI Mission lineage cycle detected');
-        visited.add(cursor);
-        const m=this.get(cursor),receipt=this.chatBrowserTurn(cursor);
-        if(this.getMeta(`pi.autopilot.enabled.${cursor}`)!=='1'||
-          m.state!=='PAUSED'||m.ownerPid!==null||m.lastError||
-          !m.stopRequested||
-          (receipt&&['reserved','uncertain'].includes(receipt.status))||
-          (m.turnCount>0&&(!receipt||
-            !['observed','reconciled'].includes(receipt.status)||
-            !this.hasVerifiedPiBrowserCheckpoint(cursor)))||
-          ['DONE','BLOCKED'].includes(this.piPlan(cursor)?.action??''))
-          throw new Error('Goal resume requires an owner-paused, settled and verified checkpoint; no Send was retried');
-        chain.push(cursor);
-        cursor=this.piChainSuccessor(cursor);
-      }
-      for(const missionId of chain){
-        const m=this.get(missionId);
-        this.update(missionId,m.version,{
-          stopRequested:false,
-          ...(m.turnCount===0&&!this.chatBrowserTurn(missionId)?{state:'READY' as const}:{}),
-        },'mission.owner_resumed',{ownerInitiated:true,noBrowserReplay:true});
-      }
-      return this.get(id);
-    });
-  }
-  /** A PI NEXT/HANDOFF at the 32-turn boundary is a durable continuation
-   * intent, not a completed owner goal. Create exactly one new READY Mission
-   * bound to the same approved Chrome profile, without submitting anything.
-   * The next controller pass independently verifies the parent's browser
-   * checkpoint before the child's first new-tab Send. */
-  createPiSuccessor(id:string):Mission|null {
-    return this.transaction(()=>{
-      const parent=this.get(id),plan=this.piPlan(id);
+      const m=this.get(id),receipt=this.chatBrowserTurn(id);
       if(this.getMeta(`pi.autopilot.enabled.${id}`)!=='1'||
-        (parent.maxTurns===0||parent.turnCount!==parent.maxTurns)||parent.state!=='PAUSED'||
-        parent.stopRequested||parent.lastError||plan?.round!==parent.maxTurns||
-        !['NEXT','HANDOFF'].includes(plan.action))return null;
-      if(!this.hasVerifiedPiBrowserCheckpoint(id)||
-        this.chatBrowserTurn(id)?.assistantSha256!==plan.responseSha256||
-        !this.events(id).some(e=>e.type==='pi.autopilot_finished'&&
-          (e.payload as {action?:string}).action==='LIMIT'))return null;
-      const existing=this.piChainSuccessor(id);
-      if(existing)return this.get(existing);
-      if(!this.goalContinuationEligible(id))return null;
-      if(this.channelDrainRequested('telegram'))return null;
-      const url=this.chatLink(id),browserId=this.chatBrowserBinding(id);
-      if(!url||!browserId)throw new Error('PI successor requires a verified Chrome source binding');
-      const child=this.create({goal:parent.goal,acceptance:parent.acceptance,
-        workspace:parent.workspace,sandbox:parent.sandbox,mode:parent.mode,
-        maxTurns:parent.maxTurns,checks:parent.checks,
-        requestKey:`pi-chain-${id}`});
-      const linked=this.linkChat(child.id,url,child.version).mission;
-      const bound=this.bindChatBrowser(child.id,browserId,linked.version).mission;
-      this.setMeta(`pi.autopilot.enabled.${bound.id}`,'1');
-      this.setMeta(`pi.chain.parent.${bound.id}`,id);
-      this.setMeta(`pi.chain.successor.${id}`,bound.id);
-      this.event(id,'pi.chain_successor',{successorId:bound.id,round:parent.maxTurns,
-        parentAnswerSha256:plan.responseSha256});
-      this.event(bound.id,'pi.chain_started',{parentId:id,
-        parentAnswerSha256:plan.responseSha256});
-      return bound;
+        m.state!=='PAUSED'||m.ownerPid!==null||m.lastError||
+        !m.stopRequested||
+        (receipt&&['reserved','uncertain'].includes(receipt.status))||
+        (m.turnCount>0&&(!receipt||
+          !['observed','reconciled'].includes(receipt.status)||
+          !this.hasVerifiedPiBrowserCheckpoint(id)))||
+        ['DONE','BLOCKED'].includes(this.piPlan(id)?.action??''))
+        throw new Error('Goal resume requires an owner-paused, settled and verified checkpoint; no Send was retried');
+      return this.update(id,m.version,{
+        stopRequested:false,
+        ...(m.turnCount===0&&!receipt?{state:'READY' as const}:{}),
+      },'mission.owner_resumed',{ownerInitiated:true,noBrowserReplay:true});
     });
   }
-  /** A child created at the 32-turn boundary may receive new owner notes
-   * before its first browser Send. Replan from its verified parent reply,
-   * acknowledge exactly the notes PI reviewed, and persist the new decision
-   * atomically. No browser turn is credited by this planning checkpoint. */
-  commitPiChainPreflight(id:string,parentAnswerSha256:string,reviewedDirectiveIds:number[],
-    plan:Omit<PiPlan,'responseSha256'|'round'|'reviewedDirectiveIds'>):PiPlan {
-    return this.transaction(()=>{
-      const child=this.get(id),parentId=this.piChainParent(id);
-      if(child.state!=='READY'||child.turnCount!==0||child.stopRequested||
-        !parentId||this.piChainSuccessor(parentId)!==id||this.chatBrowserTurn(id))
-        throw new Error('PI chain preflight requires an unsent, active successor');
-      const parent=this.get(parentId),parentPlan=this.piPlan(parentId);
-      if(parent.stopRequested||parent.lastError||(parent.maxTurns===0||parent.turnCount!==parent.maxTurns)||
-        !parentPlan||!['NEXT','HANDOFF'].includes(parentPlan.action)||
-        parentPlan.responseSha256!==parentAnswerSha256||
-        !this.hasVerifiedPiBrowserCheckpoint(parentId)||
-        this.chatBrowserTurn(parentId)?.assistantSha256!==parentAnswerSha256)
-        throw new Error('PI chain preflight requires a verified unchanged parent answer');
-      const previous=this.piPlan(id);
-      if(previous && (previous.round!==0||!['NEXT','HANDOFF'].includes(previous.action)))
-        throw new Error('PI chain preflight already reached a terminal decision');
-      const pending=this.pendingPiOwnerDirectives(id).map(x=>x.id);
-      if(!pending.length||JSON.stringify(pending)!==JSON.stringify(reviewedDirectiveIds))
-        throw new Error('PI chain preflight owner notes changed; re-plan before dispatch');
-      for(const directiveId of reviewedDirectiveIds){
-        const changed=this.db.prepare(`UPDATE pi_owner_directives SET consumed_round=0
-          WHERE mission_id=? AND id=? AND consumed_round IS NULL`).run(id,directiveId);
-        if(changed.changes!==1)throw new Error('PI chain directive acknowledgement conflict');
-      }
-      const result:PiPlan={...plan,responseSha256:parentAnswerSha256,round:0,
-        reviewedDirectiveIds:[...reviewedDirectiveIds]};
-      this.setMeta(`pi.plan.${id}`,JSON.stringify(result));
-      this.event(id,'pi.chain_preflight_decision',{action:plan.action,
-        parentId,parentAnswerSha256,notesReviewed:reviewedDirectiveIds.length,
-        nextPromptSha256:createHash('sha256').update(plan.nextPrompt).digest('hex')});
-      if(['DONE','BLOCKED'].includes(plan.action)){
-        this.update(id,child.version,{state:plan.action==='BLOCKED'?'BLOCKED':'PAUSED',
-          lastSummary:plan.summary.slice(0,1000)},'pi.chain_preflight_stopped',
-          {action:plan.action,reason:'PI revised parent continuation after new owner instructions'});
-        this.event(id,'pi.autopilot_finished',{action:plan.action,round:0,
-          summary:plan.summary,responseSha256:parentAnswerSha256});
-      }
-      return result;
-    });
-  }
+
   /** Atomic PI decision + exact owner directive acknowledgement. If another
    * note arrived during inference, re-plan; never silently drop it. */
   commitPiPlan(id:string,expectedSha:string,reviewedDirectiveIds:number[],
@@ -2384,14 +1703,9 @@ export class Store {
          !this.hasVerifiedPiBrowserCheckpoint(id)||receipt.assistantSha256!==expectedSha)
         throw new Error('PI decision requires one matching, fully observed and unpaused ChatGPT turn');
       const previous=this.piPlan(id);
-      const correction=[...this.events(id)].reverse().find(e=>e.type==='chatgpt.browser_attribution_corrected'&&
-        (e.payload as {round?:number;assistantSha256?:string}).round===m.turnCount&&
-        (e.payload as {assistantSha256?:string}).assistantSha256===expectedSha);
-      const correctedReview=!!correction&&previous?.round===m.turnCount&&
-        previous.responseSha256!==(expectedSha);
       if(previous?.round===m.turnCount &&
-        (!replaceExisting||(!correctedReview&&
-          (!['NEXT','HANDOFF'].includes(previous.action)||reviewedDirectiveIds.length===0))))
+        (!replaceExisting||
+          !['NEXT','HANDOFF'].includes(previous.action)||reviewedDirectiveIds.length===0))
         throw new Error('PI decision already exists for this turn');
       if(replaceExisting&&previous?.round!==m.turnCount)
         throw new Error('Cannot revise a PI decision for a different turn');
@@ -2407,20 +1721,14 @@ export class Store {
       const result:PiPlan={...plan,responseSha256:expectedSha,round:m.turnCount,
         reviewedDirectiveIds:[...reviewedDirectiveIds]};
       this.setMeta(`pi.plan.${id}`,JSON.stringify(result));
-      if(correctedReview)this.db.prepare(`UPDATE missions SET last_error=NULL,
-        version=version+1,updated_at=? WHERE id=? AND version=?`)
-        .run(new Date().toISOString(),id,m.version);
-      this.event(id,correctedReview?'pi.decision_attribution_corrected':
-        replaceExisting?'pi.decision_revised':'pi.decision',{
+      this.event(id,replaceExisting?'pi.decision_revised':'pi.decision',{
         action:plan.action,round:m.turnCount,
         summary:plan.summary,
         responseSha256:expectedSha,nextPromptSha256:createHash('sha256').update(plan.nextPrompt).digest('hex'),
         directivesReviewed:reviewedDirectiveIds.length,
-        ...(correctedReview?{correctionEventId:correction!.id}:{}),
       });
-      if(['DONE','BLOCKED'].includes(plan.action)||missionTurnLimitReached(m.maxTurns,m.turnCount)){
-        this.event(id,'pi.autopilot_finished',{action:missionTurnLimitReached(m.maxTurns,m.turnCount)&&['NEXT','HANDOFF'].includes(plan.action)
-          ?'LIMIT':plan.action,round:m.turnCount,summary:plan.summary,
+      if(['DONE','BLOCKED'].includes(plan.action)){
+        this.event(id,'pi.autopilot_finished',{action:plan.action,round:m.turnCount,summary:plan.summary,
           responseSha256:expectedSha});
       }
       return result;
@@ -2522,10 +1830,8 @@ export class Store {
           nowMs-updatedAtMs<minAgeMs)){retained++;continue;}
         const receipt=this.chatBrowserTurn(m.id),pi=this.piPlan(m.id);
         const safeReceipt=!receipt||['observed','reconciled'].includes(receipt.status);
-        // pi.autopilot_finished also records LIMIT when a 32-turn PI NEXT
-        // still needs a successor Mission. Presence of that event alone
-        // NEVER proves the owner's goal is settled. The durable latest PI
-        // plan is terminal only on an explicit DONE/BLOCKED decision.
+        // The durable latest PI plan is terminal only on an explicit
+        // DONE/BLOCKED decision; any other event never settles a Goal.
         const terminalPi=pi&&['DONE','BLOCKED'].includes(pi.action);
         if(options.includeBlocked===false&&pi?.action==='BLOCKED'){
           retained++;continue;
@@ -2570,7 +1876,6 @@ export class Store {
   }
   create(input: CreateMission): Mission {
     if (!input.goal.trim() || input.acceptance.length === 0 || input.acceptance.some(x => !x.trim())) throw new Error('Goal and acceptance criteria are required');
-    if (!Number.isInteger(input.maxTurns) || input.maxTurns < 0 || input.maxTurns > 100) throw new Error('maxTurns must be zero (unbounded) or between 1 and 100');
     if (!['read-only','workspace-write'].includes(input.sandbox)) throw new Error('Invalid sandbox');
     if (!['supervised','autopilot'].includes(input.mode)) throw new Error('Invalid mode');
     if (!input.requestKey.trim()) throw new Error('requestKey is required');
@@ -2586,7 +1891,7 @@ export class Store {
       const existing = this.db.prepare('SELECT * FROM missions WHERE request_key = ?').get(input.requestKey) as MissionRow | undefined;
       if (existing) {
         const previous = fromRow(existing);
-        for (const key of ['goal','workspace','sandbox','mode','maxTurns'] as const) {
+        for (const key of ['goal','workspace','sandbox','mode'] as const) {
           if (previous[key] !== input[key]) throw new Error('Idempotency key reused for a different mission');
         }
         if (JSON.stringify(previous.acceptance) !== JSON.stringify(input.acceptance)) throw new Error('Idempotency key reused for different acceptance criteria');
@@ -2596,7 +1901,7 @@ export class Store {
       const id = randomUUID(), now = new Date().toISOString();
       this.db.prepare(`INSERT INTO missions (id,goal,acceptance_json,checks_json,workspace,sandbox,mode,max_turns,request_key,state,version,turn_count,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?,?,?, 'READY',0,0,?,?)`)
-        .run(id,input.goal,JSON.stringify(input.acceptance),JSON.stringify(input.checks ?? []),input.workspace,input.sandbox,input.mode,input.maxTurns,input.requestKey,now,now);
+        .run(id,input.goal,JSON.stringify(input.acceptance),JSON.stringify(input.checks ?? []),input.workspace,input.sandbox,input.mode,0,input.requestKey,now,now);
       this.event(id,'mission.created',{ goal: input.goal, acceptance: input.acceptance, sandbox: input.sandbox });
       return this.get(id);
     });
@@ -2620,13 +1925,6 @@ export class Store {
       this.event(id,eventType,payload);
       return this.get(id);
     });
-  }
-  acquire(id: string, expectedVersion?: number): Mission {
-    const m = this.get(id);
-    if (expectedVersion !== undefined && m.version !== expectedVersion)
-      throw new Error(`State conflict for ${id}: expected ${expectedVersion}, got ${m.version}`);
-    if (m.state !== 'READY') throw new Error(`Mission ${id} is ${m.state}; only READY missions may run`);
-    return this.update(id,m.version,{state:'RUNNING',ownerPid:process.pid,ownerHost:hostname(),stopRequested:false},'mission.run_started',{pid:process.pid});
   }
   isOwnerAlive(m: Mission): boolean {
     if (m.ownerHost !== hostname() || m.ownerPid === null) return true;

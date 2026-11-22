@@ -8,7 +8,7 @@ import {goalPlanPrompt,goalReviewPrompt,parseGoalPlanProposal,parseGoalReview,
   type GoalPlanContext,type GoalReviewContext,type GoalPlanProposal,type GoalReview} from './goal-pi.js';
 
 export interface PiTurnContext {
-  goal:string; acceptance:string[];turnCount:number;maxTurns:number;
+  goal:string; acceptance:string[];turnCount:number;
   responseSha256:string;lastAssistant:string;ownerDirectives:PiOwnerDirective[];
   sandbox?:Sandbox;workspace?:string;
   priorPiSummary?:string;
@@ -172,7 +172,7 @@ export function piDecisionPrompt(input:PiTurnContext):string {
     `Goal: ${input.goal}`,
     `Authorization mode: ${writeScope?'workspace-write':'read-only'}`,
     'Acceptance:',...input.acceptance.map((x,i)=>`${i+1}. ${x}`),
-    `Observed browser turn: ${input.turnCount}${input.maxTurns===0?'':`/${input.maxTurns}`}`,
+    `Observed browser turn: ${input.turnCount}`,
     `Full visible answer SHA-256: ${input.responseSha256}`,
     `Full visible answer characters: ${input.lastAssistant.length}`,
     ...(input.priorPiSummary?[

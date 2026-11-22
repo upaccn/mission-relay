@@ -54,7 +54,6 @@ function exercise(scenario:string):Receipt {
       '$HistoryReset='+(['history_reset','history_reset_has_parent'].includes(scenario)?'$true':'$false'),
       '$ProxyUrl=""',
       '$ExpectedSha='+quote(SHA_NEW),
-      '$ResumeMissionId='+quote(scenario==='browser_binding_failure'?'synthetic-paused':''),
       '$root='+quote(fixture),
       '$privateDir='+quote(fixture),
       '$settingsFile=Join-Path $root "not-enrolled-owner.json"',
@@ -204,11 +203,6 @@ function exercise(scenario:string):Receipt {
         '"22222222-2222-4222-8222-222222222222"}else{' +
         '"11111111-1111-4111-8111-111111111111"};'+
         'return (@{requested=$script:drain;drainId=$drainId}|ConvertTo-Json -Compress)};'+
-        '"browser-binding-health" {return (@{binding=if($script:fault -eq "browser_binding_failure") {'+
-        '$script:failpoints.Add("browser_binding_failure");'+
-        '"not_connected"}else{"exact_connected"};matchingLinkedTabs=1;enabledChatTabs=1}|ConvertTo-Json -Compress)};'+
-        '"show" {return (@{version=1}|ConvertTo-Json -Compress)};'+
-        '"pi-resume" {$script:resumes++;return ""};'+
         'default {throw "Unexpected isolated CLI access"}};return};'+
         '$buildStep=[string]$args[0];'+
         'if($buildStep -like "*clean-build.mjs") {'+
@@ -304,8 +298,7 @@ function exercise(scenario:string):Receipt {
     assert.ok(receipt.calls.every(c=>c==='stop-worker'||c==='start-worker'||
       c==='scheduled-trigger-old-worker'||
       c==='atomic-release'||c.startsWith('fake-build:')||c.startsWith('fake-git:')||
-      ['fake-cli:channel-drain-status','fake-cli:browser-binding-health',
-        'fake-cli:show','fake-cli:pi-resume'].includes(c)),
+      c==='fake-cli:channel-drain-status'),
     `the cooperative mock trace must contain only recognized fake operations: ${JSON.stringify(receipt.calls)}`);
     if(receipt.calls.includes('fake-build:clean')) {
       assert.deepEqual(receipt.calls.filter(c=>c.startsWith('fake-build:')),
@@ -369,7 +362,7 @@ test('actual Windows Upgrade branch resists injected health, version, SQLite, bu
         drain:false,worker:true,releases:1},
       ...['history_reset_has_parent','health_after_upgrade','version_after_upgrade','sqlite_after_upgrade',
         'damaged_build_manifest','damaged_build_cli','pre_admission_unsettled',
-        'journal_failure','restore_failure','browser_binding_failure',
+        'journal_failure','restore_failure',
         'git_fetch_failure','git_pull_failure','build_stage_failure',
         'worker_start_timeout','snapshot_backup_failure']
         .map(name=>({name,outcome:'error',head:SHA_OLD,drain:false,worker:true,releases:1})),

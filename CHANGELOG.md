@@ -1,5 +1,42 @@
 # Changelog
 
+## 1.3.0 — 2026-11-22
+
+- **Goal-only executor.** Every task is a PI-controlled Goal executed by
+  ChatGPT. Removed the native/Codex executor, plugin registry, deterministic
+  check runner and Mission engine (`engine.ts`, `executor-plugins.ts`,
+  `plugins.ts`, `checks.ts`), manual Chat handoff and the legacy
+  non-Goal PI loop. Plain text, `/goal` and `/goal-build` all queue a Goal;
+  the single Worker dispatches it. `pollOnce` now runs the Worker's full
+  ordered cycle.
+- **Retired the 32-turn successor chain and Mission `max_turns`.** One Mission
+  serves its Goal for as long as it runs; each Chat still carries at most 8
+  Relay Sends before a fresh Chat. Removed successor creation, chain
+  pause/resume, chain evidence and successor tab retirement.
+- **One recovery command.** `recover <mission>` diagnoses read-only and prints
+  the single safe next action; `--accept-reply [--new-url]`, `--retry` and
+  `--abandon` (all revision-gated, none ever resends) replace fourteen
+  per-incident repair commands (`reconcile`, `browser-reconcile`,
+  `browser-recover-turn`, `browser-recover-rollover`, `pi-resume`, four
+  `pi-recheck-*`, `browser-correct-attribution`,
+  `browser-retry-pre-send-rollover`, `browser-start-new-chat`,
+  `browser-send-native-draft`, `browser-resume-pending-retry`).
+  `--abandon` blocks the Goal so the owner continues it with `/goal-continue`.
+- **Telegram help is one Goal menu** (`/note`, `/goal`, `/goal-build`,
+  `/goal-continue`, `/goals`, `/goal-status`, `/list`, `/status`, `/pause`,
+  `/resume`, `/history`). Removed `/build`, `/auto`, `/new`, `/agent`,
+  `/handoff`, `/continue`, `/instruct`, `/cancel` and the `ChatGPT:`/`Agent:`
+  prefixes.
+- **No compatibility baggage.** Production restarts from an owner-authorized
+  fresh project database, so legacy prompt reconstruction, 10-Send history
+  tolerance, answer-attribution correction, human-Chat adoption, pre-Send
+  one-shot rollover and paused-Retry release paths are removed. A reserved
+  prompt is reconstructed only from its immutable `goal-work-v1` snapshot or
+  the deterministic first planning prompt.
+- Source drops from 10,622 to 7,692 lines and CLI commands from 59 to 20; docs
+  rewritten for the Goal-only contract (`plugin-api.md` and
+  `chatgpt-handoff.md` removed).
+
 ## 1.2.28 — 2026-11-22
 
 - Give Goals a reachable finish line (owner decision). Production had 0

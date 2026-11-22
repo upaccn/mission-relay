@@ -41,7 +41,7 @@ export function inspectGoalRequestLedger(store:Store,goalId:string){
         warn('goal_mission_chain_cycle_or_duplicate');break;
       }
       visited.add(missionId);
-      const parentMissionId=store.piChainParent(missionId);
+      const parentMissionId:string|null=null;
       const mission=store.get(missionId);
       if(mission.goal.trim()!==graph.goal.objective||!store.chatBrowserBinding(missionId))
         warn('mission_goal_scope_or_browser_binding_mismatch');
@@ -96,7 +96,7 @@ export function inspectGoalRequestLedger(store:Store,goalId:string){
           typeof obj(reply).round!=='number'))
           warn('invalid_original_browser_observation');
         const decision=reply?events.find(e=>e.id>reply.id&&
-          ['pi.decision','pi.decision_revised','pi.decision_attribution_corrected'].includes(e.type)&&
+          ['pi.decision','pi.decision_revised'].includes(e.type)&&
           obj(e).round===obj(reply).round&&obj(e).responseSha256===answerSha256):undefined;
         const workItemId=typeof p.workItemId==='string'?p.workItemId:null;
         const planId=typeof p.planId==='string'?p.planId:null;
@@ -117,10 +117,10 @@ export function inspectGoalRequestLedger(store:Store,goalId:string){
           if(!validSnapshot)warn('goal_work_prompt_snapshot_missing_or_changed');
           const piSha=p.piResponseSha256;
           const inMission=events.some(e=>e.id<reserve.id&&
-            ['pi.decision','pi.decision_revised','pi.decision_attribution_corrected'].includes(e.type)&&
+            ['pi.decision','pi.decision_revised'].includes(e.type)&&
             obj(e).responseSha256===piSha);
           const parent=parentMissionId?store.events(parentMissionId).some(e=>
-            ['pi.decision','pi.decision_revised','pi.decision_attribution_corrected'].includes(e.type)&&
+            ['pi.decision','pi.decision_revised'].includes(e.type)&&
             obj(e).responseSha256===piSha):false;
           if(!inMission&&!parent)warn('goal_work_pi_checkpoint_not_in_audit');
         }
@@ -150,7 +150,7 @@ export function inspectGoalRequestLedger(store:Store,goalId:string){
         quarantineEventIds.push(q.id);
         warn('unresolved_browser_observation_quarantine');
       }
-      missionId=store.piChainSuccessor(missionId);
+      missionId=null;
     }
   }
   return {goalId,rootMissionIds:roots,missionIds:[...visited],requests,

@@ -203,7 +203,7 @@ test('Goal graph is independent of historical Mission and Chat records',()=>{
   const f=init();
   try{
     const mission=f.store.create({goal:'Legacy independent request',acceptance:['Old acceptance'],
-      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:2,requestKey:'legacy-1'});
+      workspace:'',sandbox:'read-only',mode:'supervised',requestKey:'legacy-1'});
     const initialEvents=f.store.events(mission.id);
     const initialGoalEvents=f.graph().events;
     f.store.update(mission.id,mission.version,{state:'CANCELLED'},'mission.cancelled',{reason:'isolated'});

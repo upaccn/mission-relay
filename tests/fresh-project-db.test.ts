@@ -22,7 +22,7 @@ function fixture(){
   const dbFile=join(home,'missions.sqlite'),archive=join(home,'private-audit');
   const store=new Store(dbFile);
   const mission=store.create({goal:'Historical sandbox test',acceptance:['Old test'],
-    workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:32,
+    workspace:'',sandbox:'read-only',mode:'supervised',
     requestKey:'old-test-mission'});
   const linked=store.linkChat(mission.id,anchor,mission.version).mission;
   const bound=store.bindChatBrowser(mission.id,'install:Chrome:synthetic',linked.version).mission;
@@ -80,7 +80,7 @@ test('fenced fresh reset preserves owner configuration and cursors but zero proj
       assert.equal(reopened.getMeta('telegram.build.allow.'+
         createHash('sha256').update('/srv/projects/retired').digest('hex')),'');
       assert.equal(reopened.getMeta('telegram.pi.project'),'/srv/projects/project');
-      assert.equal(reopened.getMeta('telegram.agent.workspace'),'/srv/projects/project');
+      assert.equal(reopened.getMeta('telegram.agent.workspace'),null,'the retired native workspace is not carried over');
       assert.equal(reopened.channelDrainId('telegram'),f.drain);
       assert.equal(reopened.getMeta('telegram.pi.sshHost'),'approved-pi');
     }finally{reopened.close()}

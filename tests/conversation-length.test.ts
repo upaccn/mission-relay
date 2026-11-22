@@ -6,7 +6,6 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import type {Page} from 'playwriter';
 import {Store} from '../src/core/store.js';
-import {Engine} from '../src/core/engine.js';
 import {TelegramBridge} from '../src/plugins/telegram.js';
 import {MAX_CONVERSATION_LENGTH_ERROR} from '../src/core/chat-limits.js';
 import {MAX_CONVERSATION_LENGTH_TEXT,visibleConversationLengthLimit,
@@ -21,13 +20,9 @@ const timeout='ChatGPT response observation timed out; submission outcome is amb
 function fixture(paused=true,error=MAX_CONVERSATION_LENGTH_ERROR){
   const dir=mkdtempSync(join(tmpdir(),'mr-length-'));
   const store=new Store(join(dir,'missions.sqlite'));
-  const engine=new Engine(store,{
-    execute:async()=>({status:'blocked' as const,summary:'unused',next_instruction:'',evidence:[]}),
-    verify:async()=>({accepted:false,reason:'unused',evidence:[]}),
-  });
-  const m=engine.create({goal:'Inspect original task before further writes',
+  const m=store.create({goal:'Inspect original task before further writes',
     acceptance:['Retain original request and no replay'],workspace:'',
-    sandbox:'read-only',mode:'supervised',maxTurns:0,requestKey:'length-fixture'});
+    sandbox:'read-only',mode:'supervised',requestKey:'length-fixture'});
   const link=store.linkChat(m.id,url,m.version).mission;
   const bound=store.bindChatBrowser(m.id,'install:Chrome:fake',link.version).mission;
   store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
@@ -42,7 +37,7 @@ function fixture(paused=true,error=MAX_CONVERSATION_LENGTH_ERROR){
     store.update(m.id,active.version,{stopRequested:true},'mission.pause_requested');
   }
   store.finishChatBrowserTurn(m.id,'second',{kind:'uncertain',error});
-  return {store,engine,id:m.id,dir,cleanup:()=>{
+  return {store,id:m.id,dir,cleanup:()=>{
     store.close();rmSync(dir,{recursive:true,force:true});
   }};
 }
@@ -128,9 +123,9 @@ test('one native click requires original URL/prompt and persisted intent, never 
 
 test('the unpaused enrolled Worker claims one max-length UI click but leaves ambiguous work uncredited',async()=>{
   const f=fixture(false),p=new LengthPage();try{
-    const bridge=new TelegramBridge(f.store,f.engine,{
+    const bridge=new TelegramBridge(f.store,{
       getUpdates:async()=>[],sendMessage:async()=>{},
-    },1,2,undefined,async()=>({page:p as unknown as Page,close:async()=>{}}));
+    },1,2,async()=>({page:p as unknown as Page,close:async()=>{}}));
     await bridge.recoverUncertainDeliveryOnce();
     assert.equal(p.clicks,1);
     assert.equal(f.store.get(f.id).turnCount,1);

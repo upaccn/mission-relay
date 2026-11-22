@@ -31,7 +31,7 @@ function fixture(){
   const file=join(dir,'relay.sqlite'),store=new Store(file),ledger=new GoalLedger(store);
   const owner=ledger.createGoal({requestKey:'owner-one',objective:goalText,priority:100});
   const mission=store.create({goal:goalText,acceptance:['Independent release test'],
-    checks:[],workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:32,requestKey:'mission-one'});
+    checks:[],workspace:'',sandbox:'read-only',mode:'supervised',requestKey:'mission-one'});
   const linked=store.linkChat(mission.id,URL,mission.version).mission;
   const bound=store.bindChatBrowser(mission.id,'install:Chrome:fake',linked.version).mission;
   store.setMeta(`pi.autopilot.enabled.${bound.id}`,'1');
@@ -673,49 +673,6 @@ test('restart reuses persisted PI decision and Goal review without duplicate pla
   }finally{reopened?.close();f.close();}
 });
 
-test('Goal binding follows the existing 32-turn Mission successor rather than creating a new Goal',()=>{
-  const f=fixture();
-  try{
-    // A real Goal is active with remaining approved work before a 32/32
-    // checkpoint may create another Mission. A DRAFT Goal is not authority
-    // to continue or resurrect a historical run.
-    const plan=f.ledger.createPlan(f.goal.id,f.goal.version,{
-      requestKey:'active-chain-plan',summary:'Unfinished approved work',items:[{
-        key:'remaining',title:'Finish outstanding work',priority:100,
-        acceptance:['Exact 32-to-child evidence'],
-      }],
-    });
-    f.ledger.setPlanStatus(f.goal.id,plan.id,plan.version,'APPROVED','approve-chain');
-    f.ledger.setGoalStatus(f.goal.id,f.ledger.getGoal(f.goal.id).version,'ACTIVE','activate-chain');
-    const task=f.ledger.graph(f.goal.id).items[0]!;
-    const ready=f.ledger.setWorkStatus(f.goal.id,task.id,task.version,'READY',[],'ready-chain');
-    f.ledger.setWorkStatus(f.goal.id,task.id,ready.version,'IN_PROGRESS',[],'start-chain');
-    const initial=f.store.get(f.mission.id);
-    const nearLimit=f.store.update(initial.id,initial.version,{state:'PAUSED',turnCount:31},
-      'test.synthetic_prior_31_observed');
-    const answer='Verified parent checkpoint at turn 32';
-    const requestKey='goal-parent-last';
-    f.store.reserveChatBrowserTurn(initial.id,nearLimit.version,requestKey,sha('last user prompt'));
-    f.store.finishChatBrowserTurn(initial.id,requestKey,{
-      kind:'observed',assistantSha256:sha(answer),summary:answer,
-      telegramBatch:{terminal:true,flowSignal:'NEXT',piManaged:true},
-    });
-    f.store.commitPiPlan(initial.id,sha(answer),[],{
-      action:'NEXT',summary:'One work item requires a successor Mission',
-      nextPrompt:'Continue the selected work item'});
-    const child=f.store.createPiSuccessor(initial.id);
-    assert.ok(child);
-    assert.equal(f.ledger.missionGoalId(child.id),f.goal.id);
-    assert.equal(f.store.piChainParent(child.id),initial.id);
-    assert.equal(f.store.getMeta(`goal.pi.binding.${child.id}`),null,
-      'The existing reciprocal lineage is the authority; do not fork Goal bindings');
-    assert.equal(f.ledger.graph(f.goal.id).goal.id,f.goal.id);
-    assert.equal(f.ledger.listGoals().length,1);
-    assert.equal(f.store.createPiSuccessor(initial.id)?.id,child.id,
-      'Restart must reuse the existing successor, not create another Mission');
-  }finally{f.close();}
-});
-
 test('Goal binding rejects foreign scope, active Send or a second Goal; legacy PI remains unaffected',()=>{
   const f=fixture();
   try{
@@ -724,14 +681,14 @@ test('Goal binding rejects foreign scope, active Send or a second Goal; legacy P
       /exact owner goal/);
     assert.equal(f.ledger.missionGoalId(f.mission.id),f.goal.id);
     const competing=f.store.create({goal:goalText,acceptance:['Same owner scope'],
-      checks:[],workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:2,
+      checks:[],workspace:'',sandbox:'read-only',mode:'supervised',
       requestKey:'competing-goal-pi'});
     f.store.setMeta(`pi.autopilot.enabled.${competing.id}`,'1');
     assert.throws(()=>f.ledger.bindPiMission(f.goal.id,competing.id,competing.version,
       'competing-goal'),/already has a live PI Mission root/);
     assert.equal(f.store.getMeta(`goal.pi.binding.${competing.id}`),null);
     const legacy=f.store.create({goal:'Read-only audit',acceptance:['Report'],
-      checks:[],workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:2,requestKey:'legacy-pi'});
+      checks:[],workspace:'',sandbox:'read-only',mode:'supervised',requestKey:'legacy-pi'});
     assert.equal(f.ledger.missionGoalId(legacy.id),null);
     assert.throws(()=>f.ledger.bindPiMission(f.goal.id,legacy.id,legacy.version,'other-bind'),
       /unstarted PI Mission/);

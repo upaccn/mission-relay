@@ -7,8 +7,7 @@ import {join} from 'node:path';
 import {Store} from '../src/core/store.js';
 import {GoalLedger} from '../src/core/goal-store.js';
 import {goalWorkPrompt} from '../src/core/goal-prompts.js';
-import {browserFreshTaskPrompt,browserGoalPlanningPrompt,browserNewChatPrompt,browserRolloverRecoveryPrompt,
-  exactReservedRolloverPrompt} from '../src/core/browser-controller.js';
+import {browserGoalPlanningPrompt} from '../src/core/browser-controller.js';
 
 const sha=(value:string)=>createHash('sha256').update(value.trim()).digest('hex');
 const URL='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
@@ -28,33 +27,10 @@ test('initial Goal browser Send is planning-only even with a previously approved
   assert.match(prompt,/PI controller will independently approve/);
   assert.doesNotMatch(prompt,/Task scope: implement and test code in/);
   assert.doesNotMatch(prompt,/Use available tools to inspect and edit/);
-  assert.notEqual(prompt,browserFreshTaskPrompt(owner,workspace),
-    'Non-Goal owner /build retains execution capability; initial Goal cannot inherit it');
   assert.throws(()=>browserGoalPlanningPrompt(' ',[],workspace),/1–4000/);
   assert.throws(()=>browserGoalPlanningPrompt('a'.repeat(4001),[],workspace),/1–4000/);
   assert.throws(()=>browserGoalPlanningPrompt(owner,['a'.repeat(12000)],workspace),
     /12000 characters/);
-});
-
-test('new Goal planning rollover reconstructs both current and pre-upgrade reservations without replay',()=>{
-  const owner='Plan Mission Relay v1.0 acceptance and safe deployment';
-  const workspace='/srv/projects/mission-relay';
-  const args={goal:owner,acceptance:['PI-independent review'],
-    sandbox:'workspace-write' as const,workspace,nextInstruction:null,turnCount:0,
-    missionRequestKey:'goal-stage-new',reservedRequestKey:'goal-stage-new-1',
-    sourceAnswer:'unrelated old anchor reply',adopted:false,chainParent:false,
-    piManaged:true,piPlan:null,goalBound:true};
-  const planning=browserGoalPlanningPrompt(owner,args.acceptance,workspace);
-  const legacy=browserFreshTaskPrompt(owner,workspace);
-  assert.equal(browserRolloverRecoveryPrompt(args),planning);
-  assert.equal(browserRolloverRecoveryPrompt(args,true),legacy);
-  assert.deepEqual(exactReservedRolloverPrompt(args,sha(planning)),
-    {prompt:planning,format:'compact'});
-  assert.deepEqual(exactReservedRolloverPrompt(args,sha(legacy)),
-    {prompt:legacy,format:'legacy'});
-  assert.throws(()=>exactReservedRolloverPrompt(args,sha('Unrelated content')),
-    /Neither compact nor legacy/);
-  assert.equal(browserRolloverRecoveryPrompt({...args,goalBound:false}),legacy);
 });
 
 function fixture(){
@@ -64,7 +40,7 @@ function fixture(){
   const goal=ledger.createGoal({requestKey:'long-term-owner-goal',
     objective:ownerGoal,priority:95});
   const created=store.create({goal:ownerGoal,acceptance:[ownerAcceptance],checks:[],
-    workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:32,requestKey:'wp3-goal-mission'});
+    workspace:'',sandbox:'read-only',mode:'supervised',requestKey:'wp3-goal-mission'});
   const linked=store.linkChat(created.id,URL,created.version).mission;
   const bound=store.bindChatBrowser(created.id,'install:Chrome:fake',linked.version).mission;
   store.setMeta(`pi.autopilot.enabled.${bound.id}`,'1');
@@ -240,37 +216,6 @@ test('bad versioned payload, fake Goal association or trigger failure never part
     assert.equal(f.store.chatBrowserTurn(f.missionId)?.status,'observed');
     assert.equal(f.store.get(f.missionId).version,version);
   }finally{f.close();}
-});
-
-test('pre-WP3 historical compact/legacy/fresh prompt hashes stay frozen and reconstructable',()=>{
-  const owner='Legacy owner objective';
-  const prior='Earlier completed research\n[MISSION_RELAY:NEXT]';
-  const plan={action:'NEXT' as const,summary:'PI reviewed summary',
-    nextPrompt:'Inspect next stage',round:5,responseSha256:sha(prior),
-    reviewedDirectiveIds:[]};
-  const args={goal:owner,acceptance:['Check evidence'],sandbox:'read-only' as const,
-    workspace:'',nextInstruction:null,turnCount:5,missionRequestKey:'legacy-mission',
-    reservedRequestKey:'legacy-mission-6',sourceAnswer:prior,
-    adopted:false,chainParent:false,piManaged:true,piPlan:plan};
-  const historical=[
-    {format:'compact',sha:'9a889a631641dc1cf0e8db4bae304b80c7c3a67898239e027977ad3539a67f04'},
-    {format:'legacy',sha:'8e735f9f87ee613cb8efc0948f8b04df13bd33c7befe3e164827cfcb29d9493f'},
-  ] as const;
-  for(const old of historical){
-    const recovered=exactReservedRolloverPrompt(args,old.sha);
-    assert.equal(recovered.format,old.format);
-    assert.equal(sha(recovered.prompt),old.sha);
-    assert.equal(recovered.prompt,browserRolloverRecoveryPrompt(args,old.format==='legacy'));
-    assert.equal(recovered.prompt,browserNewChatPrompt(owner,['Check evidence'],
-      plan.summary,plan.nextPrompt,prior,null,
-      old.format==='legacy'?undefined:{round:5,responseSha256:sha(prior)},
-      old.format==='legacy'));
-  }
-  assert.equal(sha(browserFreshTaskPrompt(owner)),
-    '0fe6dfd9d2d0dd59f26aa641a9bcb900421feed668cd54860347c297143686b4');
-  assert.throws(()=>exactReservedRolloverPrompt(args,'f'.repeat(64)),
-    /Neither compact nor legacy handoff matches/);
-  assert.throws(()=>exactReservedRolloverPrompt(args,'not-a-hash'),/Invalid stored/);
 });
 
 test('original unversioned reserved requests remain unmodified and have no inferred snapshots',()=>{

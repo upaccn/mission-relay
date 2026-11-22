@@ -164,9 +164,8 @@ export class GoalLedger {
       ORDER BY g.created_at,g.id`).all() as GoalRow[])
       .map(toGoal);
   }
-  /** Opt-in association only. Existing Mission records, Chat URLs and request
-   * receipts are untouched. A 32-turn child inherits the association through
-   * the already-authoritative, reciprocal PI parent chain. */
+  /** Bind one unstarted PI Mission to its Goal. Existing Mission records,
+   * Chat URLs and request receipts are untouched. */
   bindPiMission(goalId:string,missionId:string,expectedMissionVersion:number,
     operationKey:string):string{
     return this.once(goalId,operationKey,{missionId,expectedMissionVersion},()=>{
@@ -179,9 +178,7 @@ export class GoalLedger {
         throw new Error('Goal binding requires an unstarted PI Mission with the exact owner goal');
       if(this.store.getMeta(`goal.pi.binding.${missionId}`))
         throw new Error('PI Mission is already bound to another Goal');
-      // A Goal cannot be driven by two independent live Mission roots. The
-      // existing 32-to-successor lineage inherits its original root binding,
-      // rather than creating a competing second Goal controller.
+      // A Goal cannot be driven by two independent live Missions.
       const others=this.store.db.prepare(
         "SELECT key FROM meta WHERE key LIKE 'goal.pi.binding.%' AND value=?"
       ).all(goalId) as {key:string}[];
@@ -232,7 +229,7 @@ export class GoalLedger {
       .get(goalId) as {summary:string;completed_at:string}|undefined;
     return r?{summary:r.summary,completedAt:r.completed_at}:null;
   }
-  /** Root Missions explicitly bound to this Goal (successors excluded). */
+  /** Missions explicitly bound to this Goal. */
   goalRootMissions(goalId:string):string[]{
     return (this.store.db.prepare(
       "SELECT key FROM meta WHERE key LIKE 'goal.pi.binding.%' AND value=? ORDER BY key"
@@ -265,22 +262,12 @@ export class GoalLedger {
     });
   }
   missionGoalId(missionId:string):string|null{
-    const visited=new Set<string>();
-    let current:string|null=missionId;
-    while(current){
-      if(visited.has(current))throw new Error('PI Mission ancestry cycle');
-      visited.add(current);
-      this.store.get(current);
-      const found=this.store.getMeta(`goal.pi.binding.${current}`);
-      if(found){
-        const original=this.getGoal(found);
-        if(this.store.get(missionId).goal.trim()!==original.objective)
-          throw new Error('PI Mission Goal binding scope changed');
-        return found;
-      }
-      current=this.store.piChainParent(current);
-    }
-    return null;
+    const mission=this.store.get(missionId);
+    const found=this.store.getMeta(`goal.pi.binding.${missionId}`);
+    if(!found)return null;
+    if(mission.goal.trim()!==this.getGoal(found).objective)
+      throw new Error('PI Mission Goal binding scope changed');
+    return found;
   }
   /** PI review is an attributable decision, not independent evidence proof. */
   recordPiReview(goalId:string,missionId:string,itemId:string,round:number,

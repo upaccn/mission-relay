@@ -6,7 +6,6 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 import type {Page} from 'playwriter';
 import {Store} from '../src/core/store.js';
-import {Engine} from '../src/core/engine.js';
 import {TelegramBridge} from '../src/plugins/telegram.js';
 import {nativePrefilledDraftSha256,clickNativePrefilledSendOnce}
   from '../src/plugins/chatgpt-browser.js';
@@ -22,14 +21,9 @@ const timeout='ChatGPT response observation timed out; submission outcome is amb
 function fixture(){
   const dir=mkdtempSync(join(tmpdir(),'relay-native-draft-'));
   const store=new Store(join(dir,'missions.sqlite'));
-  const engine=new Engine(store,{
-    execute:async()=>({status:'blocked' as const,summary:'unused',
-      next_instruction:'',evidence:[]}),
-    verify:async()=>({accepted:false,reason:'unused',evidence:[]}),
-  });
-  const m=engine.create({goal:'Continue original Mission only after exact browser proof',
+  const m=store.create({goal:'Continue original Mission only after exact browser proof',
     acceptance:['No duplicate Send'],workspace:'',sandbox:'read-only',
-    mode:'supervised',maxTurns:0,requestKey:'native-draft-fixture'});
+    mode:'supervised',requestKey:'native-draft-fixture'});
   const linked=store.linkChat(m.id,source,m.version).mission;
   const bound=store.bindChatBrowser(m.id,'install:Chrome:native-draft',linked.version).mission;
   store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
@@ -51,7 +45,7 @@ function fixture(){
   assert.equal(store.claimConversationLengthStartIntent(
     m.id,stopped.version,'second',sha(prompt),true),true);
   store.recordConversationLengthStartClicked(m.id,'second',sha(prompt));
-  return {store,engine,id:m.id,dir,close:()=>{
+  return {store,id:m.id,dir,close:()=>{
     store.close();rmSync(dir,{recursive:true,force:true});
   }};
 }
@@ -153,9 +147,9 @@ test('worker only credits fully observed direct new-chat reply, then PI may cont
     assert.equal(f.store.claimNativePrefilledSendIntent(
       f.id,m.version,'second',sha(prompt)),true);
     f.store.recordNativePrefilledSendClicked(f.id,'second',sha(prompt));
-    const bridge=new TelegramBridge(f.store,f.engine,{
+    const bridge=new TelegramBridge(f.store,{
       getUpdates:async()=>[],sendMessage:async()=>{},
-    },1,2,undefined,async(u)=>{
+    },1,2,async(u)=>{
       assert.equal(u,target);
       return {page:p as unknown as Page,close:async()=>{}};
     },undefined,async()=>[{url:target,urlSha256:sha(target),
@@ -182,9 +176,9 @@ test('native recovery refuses changed new-chat user, missing and duplicate tabs'
       const m=f.store.get(f.id);
       f.store.claimNativePrefilledSendIntent(f.id,m.version,'second',sha(prompt));
       f.store.recordNativePrefilledSendClicked(f.id,'second',sha(prompt));
-      const bridge=new TelegramBridge(f.store,f.engine,{
+      const bridge=new TelegramBridge(f.store,{
         getUpdates:async()=>[],sendMessage:async()=>{},
-      },1,2,undefined,async()=>({page:p as unknown as Page,close:async()=>{}}),
+      },1,2,async()=>({page:p as unknown as Page,close:async()=>{}}),
       undefined,async()=>[{url:target,urlSha256:sha(target),
         lastUserSha256:wrong?sha('changed'):sha(prompt),duplicate:dup}]);
       await bridge.recoverNativePrefilledReplyOnce();
@@ -197,9 +191,9 @@ test('native recovery refuses changed new-chat user, missing and duplicate tabs'
 
 test('unpaused Worker automatically submits native copied draft once, while an owner pause blocks Send',async()=>{
   const f=fixture(),p=new DraftPage();try{
-    const bridge=new TelegramBridge(f.store,f.engine,{
+    const bridge=new TelegramBridge(f.store,{
       getUpdates:async()=>[],sendMessage:async()=>{},
-    },1,2,undefined,undefined,undefined,undefined,null,
+    },1,2,undefined,undefined,undefined,null,
     async(browserId,digest)=>{
       assert.equal(browserId,'install:Chrome:native-draft');
       assert.equal(digest,sha(prompt));

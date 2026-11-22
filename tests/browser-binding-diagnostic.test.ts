@@ -72,7 +72,7 @@ test('CLI rejects an unbound Mission before opening Chrome or mutating the local
   try{
     const m=store.create({goal:'Verify a disconnected browser without sending',
       acceptance:['Read-only'],workspace:'',sandbox:'read-only',
-      mode:'supervised',maxTurns:2,requestKey:'binding-diag-test',checks:[]});
+      mode:'supervised',requestKey:'binding-diag-test',checks:[]});
     const old=store.maxEventId();
     const run=spawnSync(process.execPath,
       ['--import','tsx','src/cli.ts','browser-binding-health',m.id],

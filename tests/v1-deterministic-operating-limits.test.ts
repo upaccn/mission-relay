@@ -32,7 +32,7 @@ test('isolated SQLite integrity, backup and independent restore preserve protect
   try{
     const created=f.store.create({goal:'Synthetic protected history',
       acceptance:['Keep historical stop flag'],workspace:'',sandbox:'read-only',
-      mode:'supervised',maxTurns:32,requestKey:'protected-original',checks:[]});
+      mode:'supervised',requestKey:'protected-original',checks:[]});
     f.store.update(created.id,created.version,{stopRequested:true},
       'mission.pause_requested',{reason:'synthetic owner stop'});
     const original=f.store.get(created.id);
@@ -106,72 +106,4 @@ test('PI inference inherits configured default without overriding model/provider
   receipt('pi-default-model-no-override',{
     argvSha256:policy.argvSha256,modelOverride:false,providerOverride:false,
     thinkingOverride:false,remoteInferenceInvoked:false});
-});
-test('eight observed Sends per Chat and 32-turn legacy Mission enforce distinct rollover and unique successor',()=>{
-  const f=fixture();let parallel:Store|undefined;
-  try{
-    const ledger=new GoalLedger(f.store),objective='Synthetic bounded mission';
-    const goal=ledger.createGoal({requestKey:'bounded-goal',objective,priority:90});
-    const p=ledger.createPlan(goal.id,goal.version,{requestKey:'bounded-plan',
-      summary:'Verify dispatch limits',items:[{key:'limits',title:'Limits',priority:90,
-        acceptance:['No send beyond configured limit']}]});
-    ledger.setPlanStatus(goal.id,p.id,p.version,'APPROVED','approved');
-    ledger.setGoalStatus(goal.id,ledger.getGoal(goal.id).version,'ACTIVE','active');
-    const item=ledger.graph(goal.id).items[0]!;
-    const ready=ledger.setWorkStatus(goal.id,item.id,item.version,'READY',[],'start');
-    ledger.setWorkStatus(goal.id,item.id,ready.version,'IN_PROGRESS',[],'running');
-    const mission=f.store.create({goal:objective,acceptance:['Bounded completion'],
-      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:32,
-      requestKey:'original-32',checks:[]});
-    const linked=f.store.linkChat(mission.id,url(0),mission.version).mission;
-    const bound=f.store.bindChatBrowser(mission.id,'isolated-physical-target',linked.version).mission;
-    f.store.setMeta('pi.autopilot.enabled.'+bound.id,'1');
-    ledger.bindPiMission(goal.id,bound.id,bound.version,'original-binding');
-    assert.equal(MAX_RELAY_CHAT_TURNS,8);
-    for(let n=1;n<=32;n++){
-      const newConversation=n>1&&(n-1)%MAX_RELAY_CHAT_TURNS===0;
-      if(n===9){
-        assert.throws(()=>f.store.reserveChatBrowserTurn(bound.id,
-          f.store.get(bound.id).version,'illegal-ninth',digest('old-chat')),
-          /eight|8|new conversation/i);
-        assert.equal(f.store.get(bound.id).turnCount,8);
-      }
-      const key='original-'+n,answer='Synthetic observed answer '+n+'\n[MISSION_RELAY:NEXT]';
-      f.store.reserveChatBrowserTurn(bound.id,f.store.get(bound.id).version,
-        key,digest('prompt '+n),newConversation?{newConversation:true}:{});
-      f.store.finishChatBrowserTurn(bound.id,key,{
-        kind:'observed',assistantSha256:digest(answer),summary:answer,
-        ...(newConversation?{newChatUrl:url(n)}:{})});
-      f.store.commitPiPlan(bound.id,digest(answer),[],{
-        action:'NEXT',summary:'Original synthetic review '+n,
-        nextPrompt:'Next scoped task '+n});
-    }
-    const report=inspectPiEvidence(f.store,bound.id);
-    assert.equal(report.ledgerConsistent,true,report.violations.join(','));
-    assert.equal(report.observedTurns,32);
-    assert.equal(report.decisionsVerified,32);
-    assert.equal(report.maxObservedTurnsInOneChat,8);
-    assert.equal(report.chatSegments,4);
-    assert.equal(f.store.get(bound.id).turnCount,32);
-    assert.throws(()=>f.store.reserveChatBrowserTurn(bound.id,
-      f.store.get(bound.id).version,'illegal-round-33',digest('forbidden'),
-      {newConversation:true}),/turn budget exhausted/);
-    parallel=new Store(f.file);
-    const child=f.store.createPiSuccessor(bound.id);
-    const same=parallel.createPiSuccessor(bound.id);
-    assert.ok(child);
-    assert.equal(same?.id,child.id);
-    assert.equal(child.turnCount,0);
-    assert.equal(child.maxTurns,32);
-    assert.equal(f.store.events(bound.id).filter(e=>e.type==='pi.chain_successor').length,1);
-    assert.equal(f.store.events(child.id).filter(e=>e.type==='pi.chain_started').length,1);
-    assert.equal(f.store.chatBrowserTurn(child.id),null);
-    receipt('eight-send-and-32-turn-limits',{
-      maxChatSends:MAX_RELAY_CHAT_TURNS,maxMissionTurns:32,
-      observedParentTurns:report.observedTurns,verifiedPiDecisions:report.decisionsVerified,
-      observedChatSegments:report.chatSegments,maxObservedSendsPerChat:report.maxObservedTurnsInOneChat,
-      illegalNinthSameChatRejected:true,illegalThirtyThirdTurnRejected:true,
-      successorCount:1,childInitialTurns:0,childOriginalSends:0,
-      duplicateSuccessorAttemptSameId:true});
-  }finally{parallel?.close();f.close();}
 });

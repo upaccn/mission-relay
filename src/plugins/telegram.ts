@@ -1,11 +1,6 @@
 import {MAX_RELAY_CHAT_TURNS} from '../core/chat-limits.js';
-import {missionTurnsRemaining,missionTurnLimitReached} from '../core/mission-turns.js';
-import type { PluginManifest } from '../core/plugins.js';
 import {createHash} from 'node:crypto';
-import { Engine } from '../core/engine.js';
-import { Store,PI_SUCCESSOR_CHECKPOINT_MISMATCH,PAUSED_DELIVERY_RETRY_ERROR } from '../core/store.js';
-import type {PreflightResult} from '../core/executor-plugins.js';
-import { renderChatGPTHandoff } from '../core/chatgpt-handoff.js';
+import { Store,PI_CHECKPOINT_MISMATCH } from '../core/store.js';
 import {connectChatPage,inspectChatPage,lastVisibleUserPromptSha256,listConnectedChatCandidates,
   clickDeliveryRetryOnce,visibleLongTaskBanner,visibleConversationLengthLimit,
   clickConversationLengthStartOnce,connectNativePrefilledDraft,
@@ -13,7 +8,7 @@ import {connectChatPage,inspectChatPage,lastVisibleUserPromptSha256,listConnecte
   type BrowserSession} from './chatgpt-browser.js';
 import {MAX_CONVERSATION_LENGTH_ERROR} from '../core/chat-limits.js';
 type ConnectedChatCandidate=Awaited<ReturnType<typeof listConnectedChatCandidates>>[number];
-import {driveChatConversation,executeBrowserRollover,browserFreshTaskPrompt,browserGoalPlanningPrompt} from '../core/browser-controller.js';
+import {browserGoalPlanningPrompt,MAX_FRESH_CHAT_TASK_CHARS} from '../core/browser-controller.js';
 import {withReadOnlyDeadline} from '../core/read-only-deadline.js';
 import {drivePiAutopilot,pauseFailedPiPlanning,
   deferTransientPiBrowserRecovery} from '../core/pi-autopilot.js';
@@ -25,11 +20,6 @@ import {telegramChatAnchor} from '../core/chat-anchor.js';
 import type {RuntimeProvenance} from '../core/runtime-provenance.js';
 import type {Mission,MissionEvent} from '../core/types.js';
 import {missionRelayMarker} from '../core/mission-marker.js';
-
-export const telegramPluginManifest:PluginManifest={
-  id:'channel.telegram',version:'0.1.0',apiVersion:1,kind:'channel',
-  capabilities:['receive-command','notify'],
-};
 
 /** A recoverable asynchronous stall, not a slow ChatGPT turn or a temporary
  * Telegram network outage. No extra watchdog process or scheduled task. */
@@ -185,8 +175,6 @@ export function telegramCallbackCommand(data:string):string {
 }
 
 const TERMINAL_EVENTS=new Set([
-  'mission.ambiguous_failure','mission.blocked','mission.paused',
-  'verification.accepted','verification.checks_required',
   'chatgpt.browser_observed','chatgpt.browser_uncertain',
   'chatgpt.browser_rollover_recovered',
   'chatgpt.browser_turn_recovered',
@@ -221,29 +209,6 @@ function taskState(m:Mission):string {
   return plan?'Needs attention':'Paused / reviewing';
 }
 
-/** A native executor Mission must surface the verified outcome, not just an
- * opaque status code. Verifier conclusions are separate model judgment, not
- * independently proven real-world facts or deterministic checks. */
-export function formatNativeMissionNotification(m:Mission,event:MissionEvent):string {
-  const base=[event.type==='verification.accepted'?'All Done — Task completed':
-    `Task update — ${taskState(m)}`,
-    taskTitle(m)];
-  if(event.type==='verification.accepted') {
-    const payload=event.payload && typeof event.payload==='object'
-      ? event.payload as {reason?:unknown;evidence?:unknown}: {};
-    const evidence=Array.isArray(payload.evidence)?payload.evidence
-      .filter((x):x is string=>typeof x==='string').slice(0,3):[];
-    return [
-      ...base,
-      `Summary: ${compactTelegramText(m.lastSummary??'No summary available',450)}`,
-      ...evidence.map((x,i)=>`Check ${i+1}: ${compactTelegramText(x,235)}`),
-      'Review: model verifier accepted; external outcomes may need separate checks.',
-      'Details: /status',
-    ].join('\n').slice(0,2900);
-  }
-  return [...base,'Details: /status'].join('\n');
-}
-
 export function formatPiNotification(m:Mission,event:MissionEvent):string {
   const payload=event.payload && typeof event.payload==='object'
     ?event.payload as {summary?:unknown;action?:unknown;reason?:unknown}:{};
@@ -253,7 +218,6 @@ export function formatPiNotification(m:Mission,event:MissionEvent):string {
     typeof payload.reason==='string'?payload.reason:'No PI decision summary';
   const complete=action==='DONE';
   const label=complete?'All Done — Task finished':
-    action==='LIMIT'?'Continuing — Moving to the next stage':
     action==='BLOCKED'||action==='INTERRUPTED'?'Needs attention — Task paused':
     'Task update';
   return [label,
@@ -332,11 +296,8 @@ export class TelegramBridge {
   private lastDeliveryRetryRecoveryAt=0;
   private readonly source='telegram';
   constructor(
-    readonly store:Store, readonly engine:Engine, readonly transport:TelegramTransport,
+    readonly store:Store, readonly transport:TelegramTransport,
     readonly userId:number,readonly chatId:number,
-    private readonly preflight:(missionId?:string)=>Promise<PreflightResult>=async()=>({
-      ok:false,source:'default',message:'No native executor plugin configured',
-    }),
     private readonly browserConnector:(url:string,options?:{browserId?:string;bootstrapMissingAnchor?:boolean})=>Promise<BrowserSession>=connectChatPage,
     private readonly piPlanner:PiPlanner=new SshPiPlanner({
       sshHost:store.getMeta('telegram.pi.sshHost')||'UNCONFIGURED',
@@ -350,10 +311,10 @@ export class TelegramBridge {
       throw new Error('Set numeric Telegram owner user and private chat IDs');
   }
 
-  /** This small method is intentionally public for offline integration tests. */
+  /** One full Worker cycle (intake → dispatch/recovery → delivery), public
+   * so offline integration tests drive exactly what the Worker runs. */
   async pollOnce(timeoutSeconds=8):Promise<void> {
-    await this.pollOwnerInboxOnce(timeoutSeconds);
-    await this.deliverOutboundBestEffort();
+    await this.controlCycleOnce(timeoutSeconds);
   }
 
   /** Intake is the control-plane fence: process authenticated owner commands
@@ -397,11 +358,6 @@ export class TelegramBridge {
         }
       }
     }
-    // Materialize any already-authorized finite-Mission successor only after
-    // the owner inbox was read and applied. This is a durable SQLite mutation,
-    // not a browser Send; the normal scheduler will verify and dispatch it.
-    if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
-      for(const mission of this.engine.list())this.store.createPiSuccessor(mission.id);
   }
 
   /** Outbound notifications are at-least-once, cursor-backed delivery. A
@@ -545,23 +501,18 @@ export class TelegramBridge {
     if(this.activeMission||this.activeTask||this.store.channelDrainRequested(this.source))return;
     if(Date.now()-this.lastDeliveryRetryRecoveryAt<60_000)return;
     this.lastDeliveryRetryRecoveryAt=Date.now();
-    const candidate=this.engine.list().find(m=>{
+    const candidate=this.store.list().find(m=>{
       const r=this.store.chatBrowserTurn(m.id);
       return m.state==='NEEDS_RECONCILIATION'&&!m.stopRequested&&
-        ((([MAX_CONVERSATION_LENGTH_ERROR,
-             'ChatGPT response observation timed out; submission outcome is ambiguous'].includes(m.lastError??'')||
-           (m.lastError===PAUSED_DELIVERY_RETRY_ERROR&&r&&
-             this.store.events(m.id).some(e=>
-               e.type==='chatgpt.browser_existing_chat_retry_authorized'&&
-               (e.payload as {requestKey?:string;promptSha256?:string}).requestKey===r.requestKey&&
-               (e.payload as {promptSha256?:string}).promptSha256===r.promptSha256)))&&
+        (([MAX_CONVERSATION_LENGTH_ERROR,
+            'ChatGPT response observation timed out; submission outcome is ambiguous'].includes(m.lastError??'')&&
           r?.status==='uncertain'&&r.newConversation!==true)||
          (m.lastError==='New ChatGPT reply observation timed out; creation outcome is ambiguous'&&
           r?.status==='uncertain'&&r.newConversation===true))&&
         this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1';
     });
     if(!candidate)return;
-    // A stored Goal with an erroneous legacy default is still allowed
+    // A Goal whose repository grant no longer matches is still allowed
     // read-only recovery, but cannot trigger a side-effecting UI Retry
     // that would continue work inside the wrong approved repository.
     const scopeConsistent=candidate.sandbox!=='workspace-write'||
@@ -699,7 +650,7 @@ export class TelegramBridge {
    * The original request remains uncertain until independent reply proof. */
   async recoverNativePrefilledDraftOnce():Promise<void> {
     if(this.activeMission||this.activeTask||this.store.channelDrainRequested(this.source))return;
-    const candidate=this.engine.list().find(m=>{
+    const candidate=this.store.list().find(m=>{
       if(m.state!=='NEEDS_RECONCILIATION'||m.stopRequested||
         this.store.getMeta(`pi.autopilot.enabled.${m.id}`)!=='1')return false;
       const r=this.store.chatBrowserTurn(m.id);
@@ -742,7 +693,7 @@ export class TelegramBridge {
    * never clicks Send here. A stored click event alone is not a reply. */
   async recoverNativePrefilledReplyOnce():Promise<void> {
     if(this.activeMission||this.activeTask||this.store.channelDrainRequested(this.source))return;
-    const candidate=this.engine.list().find(m=>{
+    const candidate=this.store.list().find(m=>{
       if(m.state!=='NEEDS_RECONCILIATION'||
         this.store.getMeta(`pi.autopilot.enabled.${m.id}`)!=='1')return false;
       const r=this.store.chatBrowserTurn(m.id);
@@ -765,7 +716,7 @@ export class TelegramBridge {
           c.lastUserSha256===record.promptSha256&&!c.duplicate);
       if(matched.length!==1)return;
       const destination=matched[0]!.url;
-      if(this.engine.list().some(m=>m.id!==candidate.id&&
+      if(this.store.list().some(m=>m.id!==candidate.id&&
         this.store.chatLink(m.id)===destination))return;
       session=await withReadOnlyDeadline(this.browserConnector(destination,{browserId}),
         30_000,late=>late.close());
@@ -814,42 +765,28 @@ export class TelegramBridge {
     if(this.activeMission||this.activeTask||this.store.channelDrainRequested(this.source))return;
     // Never switch browsers while ANY original Send remains unaccounted for,
     // including a paused or uncertain owner. Queue intake remains permitted.
-    if(this.engine.list().some(m=>{
+    if(this.store.list().some(m=>{
       const status=this.store.chatBrowserTurn(m.id)?.status;
       return status==='reserved'||status==='uncertain';
     }))return;
-    // Reconstruct a missing successor after a controller crash between PI's
-    // durable LIMIT decision and the child creation. The SQLite request key
-    // makes this step idempotent; it does not send a browser message.
-    for(const prior of this.engine.list())this.store.createPiSuccessor(prior.id);
     const ledger=new GoalLedger(this.store);
-    const candidates=this.engine.list().filter(m=>{
+    const candidates=this.store.list().filter(m=>{
       const receipt=this.store.chatBrowserTurn(m.id),plan=this.store.piPlan(m.id);
-      const correctedPending=m.lastError?.startsWith('Corrected answer attribution awaits')&&
-        !!receipt?.assistantSha256&&plan?.round===m.turnCount&&
-        plan.responseSha256!==receipt.assistantSha256&&
-        this.store.hasVerifiedPiBrowserCheckpoint(m.id);
       const retryAfter=Number(this.store.getMeta(`pi.retry.after.${m.id}`)??'0');
       if(this.store.getMeta(`pi.retry.sha.${m.id}`)===receipt?.assistantSha256&&
         this.store.getMeta(`pi.retry.request.${m.id}`)===receipt?.requestKey&&
         Number.isFinite(retryAfter)&&retryAfter>Date.now())return false;
       return this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1' &&
-      !m.stopRequested&&(!m.lastError||correctedPending)&&
-      ((m.state==='READY'&&m.turnCount===0&&
-        (!!this.store.piChainParent(m.id)||ledger.missionGoalId(m.id)!==null))||
-      (m.state==='PAUSED'&&
-        (m.turnCount>0||this.store.chatAdoption(m.id)!==null)))&&
-      (m.maxTurns===0||m.turnCount<=m.maxTurns)&&
-      (correctedPending||this.store.piChainParent(m.id)&&m.turnCount===0||
-       m.turnCount===0&&ledger.missionGoalId(m.id)!==null||
-       plan?.round!==m.turnCount||
-        (missionTurnsRemaining(m.maxTurns,m.turnCount)&&
-         ['NEXT','HANDOFF'].includes(plan?.action??'')));
+      !m.stopRequested&&!m.lastError&&
+      ledger.missionGoalId(m.id)!==null&&
+      ((m.state==='READY'&&m.turnCount===0)||(m.state==='PAUSED'&&m.turnCount>0))&&
+      (m.turnCount===0||plan?.round!==m.turnCount||
+        ['NEXT','HANDOFF'].includes(plan?.action??''));
     });
     if(!candidates.length)return;
     if(this.lastTransientPiRecoveryAt&&
       Date.now()-this.lastTransientPiRecoveryAt<60_000)return;
-    // Queued adoptions are processed sequentially, not treated as conflicting
+    // Queued Goals are processed sequentially, not treated as conflicting
     // writers. Per-conversation SQLite locks still prevent duplicate Sends.
     candidates.sort((a,b)=>a.createdAt.localeCompare(b.createdAt)||a.id.localeCompare(b.id));
     // Durable round-robin cursor: restart may reconsider a settled checkpoint,
@@ -876,7 +813,6 @@ export class TelegramBridge {
     // operator-approved anchor inside its already pinned Chrome profile.
     // A continued/uncertain Send MUST reconnect to the exact original tab.
     const firstGoalSend=m.state==='READY'&&m.turnCount===0&&
-      !this.store.piChainParent(m.id)&&ledger.missionGoalId(m.id)!==null&&
       this.store.chatBrowserTurn(m.id)===null;
     let session:BrowserSession|undefined;
     try{
@@ -911,22 +847,15 @@ export class TelegramBridge {
         console.error(`PI recovery ${m.id}: linked ChatGPT tab not idle; preserving exact checkpoint without Send`);
         return;
       }
-      // Only a zero-turn successor inherits the parent's final browser
-      // checkpoint. Once the child has observed its own first Send, all
-      // subsequent recovery reads MUST compare to the child's own latest
-      // receipt; the parent is a different ChatGPT conversation.
-      const checkpointId=m.turnCount===0&&this.store.piChainParent(m.id)
-        ?this.store.piChainParent(m.id)!:m.id;
-      const previous=firstGoalSend?null:
-        this.store.chatBrowserTurn(checkpointId);
+      const previous=firstGoalSend?null:this.store.chatBrowserTurn(m.id);
       if(firstGoalSend){
         if(this.store.chatBrowserTurn(m.id)||this.store.piPlan(m.id))
           throw new Error('Initial Goal recovery refused: a browser Send or PI decision already exists');
       }else if(!previous||
-        !this.store.hasVerifiedPiBrowserCheckpoint(checkpointId)||
+        !this.store.hasVerifiedPiBrowserCheckpoint(m.id)||
         createHash('sha256').update(snapshot.lastAssistant).digest('hex')!==previous.assistantSha256||
         lastUserHash!==previous.promptSha256)
-        throw new Error(PI_SUCCESSOR_CHECKPOINT_MISMATCH);
+        throw new Error(PI_CHECKPOINT_MISMATCH);
       this.lastTransientPiRecoveryAt=0;
       this.store.setMeta('pi.scheduler.lastMission',m.id);
       this.activeMission=m.id;
@@ -987,19 +916,13 @@ export class TelegramBridge {
         }
         if(event.type==='pi.decision' &&
           (!['NEXT','HANDOFF'].includes(String((event.payload as {action?:unknown})?.action))||
-            missionTurnLimitReached(this.store.get(event.missionId).maxTurns,Number((event.payload as {round?:unknown})?.round))||
             (Number((event.payload as {round?:unknown})?.round)!==1&&
               Number((event.payload as {round?:unknown})?.round)%5!==0))){
           cursor=event.id;
           this.store.setMeta('telegram.notifications_cursor',String(cursor));
           continue;
         }
-        const successor=event.type==='pi.autopilot_finished'
-          ?this.store.piChainSuccessor(event.missionId):null;
-        const body=successor&&
-          (event.payload as {action?:unknown})?.action==='LIMIT'
-          ?`Continuing — Next stage\n${taskTitle(this.store.get(event.missionId))}\nPrevious stage finished; the overall task is still running.\nDetails: /status`
-          :event.type==='pi.decision'
+        const body=event.type==='pi.decision'
           ?formatPiProgress(this.store.get(event.missionId),event)
           :event.type==='pi.autopilot_finished'||event.type==='pi.autopilot_interrupted'
           ?formatPiNotification(this.store.get(event.missionId),event)
@@ -1008,7 +931,7 @@ export class TelegramBridge {
           event.type==='chatgpt.browser_delivery_retry_exhausted'||
           event.type==='chatgpt.browser_rollover_recovered'||event.type==='chatgpt.browser_turn_recovered'
           ?formatBrowserResultNotification(this.store.get(event.missionId),event)
-          :formatNativeMissionNotification(this.store.get(event.missionId),event);
+          :`Task update — ${taskState(this.store.get(event.missionId))}\n${taskTitle(this.store.get(event.missionId))}\nDetails: /status`;
         await this.transport.sendMessage(this.chatId,body);
       }
       cursor=event.id;
@@ -1016,21 +939,20 @@ export class TelegramBridge {
     }
   }
 
-  /** PI stays tool-free. An explicit /build command grants ChatGPT a single
-   * operator-approved source scope; ordinary text and /auto stay read-only. */
   /** Goal intake never opens Chrome and never waits for another Goal to finish.
    * Initial browser/PI preflight is performed later by the ONE leased worker. */
   private enqueueGoal(task:string,commandId:string,write:boolean):string {
     const specified=write?/^--repo\s+(\S+)\s+([\s\S]+)$/.exec(task.trim()):null;
     if(write&&!specified)
-      throw new Error('Every writable Goal requires /goal-build --repo /approved/absolute/path <objective>; the default /build directory cannot be inherited');
+      throw new Error('Every writable Goal requires /goal-build --repo /approved/absolute/path <objective>; no default repository is inherited');
     const objective=(specified?specified[2]!:task).trim();
     const project=write?validateRemoteProjectPath(specified![1]!):null;
     if(write&&(!project||!hasIsolatedRepositoryGrant(this.store,project)))
       throw new Error('Write-enabled Goal needs a locally approved repository; use telegram-build-project --allow <path>');
     if(project&&!declaredSourceMatchesScope(objective,project))
       throw new Error('Goal names a different source repository; use /goal-build --repo <approved path> <objective> with an exact local repository approval');
-    browserFreshTaskPrompt(objective,project);
+    if(!objective||objective.length>MAX_FRESH_CHAT_TASK_CHARS)
+      throw new Error(`Goal objective must be 1–${MAX_FRESH_CHAT_TASK_CHARS} characters`);
     const anchor=telegramChatAnchor(this.store);
     if(!anchor)throw new Error('No approved ChatGPT profile; configure telegram-anchor locally');
     if(this.piPlanner instanceof SshPiPlanner&&!this.store.getMeta('telegram.pi.sshHost'))
@@ -1041,7 +963,7 @@ export class TelegramBridge {
       if(project&&!hasIsolatedRepositoryGrant(this.store,project))
         throw new Error('Approved build repository was revoked during Goal intake');
       const key=`telegram-goal-${commandId}`;
-      const previous=this.engine.list().find(m=>m.requestKey===key);
+      const previous=this.store.list().find(m=>m.requestKey===key);
       if(previous){
         if(previous.goal!==objective||previous.workspace!==(project??'')||
           previous.sandbox!==(project?'workspace-write':'read-only')||
@@ -1056,19 +978,19 @@ export class TelegramBridge {
       // Separate repositories remain separate identities even if their
       // objective text is identical; terminal Goals may be reattempted.
       const ledger=new GoalLedger(this.store);
-      const duplicate=this.engine.list().find(m=>{
+      const duplicate=this.store.list().find(m=>{
         if(m.goal.trim()!==objective||m.workspace!==(project??'')||
           m.sandbox!==(project?'workspace-write':'read-only'))return false;
         const goalId=ledger.missionGoalId(m.id);
         return goalId!==null&&['DRAFT','ACTIVE','PAUSED'].includes(ledger.getGoal(goalId).status);
       });
       if(duplicate)return {mission:duplicate,duplicate:true};
-      const m=this.engine.create({
+      const m=this.store.create({
         goal:objective,acceptance:[project?
           'Implement within the individually approved repository; verify tests, Git and CI before completion':
           'Substantively answer the owner Goal with read-only evidence'],
         workspace:project??'',sandbox:project?'workspace-write':'read-only',
-        mode:'supervised',maxTurns:0,requestKey:key,checks:[],
+        mode:'supervised',requestKey:key,checks:[],
       });
       const linked=this.store.linkChat(m.id,anchor.url,m.version).mission;
       const bound=this.store.chatBrowserBinding(m.id)
@@ -1124,7 +1046,7 @@ export class TelegramBridge {
     const created=this.store.atomic(()=>{
       if(this.store.channelDrainRequested(this.source))
         throw new Error('Telegram maintenance drain active; no Goal was continued');
-      const previous=this.engine.list().find(m=>m.requestKey===key);
+      const previous=this.store.list().find(m=>m.requestKey===key);
       if(previous){
         if(ledger.missionGoalId(previous.id)!==goalId)
           throw new Error('Continuation idempotency key was reused for a different Goal');
@@ -1147,9 +1069,9 @@ export class TelegramBridge {
       browserGoalPlanningPrompt(goal.objective,acceptance,write?origin.workspace:null);
       ledger.reopenBlockedGoal(goal.id,goal.version,
         createHash('sha256').update(text).digest('hex'),`continue-${commandId}`);
-      const m=this.engine.create({goal:goal.objective,acceptance,
+      const m=this.store.create({goal:goal.objective,acceptance,
         workspace:origin.workspace,sandbox:origin.sandbox,mode:'supervised',
-        maxTurns:0,requestKey:key,checks:[]});
+        requestKey:key,checks:[]});
       const linked=this.store.linkChat(m.id,anchor.url,m.version).mission;
       const bound=this.store.bindChatBrowser(m.id,anchor.browserId,linked.version).mission;
       this.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
@@ -1165,163 +1087,10 @@ export class TelegramBridge {
     ].join('\n');
   }
 
-  private async startPiChat(task:string,commandId:string,write=false,goalDriven=false):Promise<string> {
-    // Preserve the established first-Goal launch path. A second Goal is
-    // always independent, even if the first is PAUSED or its Send is uncertain.
-    // The leased run() loop, not an arbitrary pollOnce caller, schedules the
-    // queued Goal at a safe checkpoint.
-    if(goalDriven&&write&&!/^--repo\s+\S+\s+\S/.test(task.trim()))
-      throw new Error('Every writable Goal requires /goal-build --repo /approved/absolute/path <objective>; no implicit project default');
-    const otherActive=goalDriven&&this.engine.list().some(m=>{
-      if(this.store.getMeta(`pi.autopilot.enabled.${m.id}`)!=='1')return false;
-      const status=this.store.chatBrowserTurn(m.id)?.status;
-      if(status==='reserved'||status==='uncertain')return true;
-      if(m.stopRequested)return false;
-      if(['READY','RUNNING','VERIFYING','NEEDS_RECONCILIATION'].includes(m.state))return true;
-      return m.state==='PAUSED'&&!this.store.events(m.id).some(e=>
-        e.type==='pi.autopilot_finished'&&
-        ['DONE','BLOCKED'].includes(String((e.payload as {action?:unknown}).action)));
-    });
-    const alreadyEnrolled=goalDriven&&this.engine.list().some(m=>
-      m.requestKey===`telegram-goal-${commandId}`);
-    const exactScope=write?(goalDriven?
-      /^--repo\s+(\S+)\s+/.exec(task.trim())?.[1]??'':
-      this.store.getMeta('telegram.build.project')??''):'';
-    const desiredObjective=goalDriven?(write&&task.trim().startsWith('--repo ')?
-      task.trim().replace(/^--repo\s+\S+\s+/,'').trim():task.trim()):'';
-    // The first Goal's legacy direct-launch path must enforce the same
-    // source identity as subsequent queued Goals before Chrome or PI runs.
-    if(goalDriven&&write&&exactScope&&
-      !declaredSourceMatchesScope(desiredObjective,exactScope))
-      throw new Error('Goal names a different source repository; use /goal-build --repo <approved path> <objective> with an exact local repository approval');
-    const repeatedLiveGoal=goalDriven&&this.engine.list().some(m=>{
-      if(m.goal.trim()!==desiredObjective||m.workspace!==exactScope||
-        m.sandbox!==(write?'workspace-write':'read-only'))return false;
-      const goalId=new GoalLedger(this.store).missionGoalId(m.id);
-      return goalId!==null&&['DRAFT','ACTIVE','PAUSED'].includes(
-        new GoalLedger(this.store).getGoal(goalId).status);
-    });
-    if(goalDriven&&(this.activeMission||otherActive||alreadyEnrolled||repeatedLiveGoal||
-      task.trim().startsWith('--repo')))
-      return this.enqueueGoal(task,commandId,write);
-    const goal=task.trim();
-    if(this.activeMission){
-      if(goalDriven)
-        throw new Error('A PI Mission is already active; /goal cannot silently replace it or become an owner note');
-      if(write&&this.store.get(this.activeMission).sandbox!=='workspace-write')
-        throw new Error('A read-only PI Mission is already active; /build cannot silently upgrade it');
-      return this.queuePiOwnerText(goal,commandId);
-    }
-    // A dead foreground process may have left a reserved browser Send or a
-    // PI analysis checkpoint behind. Do not treat a fresh Telegram message
-    // as permission to submit the old task in another new tab.
-    const unresolved=this.engine.list().find(m=>{
-      if(this.store.getMeta(`pi.autopilot.enabled.${m.id}`)!=='1')return false;
-      // A cooperative owner pause cannot make an original browser Send safe
-      // to ignore. Even a paused/stopped Mission still owns its reserved or
-      // uncertain side effect until the original request is settled.
-      const receipt=this.store.chatBrowserTurn(m.id);
-      if(receipt&&['reserved','uncertain'].includes(receipt.status))return true;
-      if(m.stopRequested)return false;
-      if(['RUNNING','VERIFYING','NEEDS_RECONCILIATION','READY'].includes(m.state))
-        return true;
-      if(m.state!=='PAUSED')return false;
-      // A prior PI failure that is durably paused is not an active writer.
-      // Preserve its original error/receipts for explicit recovery, but do
-      // not let it monopolize all future owner-originated ChatGPT requests.
-      // A leftover reserved or uncertain browser Send remains a global gate.
-      if(m.lastError&&this.store.events(m.id).some(
-        event=>event.type==='pi.autopilot_interrupted'))return false;
-      const finished=this.store.events(m.id).some(e=>e.type==='pi.autopilot_finished');
-      return !finished;
-    });
-    if(unresolved&&this.store.chatAdoption(unresolved.id)!==null)
-      if(goalDriven)throw new Error(`Another PI Mission ${unresolved.id} is unresolved; /goal will not create a duplicate Goal or queue its text as another Mission instruction`);
-    if(unresolved&&this.store.chatAdoption(unresolved.id)!==null)
-      return this.queuePiOwnerText(goal,commandId,unresolved.id);
-    if(unresolved?.state==='READY'&&this.store.piChainParent(unresolved.id)){
-      if(goalDriven)throw new Error(`PI successor ${unresolved.id} is already awaiting continuation; /goal cannot create a competing Goal`);
-      if(write&&unresolved.sandbox!=='workspace-write')
-        throw new Error('A read-only PI successor cannot be upgraded by /build');
-      return this.queuePiOwnerText(goal,commandId,unresolved.id);
-    }
-    if(unresolved)
-      throw new Error(`An earlier PI Mission ${unresolved.id} is not terminal (${unresolved.state}); inspect its exact Chrome/SQLite receipt before starting another. No browser Send was submitted.`);
-    if(this.piPlanner instanceof SshPiPlanner &&
-      !this.store.getMeta('telegram.pi.sshHost'))
-      throw new Error('PI coordinator not configured; use the local telegram-pi-config command');
-    const approved=write?this.store.getMeta('telegram.build.project'):null;
-    if(write&&(!approved||approved!==this.store.getMeta('telegram.pi.project')))
-      throw new Error('Write-enabled PI task needs a locally approved project matching the PI route; configure telegram-build-project first');
-    const writeWorkspace=approved?validateRemoteProjectPath(approved):null;
-    browserFreshTaskPrompt(goal,writeWorkspace);
-    const anchor=telegramChatAnchor(this.store);
-    if(!anchor)throw new Error('No approved ChatGPT profile; configure telegram-anchor locally');
-    const {url,browserId}=anchor;
-    if(this.piPlanner instanceof SshPiPlanner)
-      await this.piPlanner.preflight(); // Avoid starting Chrome if PI is already offline.
-    // The anchor is an approved Chrome PROFILE identity, not a permanent tab
-    // lease. A new task always creates its own chat; replace only a missing
-    // launch source with a new owned tab in that same pinned profile.
-    const session=await this.browserConnector(url,{browserId,bootstrapMissingAnchor:true});
-    try{
-      const state=await inspectChatPage(session.page,url);
-      if(!state.composerReady||state.generating)
-        throw new Error('PI ChatGPT anchor tab is not ready');
-      // The external maintenance CLI may request a drain while PI preflight
-      // or Chrome inspection is awaited. Publish the PI-ready intent, exact
-      // browser binding and drain check as one SQLite transaction.
-      const created=this.store.atomic(()=>{
-        if(this.store.channelDrainRequested(this.source))
-          throw new Error('Telegram maintenance drain active; PI task was not created');
-        const requestKey=goalDriven?`telegram-goal-${commandId}`:`telegram-pi-${commandId}`;
-        const m=this.engine.create({
-          goal,acceptance:[writeWorkspace?
-            'Implement the owner goal inside the approved source repository, verify changed files, tests and Git/CI evidence before claiming completion':
-            'Substantively answer the owner request with evidence within read-only permissions'],
-          workspace:writeWorkspace??'',sandbox:writeWorkspace?'workspace-write':'read-only',mode:'supervised',maxTurns:0,
-          requestKey,checks:[],
-        });
-        const linked=this.store.linkChat(m.id,url,m.version).mission;
-        const bound=this.store.bindChatBrowser(m.id,browserId,linked.version).mission;
-        this.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
-        const ownerGoal=goalDriven?new GoalLedger(this.store).createGoal({
-          requestKey,objective:goal,priority:50,
-        }):null;
-        if(ownerGoal)new GoalLedger(this.store).bindPiMission(ownerGoal.id,
-          bound.id,bound.version,`initial-${commandId}`);
-        return {bound,ownerGoal};
-      });
-      const {bound,ownerGoal}=created;
-      const m=bound;
-      if(goalDriven)this.store.setMeta('pi.scheduler.lastMission',m.id);
-      this.activeMission=m.id;
-      this.activeTask=drivePiAutopilot({
-        store:this.store,planner:this.piPlanner,missionId:m.id,
-        revision:bound.version,
-        yieldAtGoalCheckpoint:goalDriven,
-        requestPrefix:goalDriven?`telegram-goal-${commandId}`:`telegram-pi-${commandId}`,
-        page:session.page,url,
-      }).catch(error=>{
-        const message=error instanceof Error?error.message:'unknown PI autopilot error';
-        console.error(`PI autopilot ${m.id}: ${message}`);
-        if(!deferSettledPiNextChromeFailure(this.store,m.id,error))
-          pauseFailedPiPlanning(this.store,m.id,error instanceof Error?error:message);
-      }).finally(async()=>{
-        try{await session.close();}catch{console.error('PI Playwriter session cleanup warning');}
-        finally{this.activeMission=null;this.activeTask=null;}
-      });
-      return [
-        `Task started — ${writeWorkspace?'approved repository work':'research and analysis'}.`,
-        taskTitle(m),
-        ownerGoal?'Long-term goal tracking is enabled.':'Planning and review are automatic.',
-        'Progress will arrive here. Use /status for an update or /pause to stop.',
-        'Send a new message to refine this task. Do not repeat the original request.',
-      ].join('\n');
-    }catch(error){
-      try{await session.close();}catch{console.error('PI source preflight cleanup warning');}
-      throw error;
-    }
+  /** Every Goal is queued durably and started by the single leased Worker;
+   * intake never opens Chrome or waits for another Goal. */
+  private startPiChat(task:string,commandId:string,write=false):string {
+    return this.enqueueGoal(task,commandId,write);
   }
 
   private queuePiOwnerText(text:string,commandId:string,missionId:string|null=this.activeMission):string {
@@ -1332,88 +1101,12 @@ export class TelegramBridge {
     if(!text||text.length>1500)
       throw new Error('PI instruction must contain 1–1500 characters');
     const accepted=this.store.queuePiOwnerDirective(id,commandId,text);
-    // On a verified legacy bounded Goal continuation the Store atomically routes
-    // this note to the child, never to the already-exhausted parent.
-    let actual=id;
-    const visited=new Set<string>();
-    while(this.store.piChainSuccessor(actual)){
-      if(visited.has(actual)||visited.size>=64)
-        throw new Error('PI Mission successor lineage invalid');
-      visited.add(actual);
-      actual=this.store.piChainSuccessor(actual)!;
-    }
     return accepted?'Instruction saved. It will be considered before the next step.\nProgress: /status'
       :'This instruction was already saved; it was not added again.\nProgress: /status';
   }
 
-  /** One fresh, read-only ChatGPT task per owner message, in the Chrome profile
-   * explicitly approved and stored by the LOCAL telegram-anchor command.
-   * No model is allowed to choose a browser or create a second Send. */
-  private async startFreshChat(task:string,commandId:string):Promise<string> {
-    if(this.activeMission)return this.alreadyRunning(task.trim());
-    const goal=task.trim();
-    const prompt=browserFreshTaskPrompt(goal);
-    const anchor=telegramChatAnchor(this.store);
-    if(!anchor)throw new Error('No owner-approved ChatGPT profile; configure telegram-anchor locally first');
-    const {url,browserId}=anchor;
-    const session=await this.browserConnector(url,{browserId,bootstrapMissingAnchor:true});
-    try{
-      const pageState=await inspectChatPage(session.page,url);
-      if(!pageState.composerReady||pageState.generating)
-        throw new Error('Authorized ChatGPT anchor tab is not idle');
-      // This mission is private to the owner and read-only. A duplicate Bot
-      // API update reuses its request key, never repeats a browser Send.
-      const m=this.engine.create({
-        goal,acceptance:['Return a useful, evidence-aware read-only answer to the owner request'],
-        workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:1,
-        requestKey:`telegram-chat-${commandId}`,checks:[],
-      });
-      const linked=this.store.linkChat(m.id,url,m.version).mission;
-      const bound=this.store.bindChatBrowser(m.id,browserId,linked.version).mission;
-      this.activeMission=m.id;
-      this.activeTask=executeBrowserRollover({
-        store:this.store,missionId:m.id,revision:bound.version,
-        requestKey:`telegram-chat-${commandId}-1`,
-        sourcePage:session.page,sourceUrl:url,prompt,
-        telegramBatch:{lastAuthorizedTurn:true},
-      }).then(()=>{}).catch(error=>{
-        console.error(`Fresh ChatGPT mission ${m.id}: ${error instanceof Error?error.message:'unknown error'}`);
-      }).finally(async()=>{
-        try{await session.close();}
-        catch{console.error('Playwriter fresh-chat session cleanup warning');}
-        finally{this.activeMission=null;this.activeTask=null;}
-      });
-      return 'New ChatGPT task started. A result will appear here when finished.\nProgress: /status';
-    }catch(error){
-      try{await session.close();}catch{console.error('Playwriter fresh-chat preflight cleanup warning');}
-      throw error;
-    }
-  }
-
-  /** The native executor is an optional independently installed plugin.
-   * Neither the browser-first path nor this channel selects a vendor. */
-  private async startAgentTask(task:string,commandId:string):Promise<string> {
-    if(this.activeMission)return this.alreadyRunning(task.trim());
-    const goal=task.trim();
-    if(!goal||goal.length>1500)throw new Error('Agent task must contain 1–1500 characters');
-    const workspace=this.store.getMeta('telegram.agent.workspace');
-    if(!workspace)throw new Error('No approved native agent workspace; configure telegram-agent-workspace locally');
-    const preflight=await this.preflight();
-    if(!preflight.ok)throw new Error(preflight.message);
-    const m=this.engine.create({goal,
-      acceptance:['Provide an evidence-based read-only result in the approved workspace'],
-      workspace,sandbox:'read-only',mode:'supervised',maxTurns:1,
-      requestKey:`telegram-agent-${commandId}`,checks:[]});
-    const execution=this.engine.run(m.id,m.version);
-    this.activeMission=m.id;
-    this.activeTask=execution.then(()=>{}).catch(error=>{
-      console.error(`Native agent Mission ${m.id}: ${error instanceof Error?error.message:'unknown error'}`);
-    }).finally(()=>{this.activeMission=null;this.activeTask=null;});
-    return 'Task started. The final result will appear here when verified.\nProgress: /status';
-  }
-
   private alreadyRunning(goal:string):string {
-    const current=this.engine.get(this.activeMission!);
+    const current=this.store.get(this.activeMission!);
     const same=current.goal===goal;
     return [
       same?'This task is already running.':'A task is already running; your new task was not started.',
@@ -1427,19 +1120,27 @@ export class TelegramBridge {
    * User-visible numbers are only view selectors, never persistent IDs. */
   private inboxMissions():Mission[] {
     const ledger=new GoalLedger(this.store);
-    const all=this.engine.list().filter(m=>!this.store.isMissionArchived(m.id)&&(
+    const all=this.store.list().filter(m=>!this.store.isMissionArchived(m.id)&&(
       ['READY','RUNNING','VERIFYING','BLOCKED','NEEDS_RECONCILIATION'].includes(m.state)||
       (ledger.missionGoalId(m.id)!==null&&m.state==='PAUSED')||
       (this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1'&&m.state==='PAUSED'&&
         !m.stopRequested&&(!!m.lastError||
-        (missionTurnsRemaining(m.maxTurns,m.turnCount)&&
-          (!this.store.piPlan(m.id)||['NEXT','HANDOFF'].includes(this.store.piPlan(m.id)!.action)))))||
+        !this.store.piPlan(m.id)||['NEXT','HANDOFF'].includes(this.store.piPlan(m.id)!.action)))||
       this.store.chatBrowserTurn(m.id)?.status==='uncertain'));
     const priority=(m:Mission)=>m.state==='NEEDS_RECONCILIATION'||
       this.store.chatBrowserTurn(m.id)?.status==='uncertain'?0:
       m.state==='RUNNING'||m.state==='VERIFYING'?1:
       m.state==='BLOCKED'?2:m.state==='READY'?3:4;
     return all.sort((a,b)=>priority(a)-priority(b));
+  }
+  /** Goal Missions that can still take an owner note: not finished,
+   * blocked, cancelled or archived. */
+  private openGoalMissions():Mission[] {
+    const ledger=new GoalLedger(this.store);
+    return this.store.list().filter(m=>!this.store.isMissionArchived(m.id)&&
+      this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1'&&ledger.missionGoalId(m.id)!==null&&
+      ['READY','RUNNING','PAUSED'].includes(m.state)&&!m.stopRequested&&
+      !['DONE','BLOCKED'].includes(this.store.piPlan(m.id)?.action??''));
   }
   private taskDisplayState(m:Mission):string {
     if(m.stopRequested)return 'Paused';
@@ -1460,33 +1161,20 @@ export class TelegramBridge {
     const [cmd,explicitId,...words]=clean.split(/\s+/);
     let id=explicitId;
     if(!cmd) return 'Send /help for available commands.';
-    if(cmd==='/help'||cmd==='/start') return id==='advanced'?[
-      'Mission Relay — advanced commands (rarely needed)',
-      '/history [page] — historical audit; /goals [page] and /goal-status <id> — Goals',
-      '/goal-continue <n> <what changed> — continue a blocked Goal after fixing its blocker',
-      '/handoff <id> — open linked ChatGPT context; /new <task> — single-turn chat',
-      '/auto <task> — alias for plain-text task; /agent <task> — installed native executor',
-      '/continue, /resume, /cancel, /instruct — legacy/manual revision-gated actions',
-      'Recovery, approvals and secrets remain local CLI operations.',
-    ].join('\n'):[
-      'Mission Relay — send a task as a normal message.',
-      'The assistant continues until finished or blocked; each Chat allows 8 Relay sends.',
-      '/build <task> — implement in your approved repository',
-      '/goal <objective> — track a persistent goal',
-      '/goal-build --repo /approved/path <objective> — isolated write-enabled Goal',
-      '/list — tasks requiring attention',
-      '/status — current task (or /status 2 after /list)',
-      '/pause — stop the current task',
-      '/pause 2 — stop a particular Goal from /list',
-      'New /goal-build commands are queued independently; plain text updates the current task.',
-      '/help advanced — less common commands',
+    if(cmd==='/help'||cmd==='/start') return [
+      'Mission Relay — give it a goal; it plans, works and reports until done or blocked.',
+      'Plain message — add a note to the Goal in progress, or start a read-only Goal',
+      '/note 2 <text> — add a note to a specific task from /list',
+      '/goal <objective> — start a read-only Goal',
+      '/goal-build --repo /approved/path <objective> — start a Goal that may change that repository',
+      '/goal-continue 2 <what changed> — continue a blocked Goal after you fixed its blocker',
+      '/goals · /goal-status 2 — Goals and their progress',
+      '/list · /status 2 — tasks needing attention and their details',
+      '/pause 2 · /resume 2 — stop or resume a task at a safe point',
+      '/history — all past tasks',
     ].join('\n');
-    if(/^agent\s*[:：]/i.test(clean))
-      return this.startAgentTask(clean.replace(/^agent\s*[:：]\s*/i,''),commandId);
-    if(/^chatgpt\s*[:：]/i.test(clean))
-      return this.startPiChat(clean.replace(/^chatgpt\s*[:：]\s*/i,''),commandId);
-    if(cmd==='/goal')return this.startPiChat(clean.slice(5),commandId,false,true);
-    if(cmd==='/goal-build')return this.startPiChat(clean.slice(11),commandId,true,true);
+    if(cmd==='/goal')return this.startPiChat(clean.slice(5),commandId,false);
+    if(cmd==='/goal-build')return this.startPiChat(clean.slice(11),commandId,true);
     if(cmd==='/goal-continue')return this.continueGoal(id,words.join(' '),commandId);
     if(cmd==='/goals'){
       const ledger=new GoalLedger(this.store),goals=ledger.listGoals();
@@ -1494,7 +1182,7 @@ export class TelegramBridge {
       return goals.length?[
         `Goals: Page ${page}/${pages} (${goals.length} total)`,
         ...goals.slice(start,start+TELEGRAM_MISSION_PAGE_SIZE).map((g,i)=>{
-          const m=this.engine.list().filter(x=>ledger.missionGoalId(x.id)===g.id)
+          const m=this.store.list().filter(x=>ledger.missionGoalId(x.id)===g.id)
             .sort((a,b)=>a.createdAt.localeCompare(b.createdAt)).at(-1);
           const state=g.status==='DONE'?'Completed':
             g.status==='BLOCKED'?'Needs attention':
@@ -1536,11 +1224,18 @@ export class TelegramBridge {
         'Task details: /status',
       ].join('\n');
     }
-    if(cmd==='/auto')return this.startPiChat(clean.slice(5),commandId);
-    if(cmd==='/build')return this.startPiChat(clean.slice(6),commandId,true);
-    if(cmd==='/new')return this.startFreshChat(clean.slice(4),commandId);
-    if(!cmd.startsWith('/'))return this.startPiChat(clean,commandId);
-    if(cmd==='/agent')return this.startAgentTask(clean.slice(6),commandId);
+    if(!cmd.startsWith('/')){
+      const open=this.openGoalMissions();
+      if(open.length===0)return this.startPiChat(clean,commandId,false);
+      if(open.length===1)return this.queuePiOwnerText(clean,commandId,open[0]!.id);
+      throw new Error('Several Goals are in progress. Use /note <number from /list> <text>, or /goal <objective> for a new Goal.');
+    }
+    if(cmd==='/note'){
+      if(!id||!/^[1-9]\d*$/.test(id)||!words.length)throw new Error('Use /note <number from /list> <text>');
+      const target=this.inboxMissions()[Number(id)-1];
+      if(!target)throw new Error('That task is no longer in the active list. Send /list to refresh.');
+      return this.queuePiOwnerText(clean.replace(/^\/note\s+\S+\s+/,''),commandId,target.id);
+    }
     if(cmd==='/list') {
       const all=this.inboxMissions();
       const {page,pages,start}=missionPage(id,words,all.length);
@@ -1551,26 +1246,26 @@ export class TelegramBridge {
         'No active tasks or unresolved requests. History: /history';
     }
     if(cmd==='/history'){
-      const all=this.engine.list();
+      const all=this.store.list();
       const {page,pages,start}=missionPage(id,words,all.length);
       return all.length?[`History: Page ${page}/${pages} (${all.length} tasks)`,
         ...all.slice(start,start+TELEGRAM_MISSION_PAGE_SIZE).map((m,i)=>
           `${start+i+1}. ${taskTitle(m,84)} — ${taskState(m)} (round ${m.turnCount})`)
       ].join('\n'):'No task history yet.';
     }
-    if(!['/status','/handoff','/pause','/resume','/cancel','/instruct','/continue'].includes(cmd))
-      throw new Error('Unknown command. Send /help. Native agents use /agent, not a vendor-specific command.');
+    if(!['/status','/pause','/resume'].includes(cmd))
+      throw new Error('Unknown command. Send /help.');
     if(!id&&cmd==='/status'){
-    id=this.activeMission??this.engine.list().find(m=>m.state==='RUNNING'&&
+    id=this.activeMission??this.store.list().find(m=>m.state==='RUNNING'&&
       !this.store.isMissionArchived(m.id))?.id??this.inboxMissions()[0]?.id??
-        this.engine.list().find(m=>!this.store.isMissionArchived(m.id))?.id;
-      if(!id)return 'No tasks yet. Send a normal message or /build <task> to begin.';
+        this.store.list().find(m=>!this.store.isMissionArchived(m.id))?.id;
+      if(!id)return 'No tasks yet. Send a normal message or /goal <objective> to begin.';
     }
     if(!id&&cmd==='/pause'){
       const active=this.activeMission;
       if(active)id=active;
       else{
-        const eligible=this.engine.list().filter(m=>!m.stopRequested&&
+        const eligible=this.store.list().filter(m=>!m.stopRequested&&
           ['RUNNING','READY','VERIFYING'].includes(m.state));
         if(eligible.length!==1)
           throw new Error('Cannot identify one active task. Use /list; advanced mode supports explicit references.');
@@ -1579,14 +1274,14 @@ export class TelegramBridge {
     }
     // Numbers shown in /list are read-only selectors; UUIDs remain supported
     // for operator recovery but are never needed in routine Telegram output.
-    if(['/status','/pause','/resume','/instruct'].includes(cmd)&&id&&/^[1-9]\d*$/.test(id)){
+    if(['/status','/pause','/resume'].includes(cmd)&&id&&/^[1-9]\d*$/.test(id)){
       const index=Number(id),all=this.inboxMissions();
       if(!Number.isSafeInteger(index)||index>all.length)
         throw new Error('That task is no longer in the active list. Send /list to refresh.');
       id=all[index-1]!.id;
     }
     if(!id || !/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Provide a complete mission UUID');
-    const m=this.engine.get(id);
+    const m=this.store.get(id);
     if(cmd==='/status') {
       const piLive=this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'
         ?this.store.piHealth().missions.find(item=>item.id===id):undefined;
@@ -1607,110 +1302,20 @@ export class TelegramBridge {
         `Rounds completed: ${m.turnCount}`,
         ...(piLive?[`Current Chat: ${piLive.currentChatObservedTurns} of ${MAX_RELAY_CHAT_TURNS} messages`]:[]),
         ...(phase?[phase]:[]),
-        ...(goal?[`Work packages reviewed as passed: ${items.filter(x=>x.status==='PASSED').length}/${items.length}`,
-          'Final independent acceptance is separate from model progress.']:[]),
+        ...(goal?[`Work packages reviewed as passed: ${items.filter(x=>x.status==='PASSED').length}/${items.length}`]:[]),
         ...(m.lastError?[`Issue: ${compactTelegramText(m.lastError,170)}`]:[]),
         ...(m.lastSummary?[`Latest result: ${compactTelegramText(m.lastSummary,460)}`]:[]),
         'Commands: /list · /pause · /help'].join('\n');
     }
-    if(cmd==='/handoff') {
-      if(words.length) throw new Error('Use /handoff <mission-id>');
-      const url=this.store.chatLink(id);
-      if(!url) throw new Error('No ChatGPT conversation linked; use the local link-chat CLI first');
-      return renderChatGPTHandoff(m,url);
-    }
-    // A safety stop must not fail because executor progress increments the revision.
+    if(words.length)throw new Error(`Use ${cmd} or ${cmd} <number from /list>`);
+    if(this.store.getMeta(`pi.autopilot.enabled.${id}`)!=='1')
+      throw new Error('This task is not managed by Mission Relay PI');
+    // A safety stop never needs a revision: progress may change it meanwhile.
     if(cmd==='/pause') {
-      if(words.length) throw new Error('Use /pause <mission-id> without a revision');
-      if(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'){
-        this.store.pausePiChain(id);
-        return 'PI chain pause recorded. No further browser Send will be submitted after any in-flight response is reconciled.';
-      }
-      this.engine.pause(id);
-      return 'Paused — no further work will start. Any request already sent must finish or be verified first.';
+      this.store.pauseGoalMission(id);
+      return 'Paused. Nothing new will be sent; a request already in ChatGPT finishes first.';
     }
-    if(cmd==='/resume'&&this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'&&
-      !words.length){
-      this.store.resumePiChain(id);
-      return 'Goal resumed at its original settled checkpoint; no previous Send was replayed. Use /list.';
-    }
-    const revision=words.shift();
-    if(!revision || !/^v(0|[1-9]\d*)$/.test(revision) || !Number.isSafeInteger(Number(revision.slice(1))))
-      throw new Error('Expected v<revision> from a fresh /status command (for example v3)');
-    const expectedVersion=Number(revision.slice(1));
-    if(m.version!==expectedVersion) throw new Error(`State conflict: expected v${expectedVersion}, current v${m.version}; run /status again`);
-    if(cmd!=='/instruct' && words.length) throw new Error('Unexpected command arguments');
-    if(cmd==='/resume') {
-      if(m.sandbox!=='read-only') throw new Error('Remote resume of workspace-write missions is disabled; use the local CLI');
-      if(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1')
-        throw new Error('PI automated recovery after restart requires exact browser receipt reconciliation; do not use native resume');
-      return `Mission is now ${this.engine.resume(id,expectedVersion).state}; use /status then /continue to run.`;
-    }
-    if(cmd==='/cancel') return `Mission is now ${this.engine.cancel(id,expectedVersion).state}`;
-    if(cmd==='/instruct') {
-      const instruction=words.join(' ').trim();
-      if(!instruction || instruction.length>1500) throw new Error('Instruction must contain 1–1500 characters');
-      if(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1'){
-        if(id!==this.activeMission&&this.store.chatAdoption(id)===null&&
-          !(m.state==='READY'&&this.store.piChainParent(id)))
-          throw new Error('PI Mission is not currently active; no instruction was queued');
-        return this.queuePiOwnerText(instruction,commandId,id);
-      }
-      if(m.sandbox!=='read-only') throw new Error('Remote instructions for native workspace-write missions are disabled; use the local CLI');
-      return `Instruction saved (state ${this.engine.instruct(id,instruction,expectedVersion).state}).`;
-    }
-    if(cmd==='/continue') {
-      if(this.store.getMeta(`pi.autopilot.enabled.${id}`)==='1')
-        throw new Error('PI-owned Mission cannot be continued through the legacy ChatGPT driver; inspect PI checkpoint first');
-      if(this.activeMission) throw new Error(`Mission ${this.activeMission} already running in this bridge`);
-      if(m.sandbox!=='read-only') throw new Error('Remote execution of workspace-write missions is disabled; use the local CLI');
-      if(!['READY','PAUSED'].includes(m.state)) throw new Error(`Mission ${id} is ${m.state}; inspect/reconcile before continuing`);
-      const linkedUrl=this.store.chatLink(id);
-      if(linkedUrl) {
-        const bound=this.store.chatBrowserBinding(id);
-        if(!bound) throw new Error('ChatGPT Mission has no pinned Chrome profile; bind one locally with browser-list and browser-bind before remote continuation');
-        const session=await this.browserConnector(linkedUrl,{browserId:bound});
-        try {
-          const pageState=await inspectChatPage(session.page,linkedUrl);
-          if(!pageState.composerReady||pageState.generating)
-            throw new Error('ChatGPT target tab is not ready for a new message');
-          if(this.store.get(id).version!==expectedVersion) throw new Error('Mission revision changed during browser preflight');
-          this.activeMission=id;
-          this.activeTask=driveChatConversation({
-            store:this.store,missionId:id,revision:expectedVersion,
-            requestPrefix:`telegram-${commandId}`,turns:3,page:session.page,url:linkedUrl,
-            notificationMode:'telegram-final',
-          }).then(()=>{}).catch(error=>{
-            console.error(`ChatGPT browser mission ${id}: ${error instanceof Error?error.message:'unknown error'}`);
-          }).finally(async()=>{
-            try{await session.close();}
-            catch(error){console.error(`Playwriter session cleanup: ${error instanceof Error?error.message:'unknown error'}`);}
-            finally{this.activeMission=null;this.activeTask=null;}
-          });
-          return `Mission ${id} accepted for a bounded ChatGPT browser attempt (up to 3 turns). Check /status for observed results. This is not a completion confirmation.`;
-        } catch(error) {
-          // Relay loss during cleanup must not hide the original failed preflight.
-          try{await session.close();}
-          catch{console.error('Playwriter session cleanup warning: relay connection unavailable');}
-          throw error;
-        }
-      }
-      const preflight=await this.preflight(id);
-      if(!preflight.ok) throw new Error(preflight.message);
-      // Preflight is async; reject commands made stale by another local operator.
-      if(this.engine.get(id).version!==expectedVersion) throw new Error('Mission revision changed during preflight; run /status again');
-      const readyVersion=m.state==='PAUSED' ? this.engine.resume(id,expectedVersion).version : expectedVersion;
-      // This claim throws synchronously if a local command won the revision race.
-      // Do not send an acceptance reply until the mission is actually claimed.
-      const task=this.engine.run(id,readyVersion);
-      this.activeMission=id;
-      // The durable event notification is the sole terminal-status signal.
-      // Avoid sending a second, non-durable COMPLETED message from this promise.
-      this.activeTask=task.then(()=>{}).catch(err=>{
-        console.error(`Mission ${id} controller error: ${err instanceof Error?err.message:'unknown error'}`);
-      }).finally(()=>{this.activeMission=null;this.activeTask=null;});
-      return `Mission ${id} accepted for execution. This is not a completion confirmation.`;
-    }
-    throw new Error('Unknown command. Send /help.');
+    this.store.resumeGoalMission(id);
+    return 'Resumed at its last settled step; nothing earlier is sent again. Progress: /list';
   }
 }
