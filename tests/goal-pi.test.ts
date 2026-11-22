@@ -534,18 +534,37 @@ test('a claimed permanent blocker without an external cause and release conditio
   }finally{f.close();}
 });
 
-test('a reported all-packages PASS still cannot declare owner Goal DONE',async()=>{
+test('PI PASS of the final package completes the Goal; afterwards no Goal write or Send is possible',async()=>{
   const f=fixture();
   try{
     await review(f,1,'Plan',planner());
-    await review(f,2,'Foundation done',planner());
-    const pending=await review(f,3,'Controller done',planner());
-    assert.equal(pending.action,'BLOCKED');
-    assert.match(pending.summary,/independent release acceptance/i);
-    assert.equal(f.ledger.graph(f.goal.id).items.every(x=>x.status==='PASSED'),true);
-    assert.equal(f.ledger.getGoal(f.goal.id).status,'ACTIVE');
-    assert.notEqual(f.store.piPlan(f.mission.id)?.action,'DONE');
+    const finalFlags:boolean[]=[];
+    const pi=planner({onReview:x=>finalFlags.push(Boolean(x.finalWorkItem))});
+    await review(f,2,'Foundation done',pi);
+    const done=await review(f,3,'Controller done',pi);
+    assert.deepEqual(finalFlags,[false,true],'PI is told when it reviews the final package');
+    assert.equal(done.action,'DONE');
+    assert.match(done.summary,/Goal complete: all 2 planned work packages passed/);
+    assert.equal(f.ledger.getGoal(f.goal.id).status,'DONE');
+    assert.match(f.ledger.goalCompletion(f.goal.id)?.summary??'',/Final review: PI reviewed/);
+    assert.equal(f.store.piPlan(f.mission.id)?.action,'DONE');
+    assert.ok(f.ledger.graph(f.goal.id).events.some(e=>e.type==='goal.completed'));
+    assert.throws(()=>f.ledger.completeGoal(f.goal.id,f.mission.id,sha('x'),'again'),/already completed/);
+    assert.throws(()=>f.ledger.setGoalStatus(f.goal.id,f.ledger.getGoal(f.goal.id).version,
+      'ACTIVE','reopen-done'),/Completed Goal is immutable|did not change/);
+    const m=f.store.get(f.mission.id);
+    assert.throws(()=>f.store.reserveChatBrowserTurn(f.mission.id,m.version,'after-done',sha('p')),
+      /Goal completed/);
   }finally{f.close();}
+});
+
+test('the final-package review prompt states that PASS completes the Goal and REPLAN adds missing work',()=>{
+  const graphItem={id:'i',goalId:'g',planId:'p',key:'last',title:'Last',description:'',priority:1,
+    status:'IN_PROGRESS' as const,evidenceRefs:[],version:1,createdAt:'',updatedAt:''};
+  const base={objective:'Ship it',ownerAcceptance:['Works'],browserAnswer:'done',
+    responseSha256:sha('done'),ownerDirectives:[],planSummary:'p',workItem:graphItem,acceptance:['ok']};
+  assert.match(goalReviewPrompt({...base,finalWorkItem:true}),/PASS here COMPLETES the owner Goal[\s\S]*choose REPLAN/);
+  assert.doesNotMatch(goalReviewPrompt(base),/COMPLETES the owner Goal/);
 });
 
 test('a commitPiPlan conflict rolls back ALL Goal status and PI work review writes',async()=>{

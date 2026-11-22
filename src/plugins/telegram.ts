@@ -12,13 +12,9 @@ import {connectChatPage,inspectChatPage,lastVisibleUserPromptSha256,listConnecte
   nativePrefilledDraftSha256,clickNativePrefilledSendOnce,
   type BrowserSession} from './chatgpt-browser.js';
 import {MAX_CONVERSATION_LENGTH_ERROR} from '../core/chat-limits.js';
-import {adoptConnectedConversation} from '../core/chat-adoption.js';
-import {watchedBrowser,nextBrowserWatchCandidate,acknowledgeBrowserWatchCandidate,
-  orderedBrowserWatchCandidates,recordBrowserWatchAttempt,
-  type ConnectedChatCandidate} from '../core/browser-watch.js';
+type ConnectedChatCandidate=Awaited<ReturnType<typeof listConnectedChatCandidates>>[number];
 import {driveChatConversation,executeBrowserRollover,browserFreshTaskPrompt,browserGoalPlanningPrompt} from '../core/browser-controller.js';
 import {withReadOnlyDeadline} from '../core/read-only-deadline.js';
-import {consumeScopedPiConnectionDrill,attestScopedPiConnectionClosed} from '../core/pi-connection-drill.js';
 import {drivePiAutopilot,pauseFailedPiPlanning,
   deferTransientPiBrowserRecovery} from '../core/pi-autopilot.js';
 import {SshPiPlanner,validateRemoteProjectPath,type PiPlanner} from '../core/pi-planner.js';
@@ -26,7 +22,6 @@ import {GoalLedger} from '../core/goal-store.js';
 import {goalContinuationAcceptance} from '../core/goal-prompts.js';
 import {hasIsolatedRepositoryGrant,declaredSourceMatchesScope} from '../core/build-scopes.js';
 import {telegramChatAnchor} from '../core/chat-anchor.js';
-import {GoalReleaseGate} from '../core/goal-release.js';
 import type {RuntimeProvenance} from '../core/runtime-provenance.js';
 import type {Mission,MissionEvent} from '../core/types.js';
 import {missionRelayMarker} from '../core/mission-marker.js';
@@ -329,7 +324,6 @@ export function formatBrowserResultNotification(m:Mission,event:MissionEvent):st
 export class TelegramBridge {
   private activeMission:string|null=null;
   private activeTask:Promise<void>|null=null;
-  private lastBrowserWatchAt=0;
   private lastArchiveSweepAt=0;
   /** An idle, already-observed PI checkpoint may outlive a Chrome restart.
    * A connector/read-only DOM outage must not poison its durable NEXT plan;
@@ -460,16 +454,6 @@ export class TelegramBridge {
       await this.recoverNativePrefilledReplyOnce();
     if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
       await this.recoverObservedPiCheckpoint();
-    if(!this.activeTask&&!this.store.channelDrainRequested(this.source)&&
-      watchedBrowser(this.store)&&Date.now()-this.lastBrowserWatchAt>=15_000){
-      this.lastBrowserWatchAt=Date.now();
-      try{await this.scanBrowserWatchOnce();}
-      catch{
-        console.error('Browser watch scan unavailable; Telegram controller stays online');
-      }
-      if(!this.activeTask&&!this.store.channelDrainRequested(this.source))
-        await this.recoverObservedPiCheckpoint();
-    }
   }
 
   async run(signal?:AbortSignal):Promise<void> {
@@ -825,60 +809,6 @@ export class TelegramBridge {
     }
   }
 
-  /** One candidate per scan; existing Telegram foreground lease remains the
-   * only PI/browser writer. A changed existing human chat is merely observed
-   * until its stable answer is independently checked. No extra daemon. */
-  async scanBrowserWatchOnce():Promise<string|null> {
-    if(this.activeMission||this.activeTask)return null;
-    // A new-tab Send may have completed while the observer lost its URL.
-    // Do not adopt that orphan as a separate read-only human conversation:
-    // preserve its original write scope and request identity for recovery.
-    if(this.engine.list().some(m=>m.state==='NEEDS_RECONCILIATION'&&
-      this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1'&&
-      this.store.chatBrowserTurn(m.id)?.status==='uncertain'))return null;
-    const browserId=watchedBrowser(this.store);
-    if(!browserId)return null;
-    const inventory=await this.watchCandidates(browserId);
-    const ordered=orderedBrowserWatchCandidates(this.store,browserId,inventory);
-    let candidate=nextBrowserWatchCandidate(this.store,browserId,ordered);
-    // An already linked conversation is never treated as a new Mission just
-    // because the user or another agent has continued its visible history.
-    // Skip all already-linked candidates in this inventory, so one frequently
-    // updated old chat cannot starve a newly opened eligible conversation.
-    while(candidate){
-      const item=candidate;
-      if(!this.store.list().some(m=>this.store.chatLink(m.id)===item.url))break;
-      acknowledgeBrowserWatchCandidate(this.store,browserId,item);
-      candidate=nextBrowserWatchCandidate(this.store,browserId,ordered);
-    }
-    if(!candidate)return null;
-    recordBrowserWatchAttempt(this.store,browserId,candidate);
-    if(this.piPlanner instanceof SshPiPlanner)await this.piPlanner.preflight();
-    const session=await this.browserConnector(candidate.url,{browserId});
-    try {
-      const adopted=await adoptConnectedConversation(
-        this.store,session.page,candidate.url,browserId,{
-          piEnabled:true,
-          stillAuthorized:()=>watchedBrowser(this.store)===browserId,
-          // This runs in the same SQL transaction as Mission creation.
-          // A crash or concurrent watch revocation cannot leave a newly
-          // adopted Mission without PI enablement and watch attribution.
-          onAdopted:missionId=>{
-            this.store.setMeta(`browser.watch.mission.${missionId}`,browserId);
-            acknowledgeBrowserWatchCandidate(this.store,browserId,candidate);
-          },
-        });
-      return adopted.missionId;
-    }catch(error) {
-      // A partial or generating answer should be re-evaluated on the next
-      // scan, not marked seen and permanently lost.
-      if(!/Cannot adopt|changed before adoption|already belongs/.test(
-        error instanceof Error?error.message:''))throw error;
-      return null;
-    }finally {
-      try{await session.close();}catch{console.error('Browser watch session cleanup warning');}
-    }
-  }
 
   private async recoverObservedPiCheckpoint():Promise<void> {
     if(this.activeMission||this.activeTask||this.store.channelDrainRequested(this.source))return;
@@ -959,17 +889,6 @@ export class TelegramBridge {
           browserId,...(firstGoalSend?{bootstrapMissingAnchor:true}:{})}),
           30_000,
           lateSession=>lateSession.close());
-        // One explicitly armed drill closes ONLY this already-pinned recovery
-        // client session, not Chrome, the target tab or another controller.
-        // The marker was durably consumed with a TTL before the failure.
-        if(consumeScopedPiConnectionDrill(this.store,m.id)){
-          let clientClosed=false;
-          try{await session.close();clientClosed=true;}
-          catch{/* An unverified close is not attested as successful. */}
-          session=undefined;
-          if(clientClosed)attestScopedPiConnectionClosed(this.store,m.id);
-          throw new Error('Playwriter relay reconnecting: scoped PI recovery connection drill');
-        }
         snapshot=await withReadOnlyDeadline(inspectChatPage(session.page,url));
         lastUserHash=await withReadOnlyDeadline(lastVisibleUserPromptSha256(session.page));
       }catch(error){
@@ -1603,9 +1522,9 @@ export class TelegramBridge {
       const items=approved?graph.items.filter(x=>x.planId===approved.id):[];
       const active=items.find(x=>['IN_PROGRESS','REVIEW'].includes(x.status));
       const verified=items.filter(x=>x.status==='PASSED').length;
-      const release=new GoalReleaseGate(this.store).report(id);
+      const done=new GoalLedger(this.store).goalCompletion(id);
       return [
-        `Goal status: ${graph.goal.status==='DONE'&&release.complete?'All Done':graph.goal.status==='BLOCKED'?'Needs attention':'In progress'}`,
+        `Goal status: ${done?'All Done':graph.goal.status==='BLOCKED'?'Needs attention':'In progress'}`,
         compactTelegramText(graph.goal.objective,210),
         `Work packages: ${verified} of ${items.length} reviewed as passed`,
         ...(active?[`Current: ${compactTelegramText(active.title,100)}`]:[]),
@@ -1613,8 +1532,7 @@ export class TelegramBridge {
           ...items.filter(x=>x.status==='BLOCKED').slice(0,3)
             .map(x=>`Blocked: ${compactTelegramText(x.title,100)}`),
           `After fixing it: /goal-continue ${new GoalLedger(this.store).listGoals().findIndex(g=>g.id===id)+1} <what changed>`]:[]),
-        release.complete?'Independent release checks: complete':
-          'Independent release checks: pending (a model review is not final acceptance)',
+        ...(done?[`Result: ${compactTelegramText(done.summary,300)}`]:[]),
         'Task details: /status',
       ].join('\n');
     }

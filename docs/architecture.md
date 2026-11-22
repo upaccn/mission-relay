@@ -11,131 +11,15 @@ Mission Relay has **one state machine**, not multiple vendor-specific execution 
 | ChatGPT browser execution | `browser-controller.ts`, `src/plugins/chatgpt-browser.ts` | Bound Playwriter Chrome and one reserved Send, never arbitrary tab control |
 | Owner channel | `src/plugins/telegram.ts` | Authenticated Telegram inbox, current single-Worker lease and bounded notifications |
 | Optional native code execution | `executor-plugins.ts`, `plugins.ts`, `checks.ts` | Explicit trusted JS plugin and operator-chosen deterministic checks; not a sandbox |
-| Independent Goal release | `goal-release*.ts`, `request-ledger.ts`, `pi-evidence.ts` | Source/CI/prod evidence checks, independent of model success claims |
+| Audit and software release | `request-ledger.ts`, `pi-evidence.ts`, `software-release.ts`, `github-ci.ts` | Read-only request/PI custody audits and exact-SHA three-platform CI qualification |
 
 The production import graph has no confirmed orphan modules. The native PluginRegistry validates manifests while executor-plugins explicitly loads trusted local modules; these are different layers, not redundant providers. Browser, native and PI execution remain distinct. The compiler rejects unused locals and parameters. Operator-specific historical milestone narratives are not part of the public v1.0 source history. An npm production-dependency audit found seven moderate advisories transitively linked to pinned Playwriter 0.9.0 (none high/critical). A suggested downgrade to 0.5.0 is not a compatible security fix without separate extension, Chrome-target, and recovery tests. Do not change the pinned browser integration merely to silence a package advisory.
-
-## Goal release gate (WP5)
-
-**WP6.1 GitHub-native release proof:** When the existing GMK SSH identity
-cannot read operator-managed host's private repository, the already-installed `gh` CLI
-uses the GMK checkout's original GitHub `origin` only for repository
-identity; the current GitHub `main` SHA and exact Actions run are fetched
-fresh from GitHub with a minimal subprocess environment. The verifier
-checks the run belongs to the exact repository and revision and that the
-mandatory `npm ci`, `privacy-check`, `check`, `test`, and `build`
-steps all succeeded. The four source-script Goal gates may be satisfied
-by their independently observed CI outcomes, but a green workflow does
-not grant the separate Chrome, Mission 32→successor, tab retirement,
-maintenance, GMK deployment or owner-business Goal criteria. The
-existing operator-managed host SSH fixed-command probe remains opt-in, never escalates
-permissions or changes another service. Source-only verification is not
-a production release.
-
-**WP6 cross-host implementation:** The release CLI is hosted beside the
-private Goal SQLite and real Chrome on Windows. `telegram.build.project`
-is the **approved remote operator-managed host path**, not a Windows-local directory. To
-avoid duplicating source checkouts, the release SHA/CI/check adapters use
-the existing validated `telegram.pi.sshHost` and exact remote project,
-with fixed, bounded SSH commands. Clean `main`, remote HEAD and
-`origin/main` must match before and after verification. SSH permission
-errors are blockers; no automatic sudo/ACL/group change is authorized.
-These tool readbacks must not be inferred from the old GMK checkout or
-from a PI work-item report. An in-flight production Send still forbids
-the maintenance drain and any GMK runtime promotion.
-
-The Goal ledger uses additive SQLite schema **v5**. `GoalReleaseGate` is an
-evidence verifier, not a PI dispatcher. It creates an exact Git SHA release
-target only after the approved plan's Work Items and their criteria all have
-PI-*reported* PASS; that report never counts as independent acceptance.
-Eleven current-Goal release gates cover check, privacy, full tests, build,
-Ubuntu/macOS/Windows CI, live 8→9 rollover (stable legacy gate ID `chrome-10-to-11`), maintenance recovery,
-tab retirement and GMK readback. Every work criterion adds its own independent
-evidence requirement. A verified receipt records source, original proof
-digest, reference, target SHA, observed time and bounded freshness. Every
-target change invalidates prior current receipts while retaining historical
-append-only audit events. Changed Goal/plan/work versions, missing/expired
-evidence, source/receipt audit mismatch, failed verification, or wrong main
-SHA deny DONE. Completion is an immutable row with an append-only audit
-event, exposed as logical Goal `DONE`; the old v4 `goals.status` CHECK
-constraint and historical rows remain untouched.
-
-Only an independent probe supplied by the trusted controller can record
-verification; there is no free-form `mark PASS` endpoint. First-party
-local command probes run only fixed npm scripts against a clean, currently
-checked-out `main` matching `origin/main`, keep original run logs outside
-the repo with SHA-256 references, and directly inspect GitHub Actions
-exact-head, per-platform step outcomes via `gh`. Local CLI mutation commands
-require the existing locally approved build project and do not run any
-ChatGPT Send, Retry, Chrome action or GMK update. The Chrome/GMK/criteria
-probes are deliberately restricted to independently observed evidence. The
-first-party `gmk-production-readback` adapter now checks the installed
-Worker/compiled manifest, original enrolled Scheduled Task, SQLite and pinned
-Chrome read-only, but it remains **unverified in production** until a safe
-exact-SHA checkpoint. The first-party Chrome 8→9 and same-Mission Relay tab-retirement probes
-capture two stable, hashed physical Target/Chat transcripts **before** old-tab
-cleanup, then compare the enabled physical Target inventory before and after
-closure, without reading unrelated tab contents. Original witnesses are
-private, write-once, content-addressed, source-SHA-bound and captured
-within a bounded window of the original event; historical witnesses do not
-expire after 24 hours, but newly issued Release Gate receipts still do.
-The original hashes must later reconcile with requests and independent
-PI decisions. The release
-CLI verifies them only under the compiled, clean runtime's exact SHA.
-Historical event indexes alone never substitute for a captured physical
-witness, and a failed close or absent witness never becomes PASS. The tab
-release check also refuses any additional Goal-bound logical retirement
-without its own independent physical witness. The separate first-party
-**Legacy 32→successor** probe preserves a stable physical snapshot of both the
-parent's final reply and the child's first fully observed reply before either
-tab can be discarded. It validates the complete 32/32 parent ledger, at most
-ten observed Sends per parent Chat, one reciprocal zero-turn successor, exact Goal/work
-binding, the child's first reserved prompt, different Chat URLs and Chrome
-Targets, and the first matching child PI decision. Witnesses are private,
-content-addressed and source-SHA-bound; a missing original physical Target,
-recovered logical rollover without a new physical migration, duplicate
-successor or changed answer fails closed. In Goal-bound successor rollover
-the parent tab is retained instead of creating an unverifiable cross-Mission
-tab-retirement claim; unbound legacy cleanup retains its previous behavior.
-These probes have **synthetic test coverage only** until deployed and
-exercised on an owner-approved *nonhistorical* real Chrome Mission.
-Existing historical evidence cannot retroactively become live Chrome proof.
-The maintenance-resume probe now checks the owner-enrolled Windows
-Upgrade journal SHA-256 chain, actual drained SQLite backup, integrity,
-original event prefix, Mission preservation, source/compiled Worker,
-restart PID, and fresh physical Chrome/PI custody. Missing evidence,
-failed restart or rollback is never production PASS.
-The backup-to-live comparison also checks each preexisting Mission's
-immutable scope/identity, and requires errored or owner-stopped PAUSED
-Missions and completed/cancelled Missions to retain their state, turn count,
-stop flag, error and exact original browser receipt. New, unprotected work
-may advance after the upgrade; its mutable turn counters are not treated
-as a historical freeze. All checks are read-only and use the original
-consistent SQLite snapshot, never a reconstructed or replayed request.
-
-Independent-work requires an operator-reviewed PRIVATE mapping of the
-exact Goal acceptance criterion to a tracked executable test, original
-reviewed browser evidence and a PI decision. On the single approved operator-managed host
-main checkout it runs only the mapped test file and requires one uniquely
-passing named TAP assertion. Raw logs and exact-SHA receipts stay private.
-Green CI, a model PASS or a generic test unrelated to the criterion
-does not automatically establish a business outcome. Every unmapped
-criterion remains PENDING; this is not a general semantic oracle.
-The gate stays fail-closed without every independent receipt.
-Never confuse a green synthetic test, stored receipt, or source-only DONE
-algorithm with an actual software release and independent business acceptance.
 
 ## System of record
 
 A **Mission Provider** is the only authority for a given mission. The native provider stores mission state in SQLite through Node's bundled `node:sqlite` API (Node 24+); future external providers (e.g., operator-managed host) remain authoritative for their own missions. Never copy editable states into a competing database.
 
 The native engine is not an Agent Runtime. It orchestrates bounded turns through an optional **Executor plugin**, with no required coding-agent SDK or model vendor. Agent credentials and actual sandbox enforcement stay with the installed executor, not Mission Relay.
-
-An operator may register or adopt a ChatGPT conversation against a native Mission. This link and audit event never reassign ChatGPT's own state authority. Linked Missions refuse native executor dispatch, but an explicit **Playwriter browser turn** can reserve a local Mission turn, submit through the exact authorized Chrome tab, observe a reply, and pause for human verification. Consequential ambiguity becomes `NEEDS_RECONCILIATION` with no automatic replay. Chrome page text and model-provided flow markers are untrusted; browser observation alone cannot mark `COMPLETED`.
-
-An existing human-started conversation can instead be *adopted*: the latest visible user prompt and answer are read twice to establish a stable initial SHA-256 checkpoint, recorded as `chatgpt.browser_adopted` with **zero Relay sends and zero credited turns**. PI can decide DONE/BLOCKED immediately, or authorize the first Relay Send in the **same** existing tab. There must be exactly one approved Chrome profile, an exact canonical chat URL, no generation, and no other active Mission owning the URL. This does not authorize a generic page click or a new provider.
-
-Playwriter's connected-tab listing is **not evidence of Chrome tab-group membership**. This is no longer a requirement: a locally enabled, profile-pinned browser watcher baselines already-connected ChatGPT dialogs and detects subsequent new/changed human ChatGPT requests, independent of any tag/group. It reuses the single Telegram controller process and existing PI/SQLite infrastructure, and never scans DOM content outside recognized canonical ChatGPT conversation URLs. Only Playwriter-enabled tabs are visible, not every Chrome tab. The watcher is opt-in, not enabled by installation. On the owner host it has been explicitly enabled and a distinct *post-fix* real Chrome → PI → Telegram two-stage Send acceptance passed, including exact request/reply hashes and no-replay controller restart. Neither deployment nor a model flow marker is proof of unattended arbitrary browser or connector work.
 
 ## State and safety
 
@@ -198,8 +82,7 @@ inference project no longer determines the repository of every Goal. Each
 Mission's original `workspace` and `sandbox` are checked again before
 every Send, including after revocation and restart. This controls the
 controller's authorization and work-package prompt scope, **not** the OS
-permissions of ChatGPT's independently connected tools. PI results and
-synthetic A→B→A→B tests do not establish real deployed Goal DONE.
+permissions of ChatGPT's independently connected tools.
 
 ### Goal work Prompt isolation (WP3)
 
@@ -226,7 +109,7 @@ independent root for the **same** Goal. Preexisting Missions are not
 backfilled, and finite-limit historical successors keep their inherited
 association without any request replay.
 
-After the first **fully observed** browser answer, the existing `reviewPiRound` dispatches a Goal-bound Mission to the project's PI planning/review methods. PI proposes a bounded dependency-DAG plan, which is validated and persisted; the plan is approved before a work item may leave PENDING. The highest-priority eligible item is selected, and its work directive becomes the `NEXT` instruction under the original PI `commitPiPlan` and browser Controller. Subsequent answers are reviewed as `PASS/PARTIAL/FAIL/REPLAN/BLOCKED`: PASS records a *PI-reported* acceptance and chooses the next eligible item; PARTIAL/FAIL keep the same item in scope; REPLAN supersedes the prior plan without discarding history, and carries any new item whose key or exact acceptance obligation already PASSED in this Goal forward as PASSED (in dependency order, with its original evidence references) rather than scheduling it again; BLOCKED retains evidence and uses the existing PI terminal action. When no work remains, the existing PI action is BLOCKED pending independent release verification, not Goal DONE. After the owner fixes an external blocker, `/goal-continue` binds a fresh Mission to the same Goal (old Mission untouched); its first read-only discovery turn and the next PI plan reuse every PASSED item. A PI-requested context rollover maps to HANDOFF, obeying the eight-Send-per-Chat limit; old finite-limit Missions and original append-only browser history remain intact.
+After the first **fully observed** browser answer, the existing `reviewPiRound` dispatches a Goal-bound Mission to the project's PI planning/review methods. PI proposes a bounded dependency-DAG plan, which is validated and persisted; the plan is approved before a work item may leave PENDING. The highest-priority eligible item is selected, and its work directive becomes the `NEXT` instruction under the original PI `commitPiPlan` and browser Controller. Subsequent answers are reviewed as `PASS/PARTIAL/FAIL/REPLAN/BLOCKED`: PASS records a *PI-reported* acceptance and chooses the next eligible item; PARTIAL/FAIL keep the same item in scope; REPLAN supersedes the prior plan without discarding history, and carries any new item whose key or exact acceptance obligation already PASSED in this Goal forward as PASSED (in dependency order, with its original evidence references) rather than scheduling it again; BLOCKED retains evidence and uses the existing PI terminal action. When PI passes the last package of the approved plan (its review is told that this PASS completes the whole owner Goal, and to REPLAN instead if anything is missing), the controller writes one immutable `goal_completions` row and commits PI action DONE; the Goal is DONE and every later Goal write or browser Send for it is refused. A ChatGPT `[MISSION_RELAY:DONE]` marker alone never completes a Goal. After the owner fixes an external blocker, `/goal-continue` binds a fresh Mission to the same Goal (old Mission untouched); its first read-only discovery turn and the next PI plan reuse every PASSED item. A PI-requested context rollover maps to HANDOFF, obeying the eight-Send-per-Chat limit; old finite-limit Missions and original append-only browser history remain intact.
 
 Goal planning and plan approval are internal PI/controller operations, with no user-visible stage, review or activation ceremony. Work review receives prior verdicts for the **same active item** from the append-only PI ledger. After repeated PARTIAL/FAIL, PI is directed to seek real evidence or REPLAN a missing prerequisite rather than request another editorial rewrite; this does not automatically pass work, replace missing evidence or allow a second Send. The controller owns all persistence and execution authority.
 

@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.2.27`.
+- Current source package version: `1.2.28`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -13,9 +13,15 @@
   deployment. Read the actual `channel-status.runtimeProvenance.sourceSha`,
   healthy single Worker, enrolled task, SQLite state and maintenance receipt
   before asserting that a specific SHA runs in production.
-- Goal/PI acceptance and commercial or external project release are separate
-  from Mission Relay's software CI and runtime promotion. Never interpret a
-  model's DONE marker as independent business acceptance.
+- Goal completion and Mission Relay's software CI/runtime promotion are
+  separate. A Goal is DONE when PI passes the final package of its approved
+  plan: that review is told PASS completes the whole owner Goal and to REPLAN
+  if anything is missing. The controller then writes one immutable
+  `goal_completions` row and commits PI action DONE; later Goal writes and
+  browser Sends for that Goal are refused. A ChatGPT DONE marker alone never
+  completes a Goal. The former independent release-gate subsystem was never
+  used in production and is removed; its empty v5 tables remain for schema
+  compatibility.
 
 ## Active operating contract
 
@@ -42,8 +48,7 @@
   acceptance obligation matches an earlier PASSED item of the same Goal is
   carried forward as PASSED (dependency order, original evidence references
   plus `carried-from:<item>`, append-only `goal.work_carried_forward` event)
-  instead of being re-executed. This is delivery scheduling, never an
-  acceptance waiver: independent Goal release gates are unchanged.
+  instead of being re-executed.
 - Each Goal work prompt carries a bounded (~3000 characters) *Established
   context* section: the latest PI-written PASS summary per passed key and the
   recorded release condition of each still-BLOCKED key, labelled as

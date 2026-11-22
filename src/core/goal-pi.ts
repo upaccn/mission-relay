@@ -37,6 +37,8 @@ export interface GoalReviewContext extends GoalPlanContext {
   planSummary:string;workItem:GoalWorkItem;acceptance:string[];
   /** Earlier PI verdicts are controller audit facts, not external acceptance proof. */
   priorWorkReviews?:Array<{round:number;verdict:GoalReview['verdict']}>;
+  /** True when every other package of the approved plan already PASSED. */
+  finalWorkItem?:boolean;
 }
 const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
 const limitAnswer=(answer:string)=>answer.length<=100_000?answer:
@@ -218,6 +220,11 @@ export function goalReviewPrompt(input:GoalReviewContext):string{
       'smaller direct evidence-collection or implementation package. Do not issue',
       'another textual PARTIAL instruction without a distinct, verifiable action.',
     ]:[]),
+    ...(input.finalWorkItem?[
+      'FINAL PACKAGE: every other planned package already passed. PASS here COMPLETES the owner Goal.',
+      'Choose PASS only if the owner Goal and its acceptance requirements are achieved as a whole;',
+      'if anything required is still missing, choose REPLAN so the missing work is planned (passed work is kept).',
+    ]:[]),
     'Never reclassify an earlier persisted BLOCKED Mission as active: require a distinct',
     'owner-authorized review and fresh independent evidence before any new execution.',
     'Do not decide Goal DONE or create a second controller; all browser Sends remain with Mission Relay.',
@@ -272,7 +279,7 @@ function repairCountForObligation(graph:GoalGraph,obligation:string):number{
     ['PARTIAL','FAIL'].includes(String(event.payload.verdict))).length;
 }
 function selectNextWork(ledger:GoalLedger,goalId:string,planId:string,source:string):{
-  action:'NEXT'|'BLOCKED';nextPrompt:string;summary:string;
+  action:'NEXT'|'BLOCKED'|'DONE';nextPrompt:string;summary:string;
 }{
   const graph=ledger.graph(goalId);
   const active=selectedWork(graph);
@@ -286,9 +293,11 @@ function selectNextWork(ledger:GoalLedger,goalId:string,planId:string,source:str
       .every(dep=>graph.items.find(w=>w.id===dep.dependsOnId)?.status==='PASSED'))
     .sort((a,b)=>b.priority-a.priority||a.key.localeCompare(b.key));
   if(!available.length){
+    // Every package of the approved plan passed PI review, and the final
+    // review was told that PASS completes the Goal: the Goal is DONE.
     if(items.every(x=>x.status==='PASSED'))
-      return {action:'BLOCKED',nextPrompt:'',
-        summary:'PI work packages passed, but Goal requires independent release acceptance before DONE'};
+      return {action:'DONE',nextPrompt:'',
+        summary:`Goal complete: all ${items.length} planned work packages passed PI review`};
     return {action:'BLOCKED',nextPrompt:'',
       summary:'No eligible work item: unresolved dependencies, blocked work or unapproved planning'};
   }
@@ -420,6 +429,8 @@ export async function reviewGoalPiRound(input:{
     ...context,planSummary:approved.summary,workItem:active,
     acceptance:baseline.acceptance.filter(x=>x.itemId===active.id).map(x=>x.criterion),
     priorWorkReviews:previousReviews,
+    finalWorkItem:baseline.items.filter(x=>x.planId===approved.id&&x.id!==active.id)
+      .every(x=>x.status==='PASSED'),
   }):null;
   // After two unverified repair reports the controller must not authorize
   // another editorial NEXT. The PI may PASS the new observed checkpoint or
@@ -461,7 +472,7 @@ export async function reviewGoalPiRound(input:{
       JSON.stringify(graph.acceptance)!==JSON.stringify(baseline.acceptance))
       throw new Error('Goal graph changed during PI inference; no Send authorized');
     let chosen=approved;
-    let next:{action:'NEXT'|'BLOCKED';nextPrompt:string;summary:string}|undefined;
+    let next:{action:'NEXT'|'BLOCKED'|'DONE';nextPrompt:string;summary:string}|undefined;
     if(proposed){
       const plan=ledger.createPlan(goalId,graph.goal.version,{
         requestKey:`pi-${responseSha256.slice(0,45)}`,...proposed,
@@ -547,8 +558,13 @@ export async function reviewGoalPiRound(input:{
       next=selectNextWork(ledger,goalId,approved.id,responseSha256);
     }
     if(!next||!chosen)throw new Error('PI Goal planning did not produce an eligible work decision');
-    // Existing PI plans use only NEXT/HANDOFF/DONE/BLOCKED. Goal work review
-    // never maps a model-claimed PASS to a terminal owner DONE.
+    // Goal DONE comes only from the controller: every approved package passed
+    // PI review. A ChatGPT DONE marker alone never completes a Goal.
+    if(next.action==='DONE'){
+      const lastPass=reviewed?.verdict==='PASS'?reviewed.summary:'';
+      ledger.completeGoal(goalId,missionId,responseSha256,
+        `${next.summary}${lastPass?`. Final review: ${lastPass}`:''}`.slice(0,1000));
+    }
     const result=store.commitPiPlan(missionId,responseSha256,ownerDirectives.map(x=>x.id),
       {action:reviewed?.handoff&&next.action==='NEXT'?'HANDOFF':next.action,
         nextPrompt:next.nextPrompt,summary:next.summary},input.replaceExisting);

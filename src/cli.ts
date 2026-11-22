@@ -2,27 +2,17 @@
 import { randomUUID, createHash } from 'node:crypto';
 import {MAX_RELAY_CHAT_TURNS} from './core/chat-limits.js';
 import {withReadOnlyDeadline} from './core/read-only-deadline.js';
-import {armScopedPiConnectionDrill,scopedPiConnectionDrillStatus} from './core/pi-connection-drill.js';
 import { join, resolve } from 'node:path';
 import { statSync, readFileSync } from 'node:fs';
 import { Engine } from './core/engine.js';
 import { Store,PI_SUCCESSOR_CHECKPOINT_MISMATCH,
   PI_CLOSED_PAGE_READ_ERROR,PI_NEXT_SOURCE_PREFLIGHT_ERROR } from './core/store.js';
 import {GoalLedger} from './core/goal-store.js';
-import {GoalReleaseGate,inspectReleaseProbeOutcome} from './core/goal-release.js';
 import {inspectSoftwareReleaseCandidate} from './core/software-release.js';
-import {gmkProductionReleaseProbe,enrolledTaskStatus} from './core/goal-release-runtime.js';
-import {trustedChromeReleaseProbe} from './core/goal-release-chrome-probes.js';
-import {trustedSuccessorReleaseProbe} from './core/goal-release-successor-probe.js';
-import {maintenanceReleaseProbe} from './core/goal-release-maintenance-probe.js';
-import {independentWorkReleaseProbe} from './core/goal-release-work-probe.js';
-import {remoteReleaseProbe} from './core/goal-release-remote.js';
-import {githubRepositoryForRuntime,readGithubReleaseMainSha,
-  githubReleaseProbe} from './core/goal-release-github.js';
+import {enrolledTaskStatus} from './core/windows-task.js';
+import {githubRepositoryForRuntime} from './core/github-ci.js';
 import {inspectPiEvidence,inspectPiChainEvidence} from './core/pi-evidence.js';
 import {inspectGoalRequestLedger} from './core/request-ledger.js';
-import {inspectGoalReleaseMatrix} from './core/goal-release-matrix.js';
-import {inspectGoalReleaseCoverage} from './core/goal-release-coverage.js';
 import {inspectBrowserBinding} from './core/browser-binding-diagnostic.js';
 import {assessPendingBrowserAnswer} from './core/browser-pending-evidence.js';
 import {LazyExecutor,registerExecutorPlugin,registeredExecutorPlugins,defaultExecutorId,
@@ -34,10 +24,8 @@ import { renderChatGPTHandoff, normalizeChatGPTUrl } from './core/chatgpt-handof
 import {setTelegramChatAnchor} from './core/chat-anchor.js';
 import { connectChatPage, inspectChatPage, matchesSubmittedUserPrompt, matchesReservedPromptHash, lastVisibleUserPromptSha256, listConnectedChatCandidates, prepareNewChatOrigin, submitNewChatTurn, withBrowserSession,visibleConversationLengthLimit,clickConversationLengthStartOnce,connectNativePrefilledDraft,nativePrefilledDraftSha256,clickNativePrefilledSendOnce } from './plugins/chatgpt-browser.js';
 import { executeBrowserTurn, driveChatConversation, browserDecision, exactReservedRolloverPrompt, browserRolloverPiPlan } from './core/browser-controller.js';
-import {SshPiPlanner,validatePictlRemoteConfig,validateRemoteProjectPath} from './core/pi-planner.js';
+import {validatePictlRemoteConfig,validateRemoteProjectPath} from './core/pi-planner.js';
 import {approveBuildRepository,revokeBuildRepository,approvedBuildRepositories} from './core/build-scopes.js';
-import {adoptConnectedConversation} from './core/chat-adoption.js';
-import {watchedBrowser,enableBrowserWatch,disableBrowserWatch} from './core/browser-watch.js';
 import { listBrowsers } from 'playwriter';
 import type { CreateMission, Sandbox } from './core/types.js';
 import type { VerificationCheck } from './core/types.js';
@@ -97,29 +85,9 @@ Commands:
   telegram-identify     Inspect local /start sender IDs before owner authorization
   channel-status        Inspect durable Telegram delivery cursor and poller status (no secrets)
   pi-health             Inspect active PI/browser requests, observed turns and wait age (no content, no Send)
-  pi-drill-status <mission-id>   Read-only one-shot recovery connection drill status
-  pi-drill-connection <mission-id> --revision <n> [--ttl-seconds 90]
-                       --acknowledge-side-effects  One-shot, single-session PI recovery disconnect;
-                       only at a settled idle checkpoint, automatically expires within 120s
   pi-evidence <mission-id>  Audit real event/PI SHA correlation and current 8-send chat segmentation (no content, no Send)
   pi-chain-evidence <mission-id>  Verify durable 32-turn successor lineage and inherited scope (no Send)
   goal-request-ledger <goal-id>  Read-only Goal→Mission→Chat→request→browser evidence custody audit
-  goal-release-status <goal-id>  Read-only independent Goal release gates, evidence and blockers
-  goal-release-matrix <goal-id>  Read-only claim-to-receipt and independent-probe coverage matrix
-  goal-release-coverage <goal-id> --sha <candidate SHA>
-                       Read-only 39-gate evidence gap index (never grants PASS)
-  goal-release-target <goal-id> --sha <reviewed main SHA>
-                       Begin independent verification after all PI work reports PASS
-  goal-release-verify <goal-id> --requirement <check|privacy-check|test|build|ci-OS|gmk-production-readback>
-                       [--run-id <GitHub Actions run>]
-                       Verify exact-head GitHub CI steps, or execute a fixed
-                       source check via approved SSH when no run-id was given;
-                       GMK readback only on original Windows host, with read-only Chrome inspection
-  goal-release-probe-diagnose <goal-id> --requirement <gate|criterion:UUID>
-                       [--run-id <GitHub Actions run>]
-                       Read-only SQLite diagnostic: PASS, FAIL or INSUFFICIENT_EVIDENCE;
-                       never writes a release PASS, Mission, Send or PI decision
-  goal-release-finalize <goal-id>  DONE only after all evidence and fresh origin/main readback
   create --goal <text> --accept <criterion> [--accept <criterion>...] --workspace <path>
          [--sandbox read-only|workspace-write] [--mode supervised|autopilot]
          [--max-turns 10] [--request-key <stable key>] [--checks-file <path>]
@@ -131,18 +99,11 @@ Commands:
   link-chat <id> --url <ChatGPT conversation URL> --revision <version>
   chat-create --goal <text> --accept <criterion> --url <ChatGPT conversation URL>
              [--accept <criterion>...] [--request-key <stable key>]
-  chat-adopt --url <exact ChatGPT conversation URL> --browser-id <approved Chrome ID>
-             [--goal <text>] [--start true]
-             Register a stable existing human chat; optional PI continuation in SAME tab
-  chat-adopt-start <mission-id>    Start PI on an already-adopted idle human conversation
   handoff <id>          Show existing ChatGPT chat link and manual continuation prompt
   browser-list          List connected Playwriter browser IDs (no profile emails)
   browser-candidates --browser-id <approved Chrome ID>   Read-only connected ChatGPT URL inventory
   browser-binding-health <mission-id>  Read-only exact-tab/last-prompt diagnostic (no Send, no raw URL)
   browser-pending-evidence <mission-id>  Read-only double-snapshot pending-answer candidate, never reconciles or resends
-  browser-watch --browser-id <approved Chrome ID>  Opt in to new Playwriter-connected ChatGPT chats
-  browser-watch --clear  Stop discovery and prevent watched Missions from further turns
-  browser-watch-status   Show the pinned profile and whether discovery is enabled
   browser-bind <id> --browser-id <id> --revision <n>   Pin a mission to one Chrome profile
   browser-probe <id> [--browser-id <id>]   Read a Playwriter-enabled ChatGPT tab
   browser-send <id> --revision <n> --request-key <key> --prompt-file <file>
@@ -209,26 +170,14 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
   }
   const home = stateHome();
   const diagnostic=['channel-status','channel-drain-status',
-    'pi-health','pi-evidence','pi-chain-evidence','pi-drill-status','browser-binding-health',
-    'browser-pending-evidence','goal-release-status','goal-request-ledger',
-    'goal-release-matrix','goal-release-coverage','goal-release-probe-diagnose',
+    'pi-health','pi-evidence','pi-chain-evidence','browser-binding-health',
+    'browser-pending-evidence','goal-request-ledger',
     ].includes(command);
   const store = new Store(join(home,'missions.sqlite'),{readOnly:diagnostic});
   const engine = new Engine(store,new LazyExecutor(store));
   try {
     let result: unknown;
-    if(command==='pi-drill-status'&&id){
-      if(!/^[0-9a-f-]{36}$/i.test(id)||rest.length)
-        throw new Error('Provide exactly one Mission UUID');
-      result=scopedPiConnectionDrillStatus(store,id);
-    } else if(command==='pi-drill-connection'&&id){
-      const f=flags(rest);
-      if(f['--acknowledge-side-effects']?.[0]!=='true')
-        throw new Error('Explicit --acknowledge-side-effects is required');
-      result=armScopedPiConnectionDrill(store,id,Number(option(f,'revision')),
-        Number(option(f,'ttl-seconds','90')));
-    }
-    else if (command === 'create') {
+    if (command === 'create') {
       // create has no positional id; include all arguments in flags.
       const f = flags(argv.slice(1));
       const workspace = resolve(option(f,'workspace'));
@@ -259,48 +208,6 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       if(previous && previous!==url) throw new Error('Idempotency key already belongs to a different ChatGPT conversation');
       const linked=store.linkChat(mission.id,url,mission.version);
       result={...linked,handoff:renderChatGPTHandoff(linked.mission,linked.url)};
-    } else if (command === 'chat-adopt') {
-      const f=flags(argv.slice(1));
-      const url=normalizeChatGPTUrl(option(f,'url'));
-      const browserId=option(f,'browser-id');
-      const start=option(f,'start','false');
-      if(!['true','false'].includes(start))throw new Error('--start must be true or false');
-      const goal=f['--goal']?option(f,'goal'):undefined;
-      let planner:SshPiPlanner|undefined;
-      if(start==='true'){
-        const sshHost=store.getMeta('telegram.pi.sshHost');
-        const project=store.getMeta('telegram.pi.project');
-        if(!sshHost||!project)throw new Error('PI route is not configured; no adoption performed');
-        planner=new SshPiPlanner({sshHost,project});
-        await planner.preflight();
-      }
-      const session=await connectChatPage(url,{browserId});
-      result=await withBrowserSession(session,async page=>{
-        const recorded=await adoptConnectedConversation(store,page,url,browserId,{
-          goal,piEnabled:Boolean(planner),
-        });
-        return {missionId:recorded.missionId,state:store.get(recorded.missionId).state,
-          adoptedAnswerSha256:recorded.adoptedAnswerSha256,
-          nativeExecutorRequired:false,piQueued:Boolean(planner),
-          foregroundPollerPresent:store.channelStatus('telegram').pollerPresent,
-          note:planner?'Existing human reply recorded with zero sends; Telegram foreground controller will claim the queued PI Mission (no CLI browser writer).':
-            'Existing human reply was read, not submitted by Relay; zero turns credited.'};
-      });
-    } else if(command==='chat-adopt-start'&&id){
-      const m=store.get(id),adopted=store.chatAdoption(id);
-      const url=store.chatLink(id),browserId=store.chatBrowserBinding(id);
-      if(!adopted||m.turnCount!==0||m.state!=='PAUSED'||!url||!browserId||
-         store.piPlan(id)||m.stopRequested)
-        throw new Error('Mission must have an unreviewed, unstarted human ChatGPT adoption checkpoint');
-      const sshHost=store.getMeta('telegram.pi.sshHost');
-      const project=store.getMeta('telegram.pi.project');
-      if(!sshHost||!project)throw new Error('PI route is not configured; no browser Send attempted');
-      const planner=new SshPiPlanner({sshHost,project});
-      await planner.preflight();
-      store.setMeta(`pi.autopilot.enabled.${id}`,'1');
-      result={missionId:id,state:m.state,piQueued:true,
-        foregroundPollerPresent:store.channelStatus('telegram').pollerPresent,
-        note:'The foreground Telegram controller is the sole PI/browser writer. It will verify the exact original tab and review the human answer before sending.'};
     } else if (command === 'telegram-anchor' && id === '--clear') {
       store.setMeta('telegram.chatgpt.anchorUrl','');
       store.setMeta('telegram.chatgpt.browserId','');
@@ -451,73 +358,6 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
       if(!id||!/^[0-9a-f-]{36}$/i.test(id)||rest.length)
         throw new Error('Provide exactly one Goal UUID');
       result=inspectGoalRequestLedger(store,id);
-    } else if (command === 'goal-release-matrix') {
-      if(!id||!/^[0-9a-f-]{36}$/i.test(id)||rest.length)
-        throw new Error('Provide exactly one Goal UUID');
-      result=inspectGoalReleaseMatrix(store,id);
-    } else if (command === 'goal-release-coverage') {
-      if(!id||!/^[0-9a-f-]{36}$/i.test(id))
-        throw new Error('Provide exactly one Goal UUID');
-      const f=flags(rest);
-      if(Object.keys(f).length!==1||!f['--sha']||f['--sha'].length!==1)
-        throw new Error('Usage: goal-release-coverage <Goal UUID> --sha <candidate SHA>');
-      result=inspectGoalReleaseCoverage(store,id,option(f,'sha'));
-    } else if (command === 'goal-release-status') {
-      if(!id||rest.length)throw new Error('Usage: goal-release-status <goal-id>');
-      result=new GoalReleaseGate(store).report(id);
-    } else if (['goal-release-target','goal-release-verify','goal-release-probe-diagnose',
-      'goal-release-finalize'].includes(command)) {
-      if(!id||!/^[0-9a-f-]{36}$/i.test(id))
-        throw new Error('Goal release requires an exact Goal UUID');
-      const project=store.getMeta('telegram.build.project');
-      const sshHost=store.getMeta('telegram.pi.sshHost');
-      if(!sshHost||!project||project!==store.getMeta('telegram.pi.project'))
-        throw new Error('Goal release requires the existing approved operator-managed host SSH project');
-      const remote=validatePictlRemoteConfig({sshHost,project});
-      // GitHub main (not GMK's intentionally stale pull-only checkout) is
-      // the publication boundary. This read needs no operator-managed host SSH directory
-      // permission and cannot modify either host.
-      const githubRepository=githubRepositoryForRuntime();
-      const gate=new GoalReleaseGate(store),
-        mainSha=readGithubReleaseMainSha(githubRepository);
-      if(command==='goal-release-target'){
-        const f=flags(rest),target=option(f,'sha');
-        if(target!==mainSha)throw new Error('Release target differs from independently read origin/main');
-        result=gate.begin(id,target);
-      }else if(command==='goal-release-verify'||command==='goal-release-probe-diagnose'){
-        const f=flags(rest),requirement=option(f,'requirement');
-        const runId=f['--run-id']?option(f,'run-id'):null;
-        if(runId&&(['gmk-production-readback','chrome-10-to-11',
-          'relay-tab-retirement','mission-32-successor','maintenance-resume'].includes(requirement)||
-          requirement.startsWith('criterion:')))
-          throw new Error('Independent production or work verification cannot use a CI run as evidence');
-        const probe=requirement==='gmk-production-readback'
-          ?gmkProductionReleaseProbe(store,id,join(home,'goal-release-evidence'))
-          :['chrome-10-to-11','relay-tab-retirement'].includes(requirement)
-          ?trustedChromeReleaseProbe(store,id)
-          :requirement==='mission-32-successor'
-          ?trustedSuccessorReleaseProbe(store,id)
-          :requirement==='maintenance-resume'
-          ?maintenanceReleaseProbe(store,id,join(process.env.LOCALAPPDATA??'','MissionRelay','telegram-task'))
-          :requirement.startsWith('criterion:')
-          ?independentWorkReleaseProbe(store,id,join(home,'goal-release-evidence'),remote)
-          :requirement.startsWith('ci-')||runId
-          ?githubReleaseProbe(githubRepository,runId??option(f,'run-id'))
-          :remoteReleaseProbe(remote,join(home,'goal-release-evidence'));
-        if(command==='goal-release-probe-diagnose'){
-          const target=gate.report(id).target;
-          result=!target?{
-            verdict:'INSUFFICIENT_EVIDENCE',requirement,
-            targetSha:null,reason:'No approved immutable release target',
-          }:target.targetSha!==mainSha?{
-            verdict:'FAIL',requirement,targetSha:target.targetSha,
-            reason:'Release target differs from independently read GitHub main',
-          }:await inspectReleaseProbeOutcome(requirement,target.targetSha,probe);
-        }else result=await gate.inspect(id,requirement,probe);
-      }else{
-        if(rest.length)throw new Error('goal-release-finalize takes no options');
-        result=await gate.finalize(id,async()=>readGithubReleaseMainSha(githubRepository));
-      }
     } else if (command === 'doctor') {
       result=await executorPreflight(store);
       if (!(result as {ok:boolean}).ok) process.exitCode=2;
@@ -531,40 +371,6 @@ export async function main(argv=process.argv.slice(2)): Promise<void> {
     else if (command === 'browser-list') {
       const browsers=await listBrowsers();
       result=browsers.map(b=>({id:b.id,browser:b.browser,activeTabs:b.activeTabs,playwriterVersion:b.playwriterVersion}));
-    } else if (command==='browser-watch-status') {
-      result={enabled:Boolean(watchedBrowser(store)),browserId:watchedBrowser(store),
-        note:'Only Playwriter-enabled ChatGPT tabs in this profile are discoverable; no tab-group requirement.'};
-    } else if (command==='browser-watch'&&id==='--clear') {
-      const browserId=watchedBrowser(store);
-      const paused=store.atomic(()=>{
-        disableBrowserWatch(store);
-        let count=0;
-        for(const m of store.list()){
-          if(store.getMeta(`browser.watch.mission.${m.id}`)!==browserId||!browserId||
-             m.stopRequested||['CANCELLED','COMPLETED'].includes(m.state))continue;
-          if(!store.events(m.id).some(e=>e.type==='pi.autopilot_finished')){
-            store.update(m.id,m.version,{stopRequested:true},'mission.pause_requested',
-              {reason:'Chrome profile watch revoked'});
-            count++;
-          }
-        }
-        return count;
-      });
-      result={enabled:false,paused,note:'No new watched Mission will be adopted or sent after revocation.'};
-    } else if (command==='browser-watch') {
-      const browserId=option(flags(argv.slice(1)),'browser-id');
-      const browsers=await listBrowsers();
-      if(!browsers.some(browser=>browser.id===browserId))
-        throw new Error('The requested Chrome profile is not Playwriter-connected');
-      const sshHost=store.getMeta('telegram.pi.sshHost');
-      const project=store.getMeta('telegram.pi.project');
-      if(!sshHost||!project)throw new Error('Configure PI before enabling automatic Chrome adoption');
-      const planner=new SshPiPlanner({sshHost,project});
-      await planner.preflight();
-      const candidates=await listConnectedChatCandidates(browserId);
-      const enabled=enableBrowserWatch(store,browserId,candidates);
-      result={enabled:true,...enabled,
-        note:'Existing connected conversations are baselined, not auto-started. The existing Telegram foreground controller watches newly changed Playwriter-enabled ChatGPT tabs.'};
     } else if (command === 'browser-candidates') {
       result={scope:'selected Playwriter-connected Chrome profile',
         warning:'Only enabled tabs are observable; inventory does not require or imply any tab-group membership.',

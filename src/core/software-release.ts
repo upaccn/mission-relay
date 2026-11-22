@@ -1,4 +1,4 @@
-import {githubReleaseProbe,readGithubReleaseMainSha} from './goal-release-github.js';
+import {githubReleaseProbe,readGithubReleaseMainSha} from './github-ci.js';
 
 const shaPattern=/^[0-9a-f]{40}$/;
 const runPattern=/^[1-9][0-9]{4,19}$/;

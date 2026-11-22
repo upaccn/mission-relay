@@ -161,11 +161,11 @@ test('opt-in Goal PI uses the real existing browser controller and does not trus
     assert.ok(!initialPlanningPrompt.includes('Task scope: implement and test code'));
     assert.ok(!initialPlanningPrompt.includes('Use available tools to inspect and edit'));
     assert.equal(f.results().sends,2,
-      'The first browser DONE must not end the Goal; no third Send after pending independent acceptance');
+      'The first browser DONE marker must not end the Goal; PI passing the final package does');
     assert.equal(f.store.get(f.mission.id).turnCount,2);
-    assert.equal(f.store.piPlan(f.mission.id)?.action,'BLOCKED');
+    assert.equal(f.store.piPlan(f.mission.id)?.action,'DONE');
     assert.equal(ledger.graph(goal.id).items[0]?.status,'PASSED');
-    assert.equal(ledger.getGoal(goal.id).status,'ACTIVE');
+    assert.equal(ledger.getGoal(goal.id).status,'DONE');
     assert.equal(f.store.events(f.mission.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2);
     const sent=f.results().latestPrompt;
     assert.match(sent,/Work package: netbox — Verify NetBox lookup/);
@@ -234,8 +234,8 @@ test('Goal-bound eight-to-nine browser rollover sends only the current work pack
     assert.equal(f.store.get(created.id).turnCount,9);
     assert.equal(f.store.events(created.id)
       .filter(e=>e.type==='chatgpt.browser_reserved').length,9);
-    assert.equal(f.store.piPlan(created.id)?.action,'BLOCKED',
-      'PI claimed PASS is not final owner Goal DONE');
+    assert.equal(f.store.piPlan(created.id)?.action,'DONE',
+      'PI PASS of the final package completes the Goal');
   }finally{f.cleanup();}
 });
 
@@ -311,8 +311,8 @@ test('Goal-bound 32-to-successor first Send inherits active work, not the full o
     assert.match(recovered!.prompt,/Validate distinct browser request identity/);
     assert.ok(!recovered!.prompt.includes(created.goal));
     assert.ok(!recovered!.prompt.includes('Coordinator says more development remains'));
-    assert.equal(f.store.piPlan(child.id)?.action,'BLOCKED');
-    assert.equal(ledger.getGoal(goal.id).status,'ACTIVE');
+    assert.equal(f.store.piPlan(child.id)?.action,'DONE');
+    assert.equal(ledger.getGoal(goal.id).status,'DONE');
     assert.equal(f.store.events(child.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
     assert.equal(f.store.events(created.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1,
       'The prior Mission Send must not be repeated');

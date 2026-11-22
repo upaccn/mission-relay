@@ -1,21 +1,56 @@
+import {createHash} from 'node:crypto';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {resolve} from 'node:path';
 import {childEnvironment} from './child-env.js';
-import {assessGitHubActionsReadback} from './goal-release-probes.js';
-import type {ReleaseProbe} from './goal-release.js';
 
+/** Exact-SHA GitHub Actions readback used by `software-release-status`. */
+export interface CiReadback {state:'PASS'|'FAIL';reference:string;proofSha256:string;observedSha:string}
+export interface CiProbe {source:string;inspect:(requirement:string,targetSha:string)=>Promise<CiReadback>}
+const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
+interface GitHubRun {
+  databaseId:number;workflowName:string;event:string;headBranch:string;
+  headSha:string;status:string;conclusion:string;url:string;
+  jobs:{name:string;status:string;conclusion:string;
+    steps:{name:string;conclusion:string}[]}[];
+}
+export function assessGitHubActionsReadback(raw:string,requirement:string,
+  targetSha:string,approvedRepository:string):CiReadback{
+  if(!/^ci-(ubuntu|macos|windows)$/.test(requirement))
+    throw new Error('Unsupported GitHub Actions release gate');
+  if(!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*\/[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(approvedRepository)||
+    approvedRepository.split('/').some(part=>part==='.'||part==='..'))
+    throw new Error('Approved GitHub release repository identity is invalid');
+  const result=JSON.parse(raw) as GitHubRun;
+  if(result.headSha!==targetSha||result.status!=='completed'||
+    result.conclusion!=='success'||!/^https:\/\/github\.com\//.test(result.url))
+    throw new Error('GitHub Actions run is incomplete, failed or for another SHA');
+  // An arbitrary workflow_dispatch or PR workflow can run a job with the
+  // same name and steps. Only the published push CI on main is release proof.
+  if(result.workflowName!=='CI'||result.event!=='push'||
+    result.headBranch!=='main'||!Number.isSafeInteger(result.databaseId)||
+    result.databaseId<=0||
+    !result.url.endsWith(`/actions/runs/${result.databaseId}`))
+    throw new Error('GitHub Actions release workflow provenance is invalid');
+  if(result.url!==`https://github.com/${approvedRepository}/actions/runs/${result.databaseId}`)
+    throw new Error('GitHub Actions run is for a different release repository');
+  const platform=requirement.slice(3);
+  const jobs=result.jobs.filter(job=>job.name===`test (${platform}-latest, 24)`);
+  if(jobs.length!==1)throw new Error('Missing or duplicate CI platform job');
+  const job=jobs[0]!;
+  const steps=['Run npm ci','Run npm run privacy-check','Run npm run check',
+    'Run npm test','Run npm run build'];
+  const matched=steps.every(name=>job.steps.filter(s=>s.name===name&&s.conclusion==='success').length===1&&
+    job.steps.filter(s=>s.name===name).length===1);
+  const successful=job.status==='completed'&&job.conclusion==='success'&&matched;
+  return {state:successful?'PASS':'FAIL',reference:result.url,
+    proofSha256:sha(raw),observedSha:result.headSha};
+}
 /** Github is the project's publication boundary. The running GMK checkout
  * supplies ONLY the repository identity, never the canonical source SHA.
  * Neither SSH access to operator-managed host nor a model-provided repo name is required. */
 const runtimeCheckout=resolve(fileURLToPath(new URL('../../',import.meta.url)));
 const fullSha=/^[a-f0-9]{40}$/;
-const codeSteps:Readonly<Record<string,string>>={
-  'check':'Run npm run check',
-  'privacy-check':'Run npm run privacy-check',
-  'test':'Run npm test',
-  'build':'Run npm run build',
-};
 function environment():Record<string,string>{
   const env=childEnvironment('check');
   // The GitHub CLI discovers the existing interactive credential store itself.
@@ -66,19 +101,18 @@ export function githubReleaseRunCommand(repository:string,runId:string):string[]
 }
 /** Re-read a specific CI run directly from GitHub and verify per-step
  * success. Unlike a model report, the raw GitHub response is hashed into
- * Goal audit. No local/remote code invocation or secret forwarding. */
-export function githubReleaseProbe(repository:string,runId:string):ReleaseProbe{
+ * the release report. No local/remote code invocation or secret forwarding. */
+export function githubReleaseProbe(repository:string,runId:string):CiProbe{
   const args=githubReleaseRunCommand(repository,runId);
   const repo=canonicalGithubRepository(`https://github.com/${repository}`);
   return {source:'github-actions',inspect:async(requirement,targetSha)=>{
-    if(!Object.hasOwn(codeSteps,requirement)&&
-      !/^ci-(ubuntu|macos|windows)$/.test(requirement))
+    if(!/^ci-(ubuntu|macos|windows)$/.test(requirement))
       throw new Error('GitHub Actions cannot attest this release requirement');
     if(readGithubReleaseMainSha(repo)!==targetSha)
       throw new Error('GitHub release main changed before CI readback');
     const raw=gh(args);
     const observed=assessGitHubActionsReadback(raw,
-      requirement.startsWith('ci-')?requirement:'ci-ubuntu',targetSha,repo);
+      requirement,targetSha,repo);
     const expectedUrl=`https://github.com/${repo}/actions/runs/${runId}`;
     if(observed.reference!==expectedUrl)
       throw new Error('CI run does not belong to the approved GitHub release repository');

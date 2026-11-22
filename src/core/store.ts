@@ -296,6 +296,16 @@ export class Store {
       UNIQUE(mission_id,external_id)
     ); CREATE INDEX IF NOT EXISTS pi_owner_pending
       ON pi_owner_directives(mission_id,consumed_round,id);`);
+    // Additive: a Goal is DONE when PI's review accepted its final work package
+    // (owner decision 2026-11-22). One immutable row per Goal. The retired
+    // goal_release_* tables stay in the v5 schema, unused and empty.
+    this.db.exec(`CREATE TABLE IF NOT EXISTS goal_completions (
+      goal_id TEXT PRIMARY KEY REFERENCES goals(id),
+      mission_id TEXT NOT NULL, plan_id TEXT NOT NULL,
+      response_sha256 TEXT NOT NULL, summary TEXT NOT NULL, completed_at TEXT NOT NULL
+    );
+    CREATE TRIGGER IF NOT EXISTS goal_completions_no_update BEFORE UPDATE ON goal_completions
+      BEGIN SELECT RAISE(ABORT,'Goal completion is immutable'); END;`);
     if (filename !== ':memory:' && process.platform !== 'win32') {
       try { chmodSync(filename, 0o600); } catch { /* host ACL may manage permissions */ }
     }
@@ -1492,8 +1502,8 @@ export class Store {
         goalCursor=this.piChainParent(goalCursor);
       }
       if(completedGoal&&this.db.prepare(
-        'SELECT 1 FROM goal_release_completion WHERE goal_id=?').get(completedGoal))
-        throw new Error('Goal release completed; further browser Sends are prohibited');
+        'SELECT 1 FROM goal_completions WHERE goal_id=?').get(completedGoal))
+        throw new Error('Goal completed; further browser Sends are prohibited');
       if(m.version!==revision) throw new Error(`State conflict: expected v${revision}, current v${m.version}`);
       if(!['READY','PAUSED'].includes(m.state)) throw new Error(`Cannot run browser turn in state ${m.state}`);
       if(m.stopRequested) throw new Error('Mission has a pending pause request; resume explicitly before another browser turn');
@@ -2208,7 +2218,7 @@ export class Store {
         const goal=this.db.prepare('SELECT objective,status FROM goals WHERE id=?')
           .get(goalId) as {objective:string;status:string}|undefined;
         if(!goal||goal.status!=='ACTIVE'||goal.objective!==this.get(id).goal.trim()||
-          this.db.prepare('SELECT 1 FROM goal_release_completion WHERE goal_id=?')
+          this.db.prepare('SELECT 1 FROM goal_completions WHERE goal_id=?')
             .get(goalId))return false;
         const active=this.db.prepare(`SELECT w.id FROM goal_work_items w
           JOIN goal_plans p ON p.id=w.plan_id AND p.goal_id=w.goal_id

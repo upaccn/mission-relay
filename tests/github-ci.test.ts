@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {canonicalGithubRepository,githubReleaseRunCommand,
-  githubReleaseProbe} from '../src/core/goal-release-github.js';
+  githubReleaseProbe} from '../src/core/github-ci.js';
 
 test('GitHub release repository must come from one canonical origin',()=>{
   assert.equal(canonicalGithubRepository('https://github.com/upaccn/mission-relay.git'),

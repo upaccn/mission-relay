@@ -13,10 +13,7 @@ import {GoalLedger} from './goal-store.js';
 import {isApprovedBuildRepository} from './build-scopes.js';
 import {reviewGoalPiRound} from './goal-pi.js';
 import {goalWorkPrompt} from './goal-prompts.js';
-import {captureGoalChromeBoundary,retireGoalOwnedTab} from './goal-release-chrome-probes.js';
-import {inspectPiEvidence} from './pi-evidence.js';
-import {verifiedRuntimeProvenance} from './runtime-provenance.js';
-import {captureGoalSuccessorBoundary} from './goal-release-successor-probe.js';
+import {retireOwnedRelayTab} from './relay-tabs.js';
 
 const MAX_REPLANS=3;
 /** Independent of the Mission's total budget, avoid overlong ChatGPT chats. */
@@ -397,58 +394,20 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
       const formerPage=page,formerUrl=url;
       page=rollover.page;url=rollover.url;
       const goalId=new GoalLedger(store).missionGoalId(missionId);
-      let boundaryWitnessMissing=false;
-      const priorChatTurns=goalId&&ownedPage
-        ?inspectPiEvidence(store,missionId).rounds.at(-2)?.chatTurn:undefined;
-      if(goalId&&ownedPage&&priorChatTurns===MAX_PI_CHAT_TURNS){
-        // Independent physical observation must precede best-effort cleanup.
-        // The new Chat's first-turn PI review is pending; only a later ReleaseProbe
-        // can correlate this witness with the final committed PI decision.
-        try {
-          const sourceSha=verifiedRuntimeProvenance().sourceSha;
-          await captureGoalChromeBoundary({store,goalId,missionId,
-            sourcePage:ownedPage,destinationPage:page,
-            sourceUrl:formerUrl,destinationUrl:url,sourceSha});
-        }catch{
-          boundaryWitnessMissing=true;
-          console.error('Goal Chrome boundary witness unavailable; preserving old tab for recovery');
-        }
-      }
-      // Never destroy the only physical source when an original Chat rollover
-      // boundary was not independently witnessed. The new answer is already
-      // settled; this cleanup decision never authorizes another Send.
-      if(goalId&&ownedPage&&!boundaryWitnessMissing&&
-        store.canRetireOwnedChatTab(missionId,formerUrl,url)){
-        try{
-          const sourceSha=verifiedRuntimeProvenance().sourceSha;
-          await retireGoalOwnedTab({store,goalId,missionId,
-            sourcePage:ownedPage,destinationPage:page,
-            sourceUrl:formerUrl,destinationUrl:url,sourceSha});
-        }catch{console.error('Goal-owned tab custody could not be certified; old tab preserved');}
+      // Close only the provably Relay-created source tab of a settled rollover.
+      // Cleanup never authorizes another Send; any doubt keeps the tab open.
+      if(goalId&&ownedPage&&store.canRetireOwnedChatTab(missionId,formerUrl,url)){
+        await retireOwnedRelayTab({store,missionId,sourcePage:ownedPage,
+          destinationPage:page,sourceUrl:formerUrl,destinationUrl:url});
       }else if(!goalId&&store.canRetireOwnedChatTab(missionId,formerUrl,url)&&
         await retireSupersededRelayTab(ownedPage,page,formerUrl)){
         try{store.recordOwnedChatTabRetired(missionId,formerUrl,url);}
         catch{console.error('Verified old tab closed, but retirement audit could not be committed');}
       }
-      if(chainParentId&&i===0){
-        if(goalId){
-          // The child's original first answer is settled, but its PI review
-          // is pending. Witness physical source/destination BEFORE cleanup.
-          // Retain Goal parent tabs rather than creating unverifiable
-          // cross-Mission physical retirement receipts.
-          try{
-            const sourceSha=verifiedRuntimeProvenance().sourceSha;
-            await captureGoalSuccessorBoundary({store,goalId,
-              parentId:chainParentId,childId:missionId,
-              sourcePage:formerPage,destinationPage:page,
-              sourceUrl:formerUrl,destinationUrl:url,sourceSha});
-          }catch{
-            console.error('Goal successor physical witness unavailable; parent tab preserved and Release Gate pending');
-          }
-        }else{
-          await retireVerifiedPiChainSource({store,childId:missionId,
-            sourcePage:formerPage,newPage:page,sourceUrl:formerUrl,newUrl:url});
-        }
+      // A Goal successor keeps its parent tab (no cross-Mission retirement).
+      if(chainParentId&&i===0&&!goalId){
+        await retireVerifiedPiChainSource({store,childId:missionId,
+          sourcePage:formerPage,newPage:page,sourceUrl:formerUrl,newUrl:url});
       }
       ownedPage=page===formerPage?null:page;
     }

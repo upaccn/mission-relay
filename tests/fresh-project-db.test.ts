@@ -13,7 +13,7 @@ import {GoalLedger} from '../src/core/goal-store.js';
 const cli=resolve('scripts/windows/fresh-project-db.mjs');
 const anchor='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
 const EMPTY_PROJECT_TABLES=['missions','events','goals','goal_plans','goal_work_items',
-  'goal_acceptance','goal_dependencies','goal_operations','goal_release_checks',
+  'goal_acceptance','goal_dependencies','goal_operations','goal_completions','goal_release_checks',
   'goal_release_completion','goal_release_targets','goal_events','pi_owner_directives',
   'channel_commands','channel_leases'];
 

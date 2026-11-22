@@ -10,7 +10,7 @@ import {DatabaseSync} from 'node:sqlite';
 /** Execute the REAL Windows Upgrade action with OS-facing helper calls shadowed
  * by test doubles and a disposable checkout. The real PowerShell helpers and
  * complete script syntax are tested separately in windows-upgrade-safety.test;
- * SQLite and ReleaseProbe validation in goal-release-maintenance-probe.test.
+ * SQLite and fenced drain validation.
  * This validates Upgrade state-machine wiring, not helper correctness.
  * No production task, browser profile, database path or credentials are passed
  * to this fixture. The cooperative fake-call trace is not an OS sandbox. */

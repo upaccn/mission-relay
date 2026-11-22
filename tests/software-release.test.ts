@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {inspectSoftwareReleaseCandidate} from '../src/core/software-release.js';
-import type {ReleaseProbe} from '../src/core/goal-release.js';
+import type {CiProbe as ReleaseProbe} from '../src/core/github-ci.js';
 
 const SHA='a'.repeat(40),OTHER='b'.repeat(40);
 const digest='c'.repeat(64);

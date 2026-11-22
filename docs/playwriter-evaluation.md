@@ -27,10 +27,7 @@ node dist/cli.js browser-probe <mission-id>
 A zero enabled-tab count does **not** mean the Chrome window closed. Restore
 Playwriter access to the original authorized tab; do not silently substitute
 another tab or resend an uncertain request. All browser operations require a
-valid local profile binding. The owner may separately opt into observing
-human-started ChatGPT conversations with `browser-watch`. Such adoption starts
-with a stable read-only checkpoint and **zero Relay Sends**; one leased Worker
-handles any PI-approved continuation.
+valid local profile binding.
 
 ## Execution contract
 

@@ -119,7 +119,7 @@ export class GoalLedger {
           throw new Error('Idempotency key reused with different intent');
         return JSON.parse(previous.result_json) as T;
       }
-      if(this.store.db.prepare('SELECT 1 FROM goal_release_completion WHERE goal_id=?')
+      if(this.store.db.prepare('SELECT 1 FROM goal_completions WHERE goal_id=?')
         .get(goalId))throw new Error('Completed Goal is immutable');
       const result=write();
       this.store.db.prepare(
@@ -152,7 +152,7 @@ export class GoalLedger {
   getGoal(id:string):Goal{
     const r=this.store.db.prepare(`SELECT g.*,
       CASE WHEN c.goal_id IS NULL THEN g.status ELSE 'DONE' END AS status
-      FROM goals g LEFT JOIN goal_release_completion c ON c.goal_id=g.id
+      FROM goals g LEFT JOIN goal_completions c ON c.goal_id=g.id
       WHERE g.id=?`).get(id) as GoalRow|undefined;
     if(!r)throw new Error('Unknown goal');
     return toGoal(r);
@@ -160,7 +160,7 @@ export class GoalLedger {
   listGoals():Goal[]{
     return (this.store.db.prepare(`SELECT g.*,
       CASE WHEN c.goal_id IS NULL THEN g.status ELSE 'DONE' END AS status
-      FROM goals g LEFT JOIN goal_release_completion c ON c.goal_id=g.id
+      FROM goals g LEFT JOIN goal_completions c ON c.goal_id=g.id
       ORDER BY g.created_at,g.id`).all() as GoalRow[])
       .map(toGoal);
   }
@@ -203,6 +203,34 @@ export class GoalLedger {
       this.event(goalId,'goal.pi_mission_bound',{missionId,missionVersion:mission.version});
       return goalId;
     });
+  }
+  /** PI accepted the final work package and no work remains: the Goal is
+   * DONE (owner decision 2026-11-22). Requires an approved plan whose every
+   * item PASSED. Written once; afterwards every Goal write and browser
+   * reservation for this Goal is refused. */
+  completeGoal(goalId:string,missionId:string,responseSha256:string,summary:string):void{
+    if(!/^[a-f0-9]{64}$/.test(responseSha256))throw new Error('Goal completion requires the reviewed answer SHA');
+    const text=content(summary,1000,'Goal completion summary');
+    this.store.atomic(()=>{
+      if(this.missionGoalId(missionId)!==goalId)throw new Error('Mission is not bound to this Goal');
+      if(this.store.db.prepare('SELECT 1 FROM goal_completions WHERE goal_id=?').get(goalId))
+        throw new Error('Goal already completed');
+      const plan=this.store.db.prepare(
+        "SELECT id FROM goal_plans WHERE goal_id=? AND status='APPROVED'").get(goalId) as {id:string}|undefined;
+      if(!plan)throw new Error('Goal completion requires an approved plan');
+      const open=this.store.db.prepare(
+        "SELECT 1 FROM goal_work_items WHERE plan_id=? AND status!='PASSED' LIMIT 1").get(plan.id);
+      if(open)throw new Error('Goal completion requires every approved work item PASSED');
+      this.event(goalId,'goal.completed',{missionId,planId:plan.id,responseSha256,summarySha256:hash(text)});
+      this.store.db.prepare(`INSERT INTO goal_completions
+        (goal_id,mission_id,plan_id,response_sha256,summary,completed_at) VALUES(?,?,?,?,?,?)`)
+        .run(goalId,missionId,plan.id,responseSha256,text,now());
+    });
+  }
+  goalCompletion(goalId:string):{summary:string;completedAt:string}|null{
+    const r=this.store.db.prepare('SELECT summary,completed_at FROM goal_completions WHERE goal_id=?')
+      .get(goalId) as {summary:string;completed_at:string}|undefined;
+    return r?{summary:r.summary,completedAt:r.completed_at}:null;
   }
   /** Root Missions explicitly bound to this Goal (successors excluded). */
   goalRootMissions(goalId:string):string[]{

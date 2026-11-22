@@ -1,12 +1,6 @@
 # Telegram (optional)
 
-Owner `/goal-status` reports independent Goal release progress and blockers
-without authorizing browser Sends or claiming business acceptance.
-`goal-release-status` and `goal-release-verify` are separate operator-only
-commands: verified GitHub CI on an exact SHA can satisfy source/CI gates,
-but never substitutes for live GMK, Chrome or business evidence. Existing
-validated SSH and GitHub identities are reused; unavailable permissions
-fail closed rather than being silently elevated.
+Owner `/goal-status` reports progress, the current or blocked work packages and, when done, the result.
 
 The Telegram adapter is a single-user **foreground process**. It uses the official Bot API's long polling and requires no public webhook or inbound port. It is not enabled by default. Telegram Bot chats are not end-to-end encrypted; do not send tokens, customer records, browser sessions or confidential model output to this channel.
 
@@ -124,9 +118,8 @@ approved launch source without reusing another Mission's conversation;
 existing-Chat continuation never uses that bootstrap fallback. Telegram
 updates are idempotent; repeated update IDs do not create competing Goals.
 The channel does not backfill old `/auto`, `/build`, plain-text or
-one-turn `/new` requests. Current model-reported Work Item PASS or a
-terminal Mission is **not** independent business verification or Goal DONE.
-Independent Goal release gates and native-host smoke testing remain separate.
+one-turn `/new` requests. A Goal is DONE only when PI passes the final
+package of its approved plan; a ChatGPT DONE marker alone never completes it.
 
 The vendor-neutral optional native route is `/agent <task>` or `Agent: <task>`, and requires an independently installed executor plugin plus a locally approved `telegram-agent-workspace`. Plain text and `ChatGPT:` remain browser-first without native executor selection. Vendor-specific aliases (`/codex`, `Codex:`) are **not** supported by the new CLI; they were used in earlier prototypes. See [plugin API](plugin-api.md).
 
@@ -176,24 +169,9 @@ Then the authenticated Telegram owner sends `/build <specific implementation tas
 
 The first browser dispatch also requires a successful bounded, non-model `pictl doctor --json` preflight over the same SSH path. This checks health but **does not** certify the subsequent model call or every future network request. Each PI inference is separately bounded (120-second remote inference, 135-second SSH deadline). PI is a coordinator, not an independent tool-based verifier of external business outcomes.
 
-### Optional Chrome-profile adoption watch
-
-The operator may locally authorize all **Playwriter-enabled ChatGPT tabs in one exact Chrome profile**, without any Chrome tab-group or tag requirement:
-
-```powershell
-node .\dist\cli.js browser-list
-node .\dist\cli.js browser-watch --browser-id <approved-Chrome-id>
-node .\dist\cli.js browser-watch-status
-node .\dist\cli.js browser-watch --clear
-```
-
-The first enable establishes a local baseline and does **not** launch earlier conversations. The existing leased Telegram foreground poller then checks for newly connected ChatGPT conversations or newly submitted human prompts about every 15 seconds when no other Mission is active. It checks for duplicate URLs and a stable existing answer before a zero-Send adoption. PI reviews that original human response, and only PI NEXT may authorize an additional ChatGPT Send in the same tab. Multiple eligible chats are serialized; a paused or uncertain Send is never repeated.
-
-Disabling the watch also requests a stop before subsequent turns on watch-created Missions. Chrome disconnects are isolated from the Telegram transport: they should not prevent the bot from accepting pause or status messages. **Two isolated real-Chrome plus real-PI NEXT → Send → DONE trials and one fresh production-controller real-Chrome → PI → Telegram Bot API notification acceptance passed.** The live notification cursor reached the Mission terminal event and no replies were pending; this is not an independent observation of the owner's phone UI or proof of external business outcomes. Playwriter's public extension API exposes only enabled tabs, not every ordinary Chrome tab; a new tab that was never enabled cannot be detected merely from profile-level authorization.
-
 While the PI Mission is active, ordinary Telegram text is queued as authenticated owner guidance **for PI**, not sent into an in-progress ChatGPT response. The controller persists every update ID and includes queued notes in the next PI decision; if a new note arrives while PI is thinking, the controller re-plans before the next browser Send. `/status <id>` reports the PI decision and pending note count. `/pause <id>` prevents further turns; if you explicitly want to handle the next step yourself, tell PI in natural language or issue `/pause` for deterministic stopping. `/continue` and native `/resume` cannot bypass PI planning on a PI-owned Mission.
 
-After a foreground restart, a PI Mission with a **fully observed** prior ChatGPT response, including an explicitly adopted zero-Send human conversation, is recovered only after checking the exact approved tab's latest user-prompt SHA and full assistant-answer SHA against SQLite. A durable PI `NEXT` decision can then resume the next unsent turn; if PI had not yet reviewed the initial answer, it reviews the existing human reply first without a synthetic browser Send. Any missing tab, changed history, ambiguous Send, unavailable PI, or missing authorization **fails closed** and informs the owner; there is no automatic replay. After a crash, inspect `/status` and do not submit the original task again.
+After a foreground restart, a PI Mission with a **fully observed** prior ChatGPT response is recovered only after checking the exact approved tab's latest user-prompt SHA and full assistant-answer SHA against SQLite. A durable PI `NEXT` decision can then resume the next unsent turn; if PI had not yet reviewed the initial answer, it reviews the existing human reply first without a synthetic browser Send. Any missing tab, changed history, ambiguous Send, unavailable PI, or missing authorization **fails closed** and informs the owner; there is no automatic replay. After a crash, inspect `/status` and do not submit the original task again.
 
 The ChatGPT read-only restriction is **prompt-level**, not a technical sandbox for connectors already installed in the owner's ChatGPT account. Mission Relay does not invoke external connector writes itself, but cannot independently constrain what tools ChatGPT may have available in that conversation. Keep write-capable connected apps disabled or separately approval-gated for high-risk use. A model-produced `DONE` marker is an observed response, not an independently verified real-world result.
 

@@ -6,8 +6,6 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import type {Page} from 'playwriter';
 import {Store,PI_SUCCESSOR_CHECKPOINT_MISMATCH} from '../src/core/store.js';
-import {armScopedPiConnectionDrill,consumeScopedPiConnectionDrill,
-  scopedPiConnectionDrillStatus} from '../src/core/pi-connection-drill.js';
 import {GoalLedger} from '../src/core/goal-store.js';
 import {Engine} from '../src/core/engine.js';
 import {TelegramBridge,type TelegramUpdate,type TelegramTransport} from '../src/plugins/telegram.js';
@@ -209,7 +207,7 @@ test('WP4 /goal creates durable Goal plus one PI Mission; PI persists a reviewed
       f.message(3103,'/goals'),f.message(3104,`/status ${task.id}`)]);
     await f.bridge.pollOnce(0);
     assert.equal(ledger.listGoals().length,1);
-    assert.ok(f.sent.some(x=>x.includes('Independent release checks: pending')));
+    assert.ok(f.sent.some(x=>x.includes('Goal status: Needs attention')&&x.includes('/goal-continue')));
     assert.ok(f.sent.some(x=>x.includes('Goals: Page 1/1')));
     assert.ok(f.sent.some(x=>x.includes('Work packages reviewed as passed')));
     assert.equal(f.store.events(task.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2);
@@ -728,92 +726,6 @@ test('PI restart preserves a settled NEXT on transient Playwriter loss, retries 
     assert.equal(f.store.events(created.id).filter(e=>e.type==='chatgpt.browser_reserved').length,2);
     assert.equal(f.store.events(created.id).filter(e=>e.type==='pi.browser_read_retry_deferred').length,1);
     assert.equal(f.store.events(created.id).filter(e=>e.type==='pi.autopilot_interrupted').length,0);
-  }finally{f.cleanup();}
-});
-
-test('scoped one-shot connection drill closes only the selected recovery session and resumes after persisted backoff',async()=>{
-  const digest=(x:string)=>createHash('sha256').update(x).digest('hex');
-  const prompt='Previously observed user prompt';
-  const answer='Synthetic complete answer\n[MISSION_RELAY:DONE]';
-  const f=rig({decide:async()=>({action:'DONE',summary:'Recovered safely',nextPrompt:''})});
-  try{
-    const m=f.store.create({goal:'Recover the exact targeted session',
-      acceptance:['Original Send never repeated'],workspace:'',sandbox:'read-only',
-      mode:'supervised',maxTurns:3,requestKey:'drill-target',checks:[]});
-    const linked=f.store.linkChat(m.id,SRC,m.version).mission;
-    const bound=f.store.bindChatBrowser(m.id,'install:Chrome:synthetic',linked.version).mission;
-    f.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
-    f.store.reserveChatBrowserTurn(m.id,bound.version,'drill-target-1',digest(prompt));
-    f.store.finishChatBrowserTurn(m.id,'drill-target-1',{
-      kind:'observed',assistantSha256:digest(answer),summary:answer,newChatUrl:DEST,
-      telegramBatch:{terminal:false,flowSignal:'NEXT',piManaged:true},
-    });
-    f.store.commitPiPlan(m.id,digest(answer),[],{
-      action:'NEXT',summary:'Review final work',nextPrompt:'Complete final work',
-    });
-    f.primeRecovered(prompt);
-    const version=f.store.get(m.id).version;
-    const before=f.store.events(m.id).filter(e=>e.type==='chatgpt.browser_reserved').length;
-    const armed=armScopedPiConnectionDrill(f.store,m.id,version,90);
-    assert.equal(armed.requestKey,'drill-target-1');
-    assert.equal(scopedPiConnectionDrillStatus(f.store,m.id).armed,true);
-    assert.throws(()=>armScopedPiConnectionDrill(f.store,m.id,version),/already armed/);
-    await (f.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>}).recoverObservedPiCheckpoint();
-    assert.equal(f.state().connectorAttempts,1);
-    assert.equal(f.state().closed,true,'The selected connector session is closed');
-    assert.equal(f.state().sends,1,'The earlier Send was not replayed');
-    assert.equal(scopedPiConnectionDrillStatus(f.store,m.id).armed,false);
-    assert.equal(f.store.events(m.id).filter(e=>e.type==='pi.recovery_connection_drill_triggered').length,1);
-    assert.equal(f.store.events(m.id).filter(e=>e.type==='pi.recovery_connection_drill_client_closed').length,1);
-    assert.equal(f.store.events(m.id).filter(e=>e.type==='pi.browser_read_retry_deferred').length,1);
-    assert.equal(f.store.events(m.id).filter(e=>e.type==='chatgpt.browser_reserved').length,before);
-    const reopened=new Store(f.dbFile);
-    try{
-      const replacement=f.restartedController(reopened);
-      await (replacement as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>}).recoverObservedPiCheckpoint();
-      assert.equal(f.state().connectorAttempts,1,'The new Worker honors original backoff');
-      reopened.setMeta(`pi.retry.after.${m.id}`,String(Date.now()-1));
-      await (replacement as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>}).recoverObservedPiCheckpoint();
-      for(let i=0;i<120&&reopened.get(m.id).turnCount<2;i++)
-        await new Promise(r=>setTimeout(r,40));
-      assert.equal(reopened.get(m.id).turnCount,2);
-      assert.equal(reopened.piPlan(m.id)?.action,'DONE');
-      assert.equal(reopened.events(m.id).filter(e=>e.type==='pi.recovery_connection_drill_triggered').length,1);
-      assert.equal(reopened.events(m.id).filter(e=>e.type==='chatgpt.browser_reserved').length,before+1,
-        'Exactly one new authorized NEXT, never another original Send');
-    }finally{reopened.close();}
-  }finally{f.cleanup();}
-});
-
-test('scoped connection drill expires independently and refuses owner pause or an in-flight Send',()=>{
-  const digest=(x:string)=>createHash('sha256').update(x).digest('hex');
-  const f=rig({decide:async()=>({action:'DONE',summary:'not used',nextPrompt:''})});
-  try{
-    const m=f.store.create({goal:'Expiry and pause fail closed',acceptance:['Keep pause'],
-      workspace:'',sandbox:'read-only',mode:'supervised',maxTurns:3,
-      requestKey:'drill-expiry',checks:[]});
-    const linked=f.store.linkChat(m.id,SRC,m.version).mission;
-    const bound=f.store.bindChatBrowser(m.id,'install:Chrome:synthetic',linked.version).mission;
-    f.store.setMeta(`pi.autopilot.enabled.${m.id}`,'1');
-    f.store.reserveChatBrowserTurn(m.id,bound.version,'drill-expiry-1',digest('prompt'));
-    assert.throws(()=>armScopedPiConnectionDrill(f.store,m.id,f.store.get(m.id).version),
-      /settled, eligible/);
-    f.store.finishChatBrowserTurn(m.id,'drill-expiry-1',{
-      kind:'observed',assistantSha256:digest('answer'),summary:'answer',newChatUrl:DEST,
-      telegramBatch:{terminal:false,flowSignal:'NEXT',piManaged:true},
-    });
-    const t=Date.now();
-    const revision=f.store.get(m.id).version;
-    armScopedPiConnectionDrill(f.store,m.id,revision,5,t);
-    assert.equal(consumeScopedPiConnectionDrill(f.store,m.id,t+5000),false);
-    assert.equal(scopedPiConnectionDrillStatus(f.store,m.id,t+5000).armed,false);
-    assert.equal(f.store.events(m.id).filter(e=>e.type==='pi.recovery_connection_drill_triggered').length,0);
-    f.store.update(m.id,f.store.get(m.id).version,{stopRequested:true},
-      'mission.pause_requested',{reason:'synthetic owner pause'});
-    assert.equal(f.store.get(m.id).stopRequested,true);
-    assert.throws(()=>armScopedPiConnectionDrill(f.store,m.id,f.store.get(m.id).version),
-      /settled, eligible/);
-    assert.equal(consumeScopedPiConnectionDrill(f.store,m.id),false);
   }finally{f.cleanup();}
 });
 

@@ -7,7 +7,7 @@ import {dirname,join,resolve,isAbsolute} from 'node:path';
 import {pathToFileURL} from 'node:url';
 
 const PROJECT_TABLES=['missions','events','goals','goal_plans','goal_work_items',
-  'goal_acceptance','goal_dependencies','goal_operations','goal_release_checks',
+  'goal_acceptance','goal_dependencies','goal_operations','goal_completions','goal_release_checks',
   'goal_release_completion','goal_release_targets','goal_events',
   'pi_owner_directives','channel_commands'];
 const RESET_EMPTY_TABLES=[...PROJECT_TABLES,'channel_leases'];

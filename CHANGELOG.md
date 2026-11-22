@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.2.28 — 2026-11-22
+
+- Give Goals a reachable finish line (owner decision). Production had 0
+  release targets, checks or completions across 14 Goals, so every successful
+  Goal ended BLOCKED. Now, when PI passes the final package of the approved
+  plan, the Goal is DONE: that review is told PASS completes the whole owner
+  Goal and to REPLAN if anything is missing. One immutable `goal_completions`
+  row is written; later Goal writes and browser Sends are refused.
+  `/goal-status` shows the result.
+- Remove paths with zero production use: the independent release-gate
+  subsystem (`goal-release*`, ~3,100 lines, 9 CLI commands), the PI connection
+  drill, Chrome-profile browser-watch and `chat-adopt`. CLI commands drop from
+  69 to 55. Kept and moved: provenance-checked Relay tab retirement
+  (`relay-tabs.ts`), GitHub CI readback for `software-release-status`
+  (`github-ci.ts`) and the enrolled Windows task readback used by the
+  verified drain release (`windows-task.ts`). Historical SQLite rows and the
+  empty v5 release tables stay readable; read-side adoption guards remain.
+
 ## 1.2.27 — 2026-11-22
 
 - Stop re-executing passed work after a PI REPLAN. Production evidence: about a

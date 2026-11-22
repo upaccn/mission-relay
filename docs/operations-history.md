@@ -1,7 +1,8 @@
 # Operations history
 
 Completed one-time procedures, preserved verbatim for audit. They are not part of
-the current runbook in [operations](operations.md); Git holds earlier revisions.
+the current runbook in [operations](operations.md); Git holds earlier revisions. The release-gate probes, connection drill, chat adoption and
+browser-watch referenced below were removed in 1.2.28.
 
 ## One-time reset before the first formal project
 

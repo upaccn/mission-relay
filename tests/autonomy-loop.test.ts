@@ -6,7 +6,6 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Store} from '../src/core/store.js';
 import {GoalLedger} from '../src/core/goal-store.js';
-import {GoalReleaseGate} from '../src/core/goal-release.js';
 import {goalWorkPrompt} from '../src/core/goal-prompts.js';
 
 const sha=(s:string)=>createHash('sha256').update(s).digest('hex');
@@ -95,7 +94,7 @@ test('at 32→1, a verified Goal successor keeps active work and routes a late o
     assert.equal(reopened.events(child.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
     assert.equal(reopened.events(f.mission.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
     assert.equal(reopened.pendingPiOwnerDirectives(child.id).length,0);
-    assert.equal(new GoalReleaseGate(reopened).report(f.goal.id).complete,false);
+    assert.equal(new GoalLedger(reopened).goalCompletion(f.goal.id),null);
     assert.equal(new GoalLedger(reopened).getGoal(f.goal.id).status,'ACTIVE');
   }finally{reopened?.close();f.cleanup();}
 });
@@ -116,7 +115,7 @@ test('a 32-turn parent cannot resurrect a blocked/finished Goal or skip its appr
     assert.throws(()=>f.ledger.setGoalStatus(f.goal.id,
       f.ledger.getGoal(f.goal.id).version,'DONE','unverified-goal-done'),
       /Invalid goal state transition/);
-    assert.equal(new GoalReleaseGate(f.store).report(f.goal.id).complete,false);
+    assert.equal(new GoalLedger(f.store).goalCompletion(f.goal.id),null);
   }finally{f.cleanup();}
 });
 

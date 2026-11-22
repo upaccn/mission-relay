@@ -6,7 +6,6 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Store} from '../src/core/store.js';
 import {GoalLedger} from '../src/core/goal-store.js';
-import {GoalReleaseGate} from '../src/core/goal-release.js';
 import {inspectPiEvidence,inspectPiChainEvidence} from '../src/core/pi-evidence.js';
 
 const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
@@ -94,7 +93,7 @@ test('crash during ninth new-Chat request preserves eight-turn ceiling, original
       action:'NEXT',summary:'Exactly one recovered ninth answer independently reviewed',
       nextPrompt:'Proceed only from the new Chat'});
     assert.deepEqual(inspectPiEvidence(restart,f.bound.id).pendingPiReviewRounds,[]);
-    assert.equal(new GoalReleaseGate(restart).report(f.goal.id).complete,false);
+    assert.equal(new GoalLedger(restart).goalCompletion(f.goal.id),null);
   }finally{restart?.close();f.cleanup();}
 });
 
@@ -124,7 +123,7 @@ test('32-round verified active Goal creates one zero-turn successor across compe
     assert.equal(f.store.events(a.id).filter(e=>e.type==='pi.chain_started').length,1);
     assert.equal(f.store.piPlan(a.id),null,'A child has no invented PI review');
     assert.equal(f.store.chatBrowserTurn(a.id),null,'Creating a child is not sending');
-    assert.equal(new GoalReleaseGate(f.store).report(f.goal.id).complete,false);
+    assert.equal(new GoalLedger(f.store).goalCompletion(f.goal.id),null);
     assert.equal(f.ledger.getGoal(f.goal.id).status,'ACTIVE');
     const lineage=inspectPiChainEvidence(f.store,f.bound.id);
     assert.equal(lineage.chainConsistent,true,JSON.stringify(lineage.violations));
