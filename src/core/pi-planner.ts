@@ -29,28 +29,6 @@ export interface PiPlanner {
 }
 export interface PictlRemoteConfig {sshHost:string;project:string}
 
-/** A tool-free PI call failed before any PI decision was committed. It is
- * safe to retry the SAME observed browser answer, never the browser Send.
- * Authorization, source-integrity and checkpoint errors are NOT retryable. */
-export class RetryablePiError extends Error {
-  constructor(message:string) {super(message);this.name='RetryablePiError';}
-}
-
-/** The PI host refuses ephemeral inference while its exclusive global task or
- * maintenance slot is occupied. This is a capacity wait, not a bad prompt,
- * failed browser Send, or permission to invoke a different model. */
-export function isPiTransientCapacityFailure(exitCode:number|null,stderr:string):boolean {
-  if(exitCode!==2)return false;
-  return stderr.trim().split(/\r?\n/).some(line=>{
-    try {
-      const reply=JSON.parse(line) as {ok?:unknown;error?:unknown};
-      return reply?.ok===false&&(
-        reply.error==='Pi maintenance or a global task is active'||
-        reply.error==='Model inference timed out after 120 seconds');
-    } catch {return false;}
-  });
-}
-
 /** The project is an administrator-supplied remote path, never model text. */
 export function validateRemoteProjectPath(project:string):string {
   if(!/^\/[a-zA-Z0-9_./-]{1,240}$/.test(project)||
@@ -76,6 +54,21 @@ export function validatePictlRemoteConfig(value:PictlRemoteConfig):PictlRemoteCo
 /** Pi is a tool-free planning authority, not a browser executor or verifier.
  * Only the fixed SSH command is allowed; no user/model text becomes shell
  * arguments. The trusted operator-managed host pictl launcher supplies its isolated OAuth. */
+/** Any failure of PI itself (unreachable, timeout, quota, unusable output).
+ * It always happens before a Send, so the Worker retries it with backoff;
+ * everything else (integrity, permission, changed Chat) still stops. */
+export class PiInferenceError extends Error {
+  constructor(message:string){super(message);this.name='PiInferenceError';}
+}
+/** Run one PI call; classify every failure as a PI inference failure. */
+export async function inferPi<T>(call:()=>Promise<T>):Promise<T>{
+  try{return await call();}
+  catch(error){
+    if(error instanceof PiInferenceError)throw error;
+    throw new PiInferenceError(error instanceof Error?error.message:String(error));
+  }
+}
+
 export class SshPiPlanner implements PiPlanner {
   private readonly remote:PictlRemoteConfig;
   constructor(config:PictlRemoteConfig) {
@@ -101,30 +94,30 @@ export class SshPiPlanner implements PiPlanner {
     const output=await sshPictlInfer(prompt,this.remote);
     let parsed:{ok?:unknown;result?:unknown};
     try{parsed=JSON.parse(output) as typeof parsed;}
-    catch{throw new RetryablePiError('PI inference returned invalid JSON; retry the settled checkpoint only');}
+    catch{throw new Error('PI inference returned invalid JSON; retry the settled checkpoint only');}
     if(parsed.ok!==true||typeof parsed.result!=='string')
-      throw new RetryablePiError('PI controller returned an unsuccessful or malformed inference result');
+      throw new Error('PI controller returned an unsuccessful or malformed inference result');
     try{return parsePiDecision(parsed.result);}
-    catch{throw new RetryablePiError('PI decision format invalid; retry the settled checkpoint only');}
+    catch{throw new Error('PI decision format invalid; retry the settled checkpoint only');}
   }
   private async inferGoal(prompt:string):Promise<string>{
     const output=await sshPictlInfer(prompt,this.remote);
     let parsed:{ok?:unknown;result?:unknown};
     try{parsed=JSON.parse(output) as typeof parsed;}
-    catch{throw new RetryablePiError('PI Goal inference returned invalid JSON');}
+    catch{throw new Error('PI Goal inference returned invalid JSON');}
     if(parsed.ok!==true||typeof parsed.result!=='string')
-      throw new RetryablePiError('PI Goal decision unavailable or malformed; no browser Send authorized');
+      throw new Error('PI Goal decision unavailable or malformed; no browser Send authorized');
     return parsed.result;
   }
   async proposeGoalPlan(input:GoalPlanContext):Promise<GoalPlanProposal>{
     const answer=await this.inferGoal(goalPlanPrompt(input));
     try{return parseGoalPlanProposal(answer);}
-    catch{throw new RetryablePiError('PI Goal plan format invalid; retry the settled checkpoint only');}
+    catch{throw new Error('PI Goal plan format invalid; retry the settled checkpoint only');}
   }
   async reviewGoalWork(input:GoalReviewContext):Promise<GoalReview>{
     const answer=await this.inferGoal(goalReviewPrompt(input));
     try{return parseGoalReview(answer);}
-    catch{throw new RetryablePiError('PI Goal review format invalid; retry the settled checkpoint only');}
+    catch{throw new Error('PI Goal review format invalid; retry the settled checkpoint only');}
   }
 }
 
@@ -239,23 +232,23 @@ function sshPictlCommand(remote:PictlRemoteConfig,commandArgs:string[],
     // Model inference is bounded separately from long ChatGPT observation.
     const timer=setTimeout(()=>{
       try{child.kill('SIGKILL');}catch{/* Already exited. */}
-      finish(new RetryablePiError('operator-managed host PI inference deadline exceeded; no next browser Send was authorized'));
+      finish(new Error('operator-managed host PI inference deadline exceeded; no next browser Send was authorized'));
     },timeoutMs);
     child.once('error',error=>finish(
       ['ETIMEDOUT','ECONNREFUSED','ECONNRESET','EPIPE'].includes((error as NodeJS.ErrnoException).code??'')
-        ?new RetryablePiError(`operator-managed host PI SSH transport temporarily unavailable: ${error.message}`)
+        ?new Error(`operator-managed host PI SSH transport temporarily unavailable: ${error.message}`)
         :new Error(`operator-managed host PI SSH could not start: ${error.message}`)));
     child.stdout.on('data',(buf:Buffer)=>{
       stdout+=buf.toString('utf8');
-      if(stdout.length>128000){child.kill('SIGKILL');finish(new RetryablePiError('PI inference output exceeded limit'));}
+      if(stdout.length>128000){child.kill('SIGKILL');finish(new Error('PI inference output exceeded limit'));}
     });
     child.stderr.on('data',(buf:Buffer)=>{stderr=(stderr+buf.toString('utf8')).slice(-1000);});
     child.once('close',code=>{
       if(code!==0){
         const message=`operator-managed host PI inference failed (SSH exit ${code}); no browser retry. ${stderr.slice(-200)}`;
-        const transient=/connection (?:timed out|refused|reset|closed)|temporary failure|operation timed out|connection aborted/i.test(stderr)||
-          isPiTransientCapacityFailure(code,stderr);
-        finish(transient?new RetryablePiError(message):new Error(message));
+        // Any PI failure precedes a Send, so the controller retries the same
+        // settled checkpoint with backoff; there is no non-retryable class.
+        finish(new Error(message));
         return;
       }
       finish();

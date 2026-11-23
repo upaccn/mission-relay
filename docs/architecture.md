@@ -34,8 +34,12 @@ compiler rejects unused locals and parameters, and every module is imported.
    *Established context* list of PI-written PASS summaries and recorded
    blockers. Owner-wide strategy and raw prior answers are excluded.
 5. **Review.** PI reviews each complete answer: PASS records acceptance and
-   selects the next package; PARTIAL/FAIL keep the package; REPLAN
-   supersedes the plan and carries matching PASSED work forward; BLOCKED
+   selects the next package; PARTIAL (a named unmet criterion with one
+   concrete action) and FAIL (a real defect) keep the package; REPLAN
+   revises the plan, keeps item keys and their review history, marks the
+   replaced active item FAILED and carries matching PASSED work forward;
+   PI judges the executor report by an explicit evidence standard and there
+   is no controller repair budget; BLOCKED
    needs an external cause and a release condition and is scoped to its
    package while independent work remains.
 6. **Done.** PASS of the final package (the review is told this completes the
@@ -58,7 +62,11 @@ replaces.
   snapshotted in the same transaction. The answer is credited only after the
   latest visible user prompt matches the reservation and the full assistant
   text is stable; its SHA-256 covers the complete visible text.
-- Request states are `reserved → observed | uncertain → reconciled`.
+- Request states are `reserved → observed | uncertain → reconciled`, or
+  `reserved → aborted` when the failure provably happened before the Send
+  click: the reservation is released, the previous receipt restored and the
+  step retried later under a fresh key (`<key>-a<n>`); 8 consecutive aborts
+  stop the Mission visibly. An aborted request is audit-only, never pending.
   An uncertain outcome is never resent. The Worker may only observe, use the
   bounded existing-message UI Retry for an exact delivery-timeout or
   stream-error banner, or (unpaused) handle ChatGPT's native maximum-length

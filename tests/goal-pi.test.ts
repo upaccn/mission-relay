@@ -217,150 +217,65 @@ test('PI PARTIAL and FAIL preserve retry scope, and second review can later PASS
   }finally{f.close();}
 });
 
-test('PI receives durable failed-review history and escalates repeated report rewrites to evidence acquisition',async()=>{
+test('PI receives durable review history and must decide on the merits after two non-pass reviews',async()=>{
   const f=fixture();
   try{
     await review(f,1,'Initial proposal',planner());
     await review(f,2,'Unverified draft 1',planner({verdict:'PARTIAL'}));
     await review(f,3,'Unverified draft 2',planner({verdict:'PARTIAL'}));
     let observed:GoalReviewContext|null=null;
-    await review(f,4,'Unverified draft 3',planner({verdict:'REPLAN',
-      plan:{summary:'Acquire new executable evidence',items:[{
-        key:'collect-evidence',title:'Independently verify the missing proof',priority:100,
-        description:'Run a tracked command and preserve the original raw receipt',
-        acceptance:['Retain SHA-bound original executable test log with a verified runner'],
-        dependsOn:[],
-      }]},
-      onReview:context=>{observed=context;}}));
-    assert.deepEqual(observed?.priorWorkReviews,[
-      {round:2,verdict:'PARTIAL'},{round:3,verdict:'PARTIAL'}]);
+    // No controller budget: a third PARTIAL is a normal PI decision, not a throw.
+    const third=await review(f,4,'Draft 3 with the named fix',planner({verdict:'PARTIAL',
+      nextPrompt:'Add the missing restart test for the schema',onReview:context=>{observed=context;}}));
+    assert.equal(third.action,'NEXT');
+    assert.deepEqual(observed?.priorWorkReviews?.map(x=>`${x.round}:${x.verdict}`),
+      ['2:PARTIAL','3:PARTIAL']);
     const prompt=goalReviewPrompt(observed!);
-    assert.match(prompt,/NON-CONVERGENCE/);
     assert.match(prompt,/round 2: PARTIAL/);
     assert.match(prompt,/round 3: PARTIAL/);
-    assert.match(prompt,/choose REPLAN/);
-    assert.match(prompt,/original evidence that was never captured/);
-    assert.equal(f.ledger.graph(f.goal.id).plans.length,2,
-      'A PI-approved REPLAN creates a new scoped plan, not another report Send');
+    assert.match(prompt,/Decide on the merits now/);
+    assert.match(prompt,/EVIDENCE STANDARD/);
+    assert.doesNotMatch(prompt,/NON-CONVERGENCE/);
+    assert.equal(work(f,'foundation').status,'IN_PROGRESS');
+    assert.equal(f.ledger.graph(f.goal.id).plans.length,1);
   }finally{f.close();}
 });
 
-test('repeated evidence-free PARTIAL cannot authorize another editorial repair Send',async()=>{
+test('REPLAN keeps item keys: the revised active item continues with its review history',async()=>{
   const f=fixture();
   try{
-    await review(f,1,'Original approved plan',planner());
-    await review(f,2,'First unverified draft',planner({verdict:'PARTIAL'}));
-    await review(f,3,'Second unverified draft',planner({verdict:'PARTIAL'}));
-    const decisionsBefore=f.store.events(f.mission.id).filter(e=>e.type==='pi.decision').length;
-    await assert.rejects(review(f,4,'Third unverified draft',planner({verdict:'PARTIAL'})),
-      /non-convergence|REPLAN|independent evidence/i);
-    assert.equal(f.store.events(f.mission.id).filter(e=>e.type==='pi.decision').length,
-      decisionsBefore,'No further PI NEXT directive was authorized');
-    assert.equal(f.ledger.graph(f.goal.id).events.filter(e=>e.type==='goal.pi_review').length,2);
+    await review(f,1,'Initial proposal',planner());
+    await review(f,2,'Partial result',planner({verdict:'PARTIAL'}));
+    let planContext:GoalPlanContext|undefined;
+    const revised={summary:'Same items, corrected prerequisite',items:[
+      {key:'foundation',title:'Check persisted schema with migration fixture',priority:100,
+        description:'Verify migration against a real fixture',dependsOn:[],
+        acceptance:['Schema survives restart']},
+      {key:'controller',title:'Wire existing controller',priority:90,
+        description:'Reuse existing PI loop',dependsOn:['foundation'],acceptance:['No duplicate Send']},
+    ]};
+    const pi:PiPlanner={...planner({verdict:'REPLAN'}),proposeGoalPlan:async x=>{
+      planContext=x;return revised;}};
+    await review(f,3,'The plan missed a fixture',pi);
+    assert.deepEqual(planContext?.currentPlan?.map(x=>x.key),['foundation','controller']);
+    assert.match(goalPlanPrompt(planContext!),/Keep the exact key/);
+    assert.ok(!planContext?.priorWorkOutcomes?.some(x=>x.status==='BLOCKED'),
+      'a REPLAN never reports its own superseded item as externally blocked');
+    let seen:GoalReviewContext|null=null;
+    await review(f,4,'Fixture added',planner({verdict:'PASS',onReview:x=>{seen=x;}}));
+    assert.deepEqual(seen?.priorWorkReviews?.map(x=>x.verdict),['PARTIAL','REPLAN'],
+      'review history follows the key across plans');
   }finally{f.close();}
 });
 
-test('equivalent REPLAN cannot reset the repair budget; distinct evidence work persists across restart',async()=>{
-  const f=fixture();let reopened:Store|null=null;
-  try{
-    await review(f,1,'Original plan',planner());
-    await review(f,2,'Unverified report one',planner({verdict:'PARTIAL'}));
-    await review(f,3,'Unverified report two',planner({verdict:'PARTIAL'}));
-    const observed=f.observe(4,'Replan original evidence collection');
-    const equivalent={summary:'Rename without new evidence',items:[{
-      key:'renamed-only',title:'Equivalent editorial request',priority:90,
-      description:'Rewrite the old report',dependsOn:[],
-      acceptance:['Schema survives restart'],
-    }]};
-    const decide=(plan:typeof proposed)=>reviewGoalPiRound({...observed,
-      planner:planner({verdict:'REPLAN',plan})});
-    await assert.rejects(decide(equivalent),/equivalent REPLAN cannot reset/);
-    assert.equal(f.ledger.graph(f.goal.id).plans.length,1);
-    assert.equal(f.store.events(f.mission.id).filter(e=>e.type==='pi.decision').length,3);
-    const mixed={summary:'Try hiding the same work behind a different item',items:[
-      {...equivalent.items[0]!,priority:99},
-      {key:'unrelated',title:'Unrelated future task',priority:10,
-        description:'An unrelated check',dependsOn:[],
-        acceptance:['Measure independent integration timing']},
-    ]};
-    await assert.rejects(decide(mixed),/equivalent REPLAN cannot reset/);
-    assert.equal(f.ledger.graph(f.goal.id).plans.length,1);
-    const delayed={summary:'Hide exhausted work behind valid evidence collection',items:[
-      {key:'fresh',title:'Collect independent test proof',priority:99,
-        description:'Capture direct test results',dependsOn:[],
-        acceptance:['Capture raw isolated test output']},
-      {...equivalent.items[0]!,priority:10,dependsOn:['fresh']},
-    ]};
-    await assert.rejects(decide(delayed),/equivalent REPLAN cannot reset/);
-    assert.equal(f.store.events(f.mission.id).filter(e=>e.type==='pi.decision').length,3);
-    const acquisition={summary:'Collect new executable evidence',items:[{
-      key:'independent-evidence',title:'Run a distinct independently captured test',
-      priority:95,description:'Collect and hash the raw execution receipt',
-      dependsOn:[],acceptance:['Capture a tracked test command and original TAP with its executor identity'],
-    }]};
-    const accepted=await decide(acquisition);
-    assert.equal(accepted.action,'NEXT');
-    assert.match(accepted.nextPrompt,/independent/i);
-    assert.equal(f.ledger.graph(f.goal.id).plans.length,2);
-    reopened=new Store(f.file);
-    const next=f.observe(5,'New independent TAP evidence');
-    const nextPlan=await reviewGoalPiRound({...next,store:reopened,
-      planner:planner({verdict:'PARTIAL',nextPrompt:
-        'Capture the original independently executed test command and stderr receipt'})});
-    assert.equal(nextPlan.action,'NEXT');
-    assert.match(nextPlan.nextPrompt,/independently executed test/i);
-    assert.equal(new GoalLedger(reopened).graph(f.goal.id).goal.status,'ACTIVE');
-  }finally{reopened?.close();f.close();}
-});
-
-test('future work selection refuses an exhausted acceptance after distinct higher-priority work passes',async()=>{
-  const f=fixture();
-  try{
-    const plan={summary:'Execute one direct evidence step, then old deferred work',
-      items:[
-        {key:'new-first',title:'Collect first-hand evidence',description:'Run a tracked test',
-          priority:100,dependsOn:[],acceptance:['New independent TAP receipt']},
-        {key:'deferred-old',title:'Repeat the old report',description:'Recheck old evidence',
-          priority:30,dependsOn:['new-first'],acceptance:['Schema survives restart']},
-      ]};
-    await review(f,1,'Initial plan',planner({plan}));
-    const graph=f.ledger.graph(f.goal.id);
-    const deferred=graph.items.find(x=>x.key==='deferred-old')!;
-    for(let round=20;round<=21;round++){
-      f.ledger.recordPiReview(f.goal.id,f.mission.id,deferred.id,round,
-        sha('synthetic old obligation audit '+round),'PARTIAL',[],
-        'Adversarial retained review', 'deferred-attempt-'+round);
-    }
-    const beforeEvents=f.store.events(f.mission.id).length;
-    await assert.rejects(review(f,2,'New independent TAP acquired',planner()),
-      /exhausted equivalent acceptance cannot be selected/);
-    assert.equal(f.store.events(f.mission.id).filter(x=>x.type==='pi.decision').length,1);
-    assert.equal(f.store.events(f.mission.id).length>beforeEvents,true,
-      'Original second browser answer stays durably observed for PI review');
-    assert.equal(f.store.chatBrowserTurn(f.mission.id)?.status,'observed');
-    assert.equal(f.ledger.graph(f.goal.id).items.find(x=>x.key==='deferred-old')?.status,'PENDING');
-  }finally{f.close();}
-});
-
-test('exhausted PI evidence budget survives more than five intervening durable review records',async()=>{
-  const f=fixture();let reopened:Store|null=null;
-  try{
-    await review(f,1,'Original plan',planner());
-    await review(f,2,'First failed evidence report',planner({verdict:'PARTIAL'}));
-    await review(f,3,'Second failed evidence report',planner({verdict:'FAIL'}));
-    const item=work(f,'foundation');
-    // Isolated adversarial audit fixture: six later non-repair entries must
-    // not make the two originally committed repairs disappear from policy.
-    for(let i=0;i<6;i++)f.ledger.recordPiReview(f.goal.id,f.mission.id,item.id,4+i,
-      sha('preserved historical decision '+i),'REPLAN',[],
-      'Preserved synthetic audit event','historical-budget-'+i);
-    reopened=new Store(f.file);
-    const next=f.observe(4,'Another unverified report');
-    await assert.rejects(reviewGoalPiRound({...next,store:reopened,
-      planner:planner({verdict:'PARTIAL'})}),/non-convergence/);
-    assert.equal(reopened.piPlan(f.mission.id)?.round,3);
-    assert.equal(new GoalLedger(reopened).graph(f.goal.id).plans.length,1);
-  }finally{reopened?.close();f.close();}
+test('PI plan keys are normalized and dependencies are remapped',()=>{
+  const plan=parseGoalPlanProposal(JSON.stringify({summary:'Keys',items:[
+    {key:'Pro Paywall / Product!',title:'A',description:'a',priority:10,dependsOn:[],acceptance:['x']},
+    {key:'pro paywall product',title:'B',description:'b',priority:9,
+      dependsOn:['Pro Paywall / Product!','missing','pro paywall product'],acceptance:['y']},
+  ]}));
+  assert.deepEqual(plan.items.map(x=>x.key),['pro-paywall-product','pro-paywall-product-2']);
+  assert.deepEqual(plan.items[1]!.dependsOn,['pro-paywall-product']);
 });
 
 test('PI REPLAN supersedes old version, preserves audit, and chooses the new approved package',async()=>{
@@ -382,7 +297,7 @@ test('PI REPLAN supersedes old version, preserves audit, and chooses the new app
     const graph=f.ledger.graph(f.goal.id);
     assert.equal(graph.plans.length,2);
     assert.deepEqual(graph.plans.map(x=>x.status),['SUPERSEDED','APPROVED']);
-    assert.equal(work(f,'foundation').status,'BLOCKED');
+    assert.equal(work(f,'foundation').status,'FAILED');
     assert.equal(work(f,'replacement').status,'IN_PROGRESS');
     assert.ok(graph.events.some(x=>x.type==='goal.pi_review'&&x.payload.verdict==='REPLAN'));
     assert.equal(f.store.events(f.mission.id).filter(x=>x.type==='pi.decision').length,2);
@@ -509,8 +424,9 @@ test('PI planning and review explicitly reject report churn while retaining rele
       key:'ui',title:'Implement purchase UI',description:'Ship functional UI',priority:90,
       status:'IN_PROGRESS',evidenceRefs:[],version:1,createdAt:'',updatedAt:''},
     acceptance:['Real purchase works'],priorWorkReviews:[]});
-  assert.match(reviewPrompt,/A renamed report, fresh checklist/);
-  assert.match(reviewPrompt,/other\s+independent approved packages can still proceed/);
+  assert.match(reviewPrompt,/Never ask to re-document, re-summarize, re-run unchanged tests/);
+  assert.match(reviewPrompt,/it is not a way to restart or rename the current item/);
+  assert.match(reviewPrompt,/transient outages are never BLOCKED/);
 });
 
 test('a claimed permanent blocker without an external cause and release condition cannot terminate the Goal',async()=>{
@@ -730,8 +646,8 @@ test('strict Goal PI JSON rejects non-JSON, ungrounded PASS and bad response sha
     planSummary:'Plan',workItem:{id:'123',goalId:'1',planId:'2',key:'key',
       title:'Title',description:'Desc',priority:90,status:'IN_PROGRESS' as const,
       evidenceRefs:[],version:1,createdAt:'',updatedAt:''},acceptance:['Check']};
-  assert.match(goalReviewPrompt(input),/independent evidence verification/);
-  assert.match(goalReviewPrompt(input),/normal code change, failing test, build\/CI failure/);
+  assert.match(goalReviewPrompt(input),/EVIDENCE STANDARD/);
+  assert.match(goalReviewPrompt(input),/code, test, build or CI failures and transient outages are never BLOCKED/);
 });
 
 test('failure to make a safe work prompt atomically rolls back first approval and PI decision',async()=>{

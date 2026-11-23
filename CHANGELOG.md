@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.4.0 — 2026-11-23
+
+Root-cause fixes from the first half-day of v1.3.1 production (one Goal ran
+~16 rounds with 7 plans and 1 PASS, then stopped on a pre-Send composer
+timeout marked as uncertain).
+
+- **PI review converges on evidence.** The review prompt now states an
+  explicit evidence standard: concrete, consistent reported facts satisfy a
+  criterion; PASS when all are met; PARTIAL only for a named unmet criterion
+  with one concrete action, never re-documentation or re-proof. Review
+  history (with summaries) follows the item key across plans. Removed the
+  controller repair budget and the non-convergence/"equivalent REPLAN"
+  throws that forced PI to rename items to make progress.
+- **REPLAN revises, it does not restart.** PI sees the current plan and must
+  keep keys; the replaced active item becomes FAILED (was BLOCKED, which
+  wrongly told later plans the work was externally blocked). Plan keys are
+  normalized and deduped and unknown dependencies dropped, so a cosmetic key
+  can no longer interrupt a Mission.
+- **Every PI failure is retried.** Planner calls are wrapped as
+  `PiInferenceError`; all of them (not only two typed messages) defer with
+  SHA-bound backoff and stop visibly after 8 attempts. Browser integrity,
+  permission and changed-Chat failures still stop at once.
+- **Unsent is not uncertain.** Failures before the Send click (`PreSendError`:
+  page load, composer fill/readiness) release the reservation, restore the
+  previous receipt, record `chatgpt.browser_send_aborted` and retry under a
+  fresh `-a<n>` key after 30 s → 15 min backoff; 8 consecutive aborts stop the
+  Mission. The request ledger reports such requests as `aborted`.
+- **Long ChatGPT work is waited for.** The default 60-minute observation
+  window extends while the answer is generating or changing, up to 4 h.
+
 ## 1.3.1 — 2026-11-22
 
 - Windows maintenance: the final verified drain release now retries the same

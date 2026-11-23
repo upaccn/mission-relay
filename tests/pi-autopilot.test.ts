@@ -7,7 +7,8 @@ import {createHash} from 'node:crypto';
 import type {Page} from 'playwriter';
 import {Store} from '../src/core/store.js';
 import {GoalLedger} from '../src/core/goal-store.js';
-import {drivePiAutopilot,pauseFailedPiPlanning} from '../src/core/pi-autopilot.js';
+import {PiInferenceError} from '../src/core/pi-planner.js';
+import {MAX_CHECKPOINT_RETRIES,drivePiAutopilot,pauseFailedPiPlanning} from '../src/core/pi-autopilot.js';
 import {SshPiPlanner,type PiPlanner,type PiTurnContext} from '../src/core/pi-planner.js';
 
 const SOURCE='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
@@ -292,17 +293,26 @@ test('Goal PI BLOCKED with an external blocker stops without another browser Sen
   }finally{f.cleanup();}
 });
 
-test('Goal PI failure after a real observed answer fails closed without a second Send',async()=>{
+test('Goal PI failure after a real observed answer defers with backoff, then stops after the retry budget, never re-sending',async()=>{
   const f=fixture();try{
     const {revision}=bindGoal(f,'pi-error');
     const planner:PiPlanner={decide:noLegacy,
       proposeGoalPlan:async()=>{throw new Error('PI unreachable');},
       reviewGoalWork:noLegacy};
-    await assert.rejects(drivePiAutopilot({store:f.store,planner,missionId:f.mission.id,revision,
-      requestPrefix:'pi-error',page:f.anchor,url:SOURCE}),/PI unreachable/);
-    pauseFailedPiPlanning(f.store,f.mission.id,'PI unreachable');
+    const failure=await drivePiAutopilot({store:f.store,planner,missionId:f.mission.id,revision,
+      requestPrefix:'pi-error',page:f.anchor,url:SOURCE}).then(()=>null,(e:unknown)=>e);
+    assert.ok(failure instanceof PiInferenceError);
+    assert.match(failure.message,/PI unreachable/);
+    for(let i=0;i<MAX_CHECKPOINT_RETRIES;i++){
+      pauseFailedPiPlanning(f.store,f.mission.id,failure);
+      assert.equal(f.store.get(f.mission.id).lastError,null,'a PI failure before any Send is retried');
+    }
+    assert.equal(f.store.events(f.mission.id).filter(x=>x.type==='pi.autopilot_retry_deferred').length,
+      MAX_CHECKPOINT_RETRIES);
+    pauseFailedPiPlanning(f.store,f.mission.id,failure);
     assert.equal(f.results().sends,1);
     assert.equal(f.store.get(f.mission.id).state,'PAUSED');
+    assert.match(f.store.get(f.mission.id).lastError??'',/PI unreachable/);
     assert.equal(f.store.events(f.mission.id).filter(x=>x.type==='pi.autopilot_interrupted').length,1);
     assert.equal(f.store.events(f.mission.id).filter(x=>x.type==='pi.autopilot_finished').length,0);
   }finally{f.cleanup();}

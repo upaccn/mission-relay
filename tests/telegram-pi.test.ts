@@ -9,7 +9,7 @@ import {Store,PI_CHECKPOINT_MISMATCH} from '../src/core/store.js';
 import {GoalLedger} from '../src/core/goal-store.js';
 import {TelegramBridge,type TelegramUpdate,type TelegramTransport} from '../src/plugins/telegram.js';
 import {pauseFailedPiPlanning,deferTransientPiBrowserRecovery} from '../src/core/pi-autopilot.js';
-import {RetryablePiError,type PiPlanner,type PiTurnContext} from '../src/core/pi-planner.js';
+import {PiInferenceError,type PiPlanner,type PiTurnContext} from '../src/core/pi-planner.js';
 
 const SRC='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174000';
 const DEST='https://chatgpt.com/c/123e4567-e89b-42d3-a456-426614174001';
@@ -553,7 +553,7 @@ test('repeated PI/browser outages double persistent backoff but identical text o
     assert.equal(deferTransientPiBrowserRecovery(f.store,m.id,'Temporary Chrome disconnect'),true);
     const firstAfter=Number(f.store.getMeta(`pi.retry.after.${m.id}`));
     assert.equal(Number(f.store.getMeta(`pi.retry.count.${m.id}`)),1);
-    pauseFailedPiPlanning(f.store,m.id,new RetryablePiError('PI Goal decision format invalid'));
+    pauseFailedPiPlanning(f.store,m.id,new PiInferenceError('PI Goal decision format invalid'));
     const secondAfter=Number(f.store.getMeta(`pi.retry.after.${m.id}`));
     assert.ok(secondAfter-firstAfter>50_000,'The second retry has a longer delay');
     assert.equal(Number(f.store.getMeta(`pi.retry.count.${m.id}`)),2);
@@ -828,7 +828,7 @@ test('Temporary PI inference outage defers the exact settled answer, survives co
       kind:'observed',assistantSha256:sha(answer),summary:answer,newChatUrl:DEST,
       telegramBatch:{terminal:false,flowSignal:'NEXT',piManaged:true},
     });
-    pauseFailedPiPlanning(f.store,created.id,new RetryablePiError('Remote PI inference deadline exceeded'));
+    pauseFailedPiPlanning(f.store,created.id,new PiInferenceError('Remote PI inference deadline exceeded'));
     const after=f.store.get(created.id);
     assert.equal(after.state,'PAUSED');
     assert.equal(after.lastError,null);

@@ -2,7 +2,7 @@ import {createHash} from 'node:crypto';
 import {withReadOnlyDeadline} from './read-only-deadline.js';
 import type {Page} from 'playwriter';
 import type {Store,GoalPromptBinding} from './store.js';
-import {inspectChatPage,lastVisibleUserPromptSha256,matchesSubmittedUserPrompt,chatTabTargetSha256,submitChatTurn,submitNewChatTurn,MAX_BROWSER_TURN_TIMEOUT_MS,visibleConversationLengthLimit} from '../plugins/chatgpt-browser.js';
+import {PreSendError,inspectChatPage,lastVisibleUserPromptSha256,matchesSubmittedUserPrompt,chatTabTargetSha256,submitChatTurn,submitNewChatTurn,MAX_BROWSER_TURN_TIMEOUT_MS,visibleConversationLengthLimit} from '../plugins/chatgpt-browser.js';
 import {validateRemoteProjectPath} from './pi-planner.js';
 import {missionRelayMarker} from './mission-marker.js';
 
@@ -88,6 +88,10 @@ export async function executeBrowserTurn(input:{
       observedAt:receipt.observedAt};
   } catch(error) {
     const reason=error instanceof Error?error.message:'Unknown browser error';
+    if(error instanceof PreSendError){
+      store.abortUnsentBrowserTurn(missionId,requestKey,reason);
+      throw new PreSendError(`Browser Send not attempted; will retry: ${reason}`);
+    }
     if(observedCandidateSha)store.quarantineBrowserObservation(missionId,{
       requestKey,promptSha256,assistantSha256:observedCandidateSha,
       reason:'settlement-rejected'});
@@ -187,7 +191,9 @@ export function reservedRequestPrompt(store:Store,missionId:string,requestKey:st
   const snapshot=store.reservedBrowserPrompt(missionId,requestKey);
   if(snapshot)return snapshot.prompt;
   const m=store.get(missionId);
-  if(m.turnCount===0&&requestKey===`${m.requestKey}-1`)
+  const first=`${m.requestKey}-1`;
+  if(m.turnCount===0&&(requestKey===first||(requestKey.startsWith(`${first}-a`)&&
+    /^\d+$/.test(requestKey.slice(first.length+2)))))
     return browserGoalPlanningPrompt(m.goal,m.acceptance,
       m.sandbox==='workspace-write'?m.workspace:null);
   throw new Error('Reserved request has no reconstructable prompt; use recover --abandon');
@@ -222,18 +228,22 @@ export async function executeBrowserRollover(input:{
       goalBinding:input.goalBinding});
   const promptSha256=createHash('sha256').update(prompt.trim()).digest('hex');
   let observedCandidateSha:string|null=null;
+  let page:Page|null=null;
   try {
-    const page=await input.sourcePage.context().newPage();
-    const {url,receipt}=await submitNewChatTurn(page,prompt,input.timeoutMs,false,{
+    page=await input.sourcePage.context().newPage().catch(error=>{
+      throw new PreSendError(`Could not open a new tab: ${error instanceof Error?error.message:String(error)}`);
+    });
+    const tab=page;
+    const {url,receipt}=await submitNewChatTurn(tab,prompt,input.timeoutMs,false,{
       claim:async(reason)=>matchesSubmittedUserPrompt(
-        await lastVisibleUserPromptSha256(page),prompt)
+        await lastVisibleUserPromptSha256(tab),prompt)
         &&store.claimDeliveryRetryIntent(missionId,requestKey,promptSha256,reason),
       clicked:()=>store.recordDeliveryRetryClicked(missionId,requestKey,promptSha256),
     });
     // Optional physical tab proof; failure cannot reclassify an already
     // observed external Send as uncertain or block its SQLite settlement.
     const newChatTargetSha256=await withReadOnlyDeadline(
-      chatTabTargetSha256(page),5000).catch(()=>null);
+      chatTabTargetSha256(tab),5000).catch(()=>null);
     const assistantSha256=createHash('sha256').update(receipt.lastAssistant).digest('hex');
     observedCandidateSha=assistantSha256;
     const flow=browserDecision(receipt.lastAssistant);
@@ -247,9 +257,15 @@ export async function executeBrowserRollover(input:{
         piManaged:input.telegramBatch.piManaged}}:{})});
     return {missionId,requestKey,state:m.state,revision:m.version,turnCount:m.turnCount,
       assistantSha256,assistantExcerpt:receipt.lastAssistant.slice(-1000),
-      lastAssistant:receipt.lastAssistant,observedAt:receipt.observedAt,page,url};
+      lastAssistant:receipt.lastAssistant,observedAt:receipt.observedAt,page:tab,url};
   } catch(error) {
     const reason=error instanceof Error?error.message:'Unknown browser rollover failure';
+    if(error instanceof PreSendError){
+      // The Relay-created tab never received a Send: close it and retry later.
+      if(page)await page.close().catch(()=>undefined);
+      store.abortUnsentBrowserTurn(missionId,requestKey,reason);
+      throw new PreSendError(`New ChatGPT conversation not started; will retry: ${reason}`);
+    }
     if(observedCandidateSha)store.quarantineBrowserObservation(missionId,{
       requestKey,promptSha256,assistantSha256:observedCandidateSha,
       reason:'settlement-rejected'});

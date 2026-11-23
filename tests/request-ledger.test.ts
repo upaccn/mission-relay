@@ -269,3 +269,46 @@ test('Goal→Mission→Chat→Work→request→answer read-only custody retains 
     assert.equal(corrupted.ledgerConsistent,false);
   }finally{f.cleanup();}
 });
+
+test('a reservation released before Send restores the settled receipt, uses a fresh key and is never pending',()=>{
+  const f=fixture();
+  try{
+    const answer='First answer\n[MISSION_RELAY:NEXT]';
+    f.store.reserveChatBrowserTurn(f.missionId,f.store.get(f.missionId).version,'step-1',sha('p1'));
+    settle(f.store,f.missionId,'step-1',answer);
+    const paused=f.store.update(f.missionId,f.store.get(f.missionId).version,{state:'PAUSED'},'test.pause');
+    assert.equal(f.store.nextRequestKey(f.missionId,'step-2'),'step-2');
+    f.store.reserveChatBrowserTurn(f.missionId,paused.version,'step-2',sha('p2'));
+    assert.throws(()=>f.store.abortUnsentBrowserTurn(f.missionId,'other','x'),/Only the active reserved/);
+    const after=f.store.abortUnsentBrowserTurn(f.missionId,'step-2','composer not ready');
+    assert.equal(after.state,'PAUSED');
+    assert.equal(after.lastError,null);
+    assert.equal(after.turnCount,1);
+    assert.equal(f.store.chatBrowserTurn(f.missionId)?.status,'observed');
+    assert.equal(f.store.chatBrowserTurn(f.missionId)?.assistantSha256,sha(answer));
+    assert.ok(f.store.browserPresendRetryAfter(f.missionId)>Date.now());
+    assert.equal(f.store.nextRequestKey(f.missionId,'step-2'),'step-2-a1');
+    const report=inspectPiEvidence(f.store,f.missionId);
+    assert.equal(report.pendingBrowserRequest,false);
+    const ledger=inspectGoalRequestLedger(f.store,f.goal.id);
+    assert.deepEqual(ledger.requests.map(r=>r.status),['observed','aborted']);
+    assert.ok(!ledger.violations.some(v=>/pending|reservation/.test(v)),ledger.violations.join(','));
+    // The retry reserves a fresh key; the aborted one can never be reused.
+    f.store.reserveChatBrowserTurn(f.missionId,f.store.get(f.missionId).version,'step-2-a1',sha('p2'));
+    assert.throws(()=>f.store.reserveChatBrowserTurn(f.missionId,0,'step-2',sha('p2')),/./);
+  }finally{f.cleanup();}
+});
+
+test('eight consecutive unsent attempts stop the Mission with a visible error',()=>{
+  const f=fixture();
+  try{
+    for(let i=0;i<8;i++){
+      const key=f.store.nextRequestKey(f.missionId,'first-1');
+      f.store.reserveChatBrowserTurn(f.missionId,f.store.get(f.missionId).version,key,sha('p'));
+      const m=f.store.abortUnsentBrowserTurn(f.missionId,key,'page not ready');
+      assert.equal(m.state,'READY');
+      assert.equal(m.lastError===null,i<7);
+    }
+    assert.equal(f.store.chatBrowserTurn(f.missionId),null);
+  }finally{f.cleanup();}
+});

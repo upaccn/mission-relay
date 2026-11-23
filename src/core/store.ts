@@ -39,6 +39,8 @@ export interface ChatBrowserTurn {
   /** Reserved for a separately created ChatGPT conversation, not this chat. */
   newConversation?:boolean;
   assistantSha256?:string; observedAt?:string; error?:string;
+  /** The settled receipt this reservation replaced; restored if the Send is never attempted. */
+  previous?:Omit<ChatBrowserTurn,'previous'>;
 }
 export interface GoalPromptBinding {
   goalId:string;planId:string;itemId:string;itemVersion:number;
@@ -1134,6 +1136,52 @@ export class Store {
       return ended;
     });
   }
+  /** First unused request key for a step: `base`, or `base-a<n>` after a
+   * Send that was never attempted. Keys stay unique, so audits never see a
+   * reused reservation. */
+  nextRequestKey(id:string,base:string):string {
+    for(let n=0;n<100;n++){
+      const key=n?`${base}-a${n}`:base;
+      if(!this.getMeta(`chatgpt.browser.request.${id}.${key}`))return key;
+    }
+    throw new Error('Too many unsent attempts for one browser step');
+  }
+  /** Release a reservation whose Send was provably never attempted (the
+   * failure happened before Relay clicked Send). The settled receipt it
+   * replaced comes back, the conversation lock is released and the Worker
+   * may retry with a fresh request key after a backoff. After 8 consecutive
+   * unsent attempts the Mission stops with a visible error. */
+  abortUnsentBrowserTurn(id:string,requestKey:string,reason:string):Mission {
+    return this.transaction(()=>{
+      const m=this.get(id),record=this.chatBrowserTurn(id);
+      if(!record||record.status!=='reserved'||record.requestKey!==requestKey||m.state!=='RUNNING')
+        throw new Error('Only the active reserved request can be released as unsent');
+      if(record.previous)this.setMeta(this.browserTurnKey(id),JSON.stringify(record.previous));
+      else this.db.prepare('DELETE FROM meta WHERE key=?').run(this.browserTurnKey(id));
+      this.db.prepare('DELETE FROM meta WHERE key=?').run(this.browserUrlLockKey(record.urlHash));
+      const events=this.events(id);
+      const settledTypes=['chatgpt.browser_observed','chatgpt.browser_turn_recovered',
+        'chatgpt.browser_rollover_recovered'];
+      const lastSettled=events.map(e=>settledTypes.includes(e.type)).lastIndexOf(true);
+      const aborts=events.slice(lastSettled+1).filter(e=>e.type==='chatgpt.browser_send_aborted').length+1;
+      const exhausted=aborts>=8;
+      const now=new Date().toISOString();
+      this.db.prepare(`UPDATE missions SET state=?,owner_pid=NULL,owner_host=NULL,
+        last_error=?,version=version+1,updated_at=? WHERE id=? AND version=?`)
+        .run(record.previous||m.turnCount>0?'PAUSED':'READY',
+          exhausted?`Browser Send could not be started ${aborts} times: ${reason}`.slice(0,500):null,
+          now,id,m.version);
+      this.setMeta(`chatgpt.browser.presend_after.${id}`,
+        String(Date.now()+Math.min(15*60_000,30_000*2**Math.min(aborts-1,5))));
+      this.event(id,'chatgpt.browser_send_aborted',{requestKey,reason:reason.slice(0,300),
+        attempt:aborts,noSend:true,stopped:exhausted});
+      return this.get(id);
+    });
+  }
+  /** Earliest time the Worker may retry after an unsent attempt. */
+  browserPresendRetryAfter(id:string):number {
+    return Number(this.getMeta(`chatgpt.browser.presend_after.${id}`)??'0')||0;
+  }
   reserveChatBrowserTurn(id:string,revision:number,requestKey:string,promptSha256:string,
     options:{newConversation?:boolean;promptSnapshot?:{
       format:'goal-work-v1';prompt:string;
@@ -1156,14 +1204,7 @@ export class Store {
       // A release completion is an immutable dispatch fence, not merely a
       // status label. Enforce it at the lowest-level browser reservation path
       // so a legacy/manual Send cannot race a successfully finalized Goal.
-      let goalCursor:string|null=id,completedGoal:string|null=null;
-      const ancestry=new Set<string>();
-      while(goalCursor&&!completedGoal){
-        if(ancestry.has(goalCursor))throw new Error('PI Goal binding lineage cycle');
-        ancestry.add(goalCursor);
-        completedGoal=this.getMeta(`goal.pi.binding.${goalCursor}`);
-        goalCursor=null;
-      }
+      const completedGoal=this.getMeta(`goal.pi.binding.${id}`);
       if(completedGoal&&this.db.prepare(
         'SELECT 1 FROM goal_completions WHERE goal_id=?').get(completedGoal))
         throw new Error('Goal completed; further browser Sends are prohibited');
@@ -1184,14 +1225,7 @@ export class Store {
         throw new Error('Goal source repository and approved write scope differ; refusing browser Send');
       if(options.goalBinding){
         const binding=options.goalBinding;
-        let cursor:string|null=id,linked:string|null=null;
-        const seen=new Set<string>();
-        while(cursor&&!linked){
-          if(seen.has(cursor))throw new Error('PI Goal binding lineage cycle');
-          seen.add(cursor);
-          linked=this.getMeta(`goal.pi.binding.${cursor}`);
-          cursor=null;
-        }
+        const linked=this.getMeta(`goal.pi.binding.${id}`);
         const pi=this.piPlan(id);
         const row=this.db.prepare(`SELECT w.version,w.status,
           p.status AS plan_status,g.status AS goal_status,g.objective
@@ -1216,9 +1250,11 @@ export class Store {
       const urlHash=createHash('sha256').update(url).digest('hex');
       if(this.getMeta(this.browserUrlLockKey(urlHash)))
         throw new Error('Another Mission owns the active ChatGPT conversation; inspect and reconcile before sending');
+      const {previous:_older,...settled}=prior??{} as ChatBrowserTurn;
       const record:ChatBrowserTurn={requestKey,promptSha256,urlHash,status:'reserved',
         reservationRevision:revision,createdAt:new Date().toISOString(),
-        ...(options.newConversation?{newConversation:true}:{})};
+        ...(options.newConversation?{newConversation:true}:{}),
+        ...(prior?{previous:settled}:{})};
       this.setMeta(this.browserTurnKey(id),JSON.stringify(record));
       this.setMeta(this.browserUrlLockKey(urlHash),JSON.stringify({missionId:id,requestKey}));
       this.setMeta(`chatgpt.browser.request.${id}.${requestKey}`,record.createdAt);

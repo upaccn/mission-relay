@@ -776,6 +776,8 @@ export class TelegramBridge {
       if(this.store.getMeta(`pi.retry.sha.${m.id}`)===receipt?.assistantSha256&&
         this.store.getMeta(`pi.retry.request.${m.id}`)===receipt?.requestKey&&
         Number.isFinite(retryAfter)&&retryAfter>Date.now())return false;
+      // An unsent (aborted) browser reservation backs off before retrying.
+      if(this.store.browserPresendRetryAfter(m.id)>Date.now())return false;
       return this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1' &&
       !m.stopRequested&&!m.lastError&&
       ledger.missionGoalId(m.id)!==null&&

@@ -56,7 +56,11 @@ node dist/cli.js recover <mission> --abandon --revision <n>
   Mission and marks its Goal BLOCKED. Continue it from Telegram with
   `/goal-continue <n> <what changed>`.
 
-The Worker itself handles transient cases without an operator: a
+The Worker itself handles transient cases without an operator: any PI
+failure is retried with backoff (stops after 8); a failure before the Send
+click (page load, composer not fillable) releases the request and retries
+under a fresh key (stops after 8); the observation window extends while
+ChatGPT is still generating (four-hour cap); a
 `Connection interrupted` banner is wait-only (bounded grace, four-hour cap);
 an exact `Message delivery timed out` or `Error in message stream` banner
 permits one same-message UI Retry, plus two spaced follow-ups for an

@@ -19,7 +19,7 @@ import {inspectChatPage,withBrowserSession,observationDelayMs,isPendingNewChatUr
   INTERRUPTED_WAIT_GRACE_MS,MAX_INTERRUPTED_WAIT_MS,
   ACTIVE_REPLY_OBSERVATION_INTERVAL_MS,
   submitChatTurn,submitNewChatTurn,waitForNewChatSendReady,
-  DEFAULT_BROWSER_TURN_TIMEOUT_MS,MAX_BROWSER_TURN_TIMEOUT_MS,type BrowserSession} from '../src/plugins/chatgpt-browser.js';
+  DEFAULT_BROWSER_TURN_TIMEOUT_MS,progressDeadline,MAX_BROWSER_TURN_TIMEOUT_MS,type BrowserSession} from '../src/plugins/chatgpt-browser.js';
 import {executeBrowserTurn,executeBrowserRollover,browserDecision,
   retireSupersededRelayTab,
   MAX_FRESH_CHAT_TASK_CHARS,executorTaskGoal,
@@ -1762,4 +1762,38 @@ test('Browser inspection refuses navigation to another conversation',async()=>{
   const page=new SyntheticChatPage() as unknown as Page;
   await assert.rejects(()=>inspectChatPage(page,'https://chatgpt.com/c/987e6543-e21b-42d3-b654-426614174000'),
     /navigated away/);
+});
+
+test('observation deadline extends only while ChatGPT makes progress, up to the hard cap',()=>{
+  const start=0,hour=DEFAULT_BROWSER_TURN_TIMEOUT_MS;
+  assert.equal(progressDeadline(start,hour,hour-1,false),hour);
+  assert.equal(progressDeadline(start,hour,hour-1,true),2*hour-1);
+  assert.equal(progressDeadline(start,hour,10*hour,true),MAX_BROWSER_TURN_TIMEOUT_MS);
+});
+
+class FillTimeoutChatPage extends SyntheticChatPage {
+  override locator(selector:string):any {
+    const base=super.locator(selector);
+    if(!selector.includes('prompt-textarea'))return base;
+    return {...base,first:()=>this.locator(selector),last:()=>this.locator(selector),
+      fill:async()=>{throw new Error("locator.fill: Timeout 10000ms exceeded");}};
+  }
+}
+
+test('a composer failure before Send releases the reservation: no Send, no uncertainty, fresh key on retry',async()=>{
+  const f=fixture();try{
+    const fake=new FillTimeoutChatPage(),page=fake as unknown as Page;
+    await assert.rejects(()=>drive({store:f.store,missionId:f.linked.id,
+      revision:f.linked.version,requestPrefix:'presend',turns:1,page,url:URL,timeoutMs:10000}),
+      /Browser Send not attempted; will retry/);
+    assert.equal(fake.sends,0);
+    const m=f.store.get(f.linked.id);
+    assert.notEqual(m.state,'NEEDS_RECONCILIATION');
+    assert.equal(m.lastError,null);
+    assert.equal(f.store.chatBrowserTurn(f.linked.id),null);
+    const aborted=f.store.events(f.linked.id).filter(x=>x.type==='chatgpt.browser_send_aborted');
+    assert.equal(aborted.length,1);
+    assert.equal((aborted[0]!.payload as {noSend?:boolean}).noSend,true);
+    assert.equal(f.store.events(f.linked.id).filter(x=>x.type==='chatgpt.browser_uncertain').length,0);
+  }finally{f.cleanup();}
 });

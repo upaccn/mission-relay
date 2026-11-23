@@ -16,7 +16,7 @@ export interface RequestCustody {
   sourceChatUrlSha256:string|null;destinationChatUrlSha256:string|null;
   round:number;workItemId:string|null;planId:string|null;
   observationEventId:number|null;answerSha256:string|null;
-  decisionEventId:number|null;status:'observed'|'pending'|'uncertain'|'reconciled';
+  decisionEventId:number|null;status:'observed'|'pending'|'uncertain'|'reconciled'|'aborted';
 }
 
 /** No live browser, PI or credentials. The immutable event IDs form a path
@@ -130,6 +130,10 @@ export function inspectGoalRequestLedger(store:Store,goalId:string){
           obj(e).requestKey===key);
         const reconciled=events.some(e=>e.type==='chatgpt.browser_reconciled'&&
           obj(e).requestKey===key);
+        // A reservation released before any Send was attempted carries no
+        // external request: it is recorded for audit and never pending.
+        const aborted=!reply&&events.some(e=>e.type==='chatgpt.browser_send_aborted'&&
+          e.id>reserve.id&&obj(e).requestKey===key&&obj(e).noSend===true);
         requests.push({goalId,missionId,parentMissionId,
           requestSha256:sha(key),reservationEventId:reserve.id,
           promptSha256:p.promptSha256 as string,
@@ -138,7 +142,8 @@ export function inspectGoalRequestLedger(store:Store,goalId:string){
           observationEventId:reply?.id??null,
           answerSha256:typeof answerSha256==='string'?answerSha256:null,
           decisionEventId:decision?.id??null,
-          status:reply?'observed':reconciled?'reconciled':uncertain?'uncertain':'pending'});
+          status:reply?'observed':aborted?'aborted':reconciled?'reconciled':
+            uncertain?'uncertain':'pending'});
       }
       for(const o of observations){
         if(!reservations.some(r=>obj(r).requestKey===obj(o).requestKey)){

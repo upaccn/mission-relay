@@ -2,8 +2,8 @@ import type {Page} from 'playwriter';
 import {createHash} from 'node:crypto';
 import type {Store,PiPlan} from './store.js';
 import {PI_NEXT_SOURCE_PREFLIGHT_ERROR} from './store.js';
-import {SshPiPlanner,RetryablePiError,type PiPlanner} from './pi-planner.js';
-import {inspectChatPage,lastVisibleUserPromptSha256} from '../plugins/chatgpt-browser.js';
+import {PiInferenceError,SshPiPlanner,type PiPlanner} from './pi-planner.js';
+import {PreSendError,inspectChatPage,lastVisibleUserPromptSha256} from '../plugins/chatgpt-browser.js';
 import {executeBrowserTurn,executeBrowserRollover,browserGoalPlanningPrompt,
   type BrowserTurnOutcome} from './browser-controller.js';
 import {MAX_RELAY_CHAT_TURNS} from './chat-limits.js';
@@ -120,7 +120,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
         throw new Error(PI_NEXT_SOURCE_PREFLIGHT_ERROR);
       exactSource={promptSha256:previous.promptSha256,assistantSha256:previous.assistantSha256!};
     }
-    const requestKey=`${requestPrefix}-${i+1}`;
+    const requestKey=store.nextRequestKey(missionId,`${requestPrefix}-${i+1}`);
     const payload={store,missionId,revision,requestKey,
       telegramBatch:{lastAuthorizedTurn:false,piManaged:true}};
     const rotateChat=nextPlan?.action==='HANDOFF'||
@@ -174,15 +174,27 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
   }
 }
 
-/** A planner failure after a finished browser answer must be visible to
- * Telegram. Do not equate that failure with an uncertain browser Send. */
+/** Automatic retries of one settled checkpoint (backoff 1→15 min, ~75 min
+ * total) before the owner is told. Everything retried here happens BEFORE a
+ * Send — PI inference, plan validation, a pre-Send browser read — so a retry
+ * can never duplicate an external side effect. */
+export const MAX_CHECKPOINT_RETRIES=8;
+
+/** A failure after a settled browser answer retries the same checkpoint
+ * with durable backoff; only when retries are exhausted (or the checkpoint
+ * is no longer verifiable) does it stop and become visible to the owner. */
 export function pauseFailedPiPlanning(store:Store,id:string,reason:string|Error):void {
   const message=reason instanceof Error?reason.message:reason;
+  // An unsent browser attempt was already released with its own backoff and
+  // stop limit (Store.abortUnsentBrowserTurn); nothing more to record.
+  if(reason instanceof PreSendError)return;
   const current=store.get(id);
   if(current.state==='PAUSED'&&!current.stopRequested &&
     !(store.piPlan(id)?.round===current.turnCount&&
       ['DONE','BLOCKED'].includes(store.piPlan(id)?.action??''))){
-    if(reason instanceof RetryablePiError &&
+    // Only a failure of PI itself is retried; a browser integrity, permission
+    // or changed-Chat failure needs the operator and stops visibly.
+    if(reason instanceof PiInferenceError&&
       deferVerifiedPiCheckpointRetry(store,id,message,'pi.autopilot_retry_deferred'))return;
     store.update(id,current.version,{lastError:message.slice(0,500)},
       'pi.autopilot_interrupted',{reason:message.slice(0,500)});
@@ -204,13 +216,14 @@ function deferVerifiedPiCheckpointRetry(store:Store,id:string,reason:string,
     plan?.round===mission.turnCount&&['DONE','BLOCKED'].includes(plan.action)||
     !receipt||!['observed','reconciled'].includes(receipt.status)||
     !receipt.assistantSha256||!store.hasVerifiedPiBrowserCheckpoint(id))return false;
-  store.atomic(()=>{
+  return store.atomic(()=>{
     // A matching answer text from a later round is still a distinct request.
     // Bind retry identity to the original request key as well as its SHA.
     const sameRequest=store.getMeta(`pi.retry.request.${id}`)===receipt.requestKey&&
       store.getMeta(`pi.retry.sha.${id}`)===receipt.assistantSha256;
     const count=sameRequest
       ?Math.min(30,Math.max(0,Number(store.getMeta(`pi.retry.count.${id}`)??'0')||0)):0;
+    if(count>=MAX_CHECKPOINT_RETRIES)return false;
     const delay=Math.min(15*60_000,60_000*2**Math.min(count,4));
     const retryAfter=Date.now()+delay;
     store.setMeta(`pi.retry.request.${id}`,receipt.requestKey);
@@ -222,6 +235,6 @@ function deferVerifiedPiCheckpointRetry(store:Store,id:string,reason:string,
       retryAfter:new Date(retryAfter).toISOString(),
       browserRequestKey:receipt.requestKey,assistantSha256:receipt.assistantSha256,
     });
+    return true;
   });
-  return true;
 }

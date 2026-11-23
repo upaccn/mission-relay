@@ -458,7 +458,16 @@ export function isNewReplyAgainstVerifiedSource(before:ChatPageSnapshot,
 
 function delay(ms:number):Promise<void> {return new Promise(resolve=>setTimeout(resolve,ms));}
 
+/** Default turn window is an IDLE window: while ChatGPT is still generating
+ * or its answer keeps changing, observation continues up to the 4-hour cap.
+ * Agentic replies (builds, device runs) routinely exceed one hour. An explicit
+ * shorter timeout stays a hard deadline. */
 export const DEFAULT_BROWSER_TURN_TIMEOUT_MS=60*60*1000;
+export function progressDeadline(startedAt:number,deadline:number,now:number,
+  progressive:boolean):number{
+  return progressive?Math.max(deadline,Math.min(startedAt+MAX_BROWSER_TURN_TIMEOUT_MS,
+    now+DEFAULT_BROWSER_TURN_TIMEOUT_MS)):deadline;
+}
 export const MAX_BROWSER_TURN_TIMEOUT_MS=4*60*60*1000;
 
 /** A 5–30-minute model turn only needs one DOM snapshot per minute. The one
@@ -665,6 +674,24 @@ export function isFreshResponseLoadFailure(before:ChatPageSnapshot,
       current.assistantCount>before.assistantCount);
 }
 
+/** A failure strictly BEFORE Relay clicks Send: nothing reached ChatGPT, so
+ * the reservation may be released and the step retried. Anything after the
+ * click (or a page that changed on its own) stays uncertain. */
+export class PreSendError extends Error {
+  constructor(message:string){super(message);this.name='PreSendError';}
+}
+async function beforeSend<T>(step:()=>Promise<T>):Promise<T>{
+  try{return await step();}
+  catch(error){
+    if(error instanceof PreSendError)throw error;
+    const message=error instanceof Error?error.message:String(error);
+    // The page itself moved or already shows a submitted message: not ours
+    // to call unsent.
+    if(/outcome ambiguous|already shows a submitted user message/i.test(message))throw error;
+    throw new PreSendError(message);
+  }
+}
+
 /** Never retry the send click after an ambiguous exception. Caller owns durable reservation. */
 export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
   timeoutMs=DEFAULT_BROWSER_TURN_TIMEOUT_MS,requireFinalMarker=false,
@@ -677,16 +704,19 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
   // Mission continuation turns explicitly require a final marker. The accessible
   // ChatGPT UI may not expose a Stop button while streaming; a short stable
   // pause alone is not evidence that the response is finished.
-  const before=await inspectChatPage(page,targetUrl);
-  if(!before.composerReady||before.generating)
-    throw new Error('ChatGPT composer not ready or another response is generating');
-  if(await visibleConversationLengthLimit(page))
-    throw new Error('ChatGPT conversation already reached maximum length; no Send attempted');
-  const composer=await composerLocator(page);
-  await composer.fill(prompt.trim(),{timeout:10000});
-  const send=await sendLocator(page);
-  if(await send.count()<1) throw new Error('ChatGPT Send button was not found; UI selector review required');
-  if(!await send.isEnabled()) throw new Error('ChatGPT Send button is not enabled');
+  const {before,send}=await beforeSend(async()=>{
+    const before=await inspectChatPage(page,targetUrl);
+    if(!before.composerReady||before.generating)
+      throw new Error('ChatGPT composer not ready or another response is generating');
+    if(await visibleConversationLengthLimit(page))
+      throw new Error('ChatGPT conversation already reached maximum length; no Send attempted');
+    const composer=await composerLocator(page);
+    await composer.fill(prompt.trim(),{timeout:10000});
+    const send=await sendLocator(page);
+    if(await send.count()<1) throw new Error('ChatGPT Send button was not found; UI selector review required');
+    if(!await send.isEnabled()) throw new Error('ChatGPT Send button is not enabled');
+    return {before,send};
+  });
   await send.click({timeout:10000});
   // Sending may have succeeded even if the next read fails. Never click twice.
   const startedAt=Date.now();let deadline=startedAt+timeoutMs;
@@ -695,9 +725,15 @@ export async function submitChatTurn(page:Page,targetUrl:string,prompt:string,
   let interruptedSeen=false,deliveryRetryAttempts=0,transportExtensionUsed=false;
   let lastDeliveryRetryClickedAt=0;
   const readState={consecutiveReadFailures:0};
+  const progressive=timeoutMs===DEFAULT_BROWSER_TURN_TIMEOUT_MS;
+  let progressText='';
   while(Date.now()<deadline) {
     const current=await inspectAfterSend(page,targetUrl,readState,deadline);
     if(!current){last='';lastTurnId=null;stableSince=Date.now();continue;}
+    if(current.generating||current.lastAssistant!==progressText){
+      progressText=current.lastAssistant;
+      deadline=progressDeadline(startedAt,deadline,Date.now(),progressive);
+    }
     if(await visibleConversationLengthLimit(page))
       throw new Error(MAX_CONVERSATION_LENGTH_ERROR);
     const newestUserMatchesPrompt=current.userCount>0 &&
@@ -800,33 +836,34 @@ export async function submitNewChatTurn(page:Page,prompt:string,
   if(!prompt.trim()||prompt.length>12000)throw new Error('Invalid new-chat handoff prompt');
   if(!Number.isInteger(timeoutMs)||timeoutMs<10000||timeoutMs>MAX_BROWSER_TURN_TIMEOUT_MS)
     throw new Error('Invalid new-chat timeout');
-  if(!preparedOrigin){
-    // Preserve the established production new-chat path for all ordinary
-    // Relay Sends. The extra hydration preflight is only for explicitly
-    // authorized one-shot recovery of a proven old pre-Send failure.
-    await page.goto('https://chatgpt.com/',{waitUntil:'domcontentloaded',timeout:30000});
-    await page.waitForLoadState('load',{timeout:30000});
-    const startingUrl=page.url();
-    if(startingUrl!=='https://chatgpt.com/'&&startingUrl!=='https://chatgpt.com')
-      throw new Error('New ChatGPT tab did not open the authorized origin');
-  }else{
-    // The caller must have just prepared this exact owned tab. A malicious,
-    // stale or navigated page may not bypass the origin/empty-chat guards.
-    const startingUrl=page.url();
-    if(startingUrl!=='https://chatgpt.com/'&&startingUrl!=='https://chatgpt.com')
-      throw new Error('Prepared ChatGPT tab no longer has the authorized origin');
-    if(await userHeadings(page).count()||await page.locator(USER_SELECTOR).count())
-      throw new Error('Prepared ChatGPT tab contains an existing user message');
-  }
-  const composer=await composerLocator(page);
-  await composer.fill(prompt.trim(),{timeout:10000});
-  await waitForNewChatSendReady(page);
-  const send=await sendLocator(page);
+  const send=await beforeSend(async()=>{
+    if(!preparedOrigin){
+      await page.goto('https://chatgpt.com/',{waitUntil:'domcontentloaded',timeout:30000});
+      await page.waitForLoadState('load',{timeout:30000});
+      const startingUrl=page.url();
+      if(startingUrl!=='https://chatgpt.com/'&&startingUrl!=='https://chatgpt.com')
+        throw new Error('New ChatGPT tab did not open the authorized origin');
+    }else{
+      // The caller must have just prepared this exact owned tab. A malicious,
+      // stale or navigated page may not bypass the origin/empty-chat guards.
+      const startingUrl=page.url();
+      if(startingUrl!=='https://chatgpt.com/'&&startingUrl!=='https://chatgpt.com')
+        throw new Error('Prepared ChatGPT tab no longer has the authorized origin');
+      if(await userHeadings(page).count()||await page.locator(USER_SELECTOR).count())
+        throw new Error('Prepared ChatGPT tab contains an existing user message');
+    }
+    const composer=await composerLocator(page);
+    await composer.fill(prompt.trim(),{timeout:10000});
+    await waitForNewChatSendReady(page);
+    return sendLocator(page);
+  });
   await send.click({timeout:10000});
   const start=Date.now();let deadline=start+timeoutMs;
   let last='',stableSince=start,failureSince:number|null=null,reloadedBlank=false;
   let interruptedSeen=false,deliveryRetryClicked=false,transportExtensionUsed=false;
   const readState={consecutiveReadFailures:0};
+  const progressive=timeoutMs===DEFAULT_BROWSER_TURN_TIMEOUT_MS;
+  let progressText='';
   while(Date.now()<deadline) {
     const currentUrl=page.url();
     let destination:string|null=null;
@@ -838,6 +875,10 @@ export async function submitNewChatTurn(page:Page,prompt:string,
     if(destination) {
       const snapshot=await inspectAfterSend(page,destination,readState,deadline);
       if(!snapshot){last='';stableSince=Date.now();continue;}
+      if(snapshot.generating||snapshot.lastAssistant!==progressText){
+        progressText=snapshot.lastAssistant;
+        deadline=progressDeadline(start,deadline,Date.now(),progressive);
+      }
       if(await visibleConversationLengthLimit(page))
         throw new Error(MAX_CONVERSATION_LENGTH_ERROR);
       const banner=await visibleLongTaskBanner(page,snapshot.lastAssistant);

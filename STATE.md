@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.3.1`.
+- Current source package version: `1.4.0`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -56,9 +56,27 @@
   `/goal-build --repo` path, rechecked at every reservation. PI inherits the
   operator-managed default model/provider/effort (including host-side
   primary/fallback routing) and remains tool-free.
-- Typed temporary PI inference failures and closed-page browser reads retry
-  only the read/inference with durable request/SHA-bound backoff; no Send is
-  ever replayed.
+- **PI reviews on evidence, not on suspicion.** The executor report is the
+  evidence; PI accepts concrete, consistent reported facts and PASSes when
+  every criterion is met. PARTIAL must name an unmet criterion and one
+  concrete action (never re-document or re-prove). REPLAN revises the plan
+  and keeps item keys and their review history; the replaced active item is
+  FAILED, not BLOCKED. There is no controller repair budget that forces a
+  REPLAN or a rename: after two non-pass reviews PI is told to decide on the
+  merits. Plan keys are normalized (`[a-z0-9._:-]`, ≤64) and deduped.
+- **Every PI failure is retried.** Any failure of PI itself (unreachable,
+  timeout, quota, unusable output) happens before a Send; the Worker retries
+  it with SHA-bound backoff (1 → 15 min) and stops visibly after 8 attempts.
+  Closed-page browser reads use the same backoff. Integrity, permission and
+  changed-Chat failures still stop at once. No Send is ever replayed.
+- **A Send that was never attempted is not uncertain.** A failure before the
+  Send click (page load, composer fill, readiness) releases the reservation
+  (`chatgpt.browser_send_aborted`, `noSend`), restores the previous receipt
+  and retries with a fresh key (`<key>-a<n>`) after backoff (30 s → 15 min),
+  stopping visibly after 8 consecutive attempts. Only a failure at or after
+  the click is `uncertain`.
+- **Long answers are waited for.** The 60-minute observation window extends
+  while ChatGPT is still generating or the answer is changing, up to 4 h.
 - All Sends use an immutable request key, prompt SHA, pinned URL/profile and
   SQLite at-most-once reservation. Reconstruction of a reserved prompt uses
   only its immutable `goal-work-v1` snapshot, or the deterministic first

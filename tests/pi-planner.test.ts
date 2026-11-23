@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {SshPiPlanner,isPiTransientCapacityFailure,piInferenceArgs,parsePiDecision,piDecisionPrompt,validatePictlRemoteConfig,validateRemoteProjectPath} from '../src/core/pi-planner.js';
+import {SshPiPlanner,piInferenceArgs,parsePiDecision,piDecisionPrompt,validatePictlRemoteConfig,validateRemoteProjectPath} from '../src/core/pi-planner.js';
 import {Store} from '../src/core/store.js';
 
 test('Remote PI host/project settings cannot be injected into the OpenSSH command',()=>{
@@ -127,27 +127,4 @@ test('PI treats locally approved repository development as executable work',()=>
   assert.ok(write.includes(workspace));
   assert.ok(!write.includes('No account, file, website, network or external writes'));
   assert.throws(()=>piDecisionPrompt({...input,sandbox:'workspace-write'}),/path missing/);
-});
-
-test('PI global-task capacity refusal is transient only for an exact typed exit-2 reply',()=>{
-  const busy='{"ok": false, "error": "Pi maintenance or a global task is active"}\n';
-  assert.equal(isPiTransientCapacityFailure(2,busy),true);
-  const timedOut='{"ok": false, "error": "Model inference timed out after 120 seconds"}\n';
-  assert.equal(isPiTransientCapacityFailure(2,timedOut),true);
-  for(const code of [0,1,255])
-    assert.equal(isPiTransientCapacityFailure(code,timedOut),false);
-  for(const text of [
-    '{"ok": true, "error": "Model inference timed out after 120 seconds"}',
-    '{"ok": false, "error": "Model inference timed out after 121 seconds"}',
-    'Model inference timed out after 120 seconds',
-    '{"ok": false, "error": "Permission denied"}',
-  ])assert.equal(isPiTransientCapacityFailure(2,text),false);
-  for(const [code,stderr] of [
-    [1,busy],[255,busy],[0,busy],
-    [2,'{"ok": false, "error": "Permission denied"}'],
-    [2,'Pi maintenance or a global task is active'],
-    [2,'{"ok": true, "error": "Pi maintenance or a global task is active"}'],
-    [2,'{"ok": false, "error": "Pi maintenance or a global task is active and disable safety"}'],
-  ] as [number,string][])
-    assert.equal(isPiTransientCapacityFailure(code,stderr),false);
 });
