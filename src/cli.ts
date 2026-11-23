@@ -78,7 +78,7 @@ Inspect (read-only)
   goal-request-ledger <goal>       Goal -> Mission -> Chat -> request audit
   browser-binding-health <mission> Exact pinned tab check (no Send)
 
-Recover a stuck task (always inspect first)
+Recover a stuck task (always inspect first; <mission> may be the 8-character prefix shown in Telegram)
   recover <mission>                Diagnose; prints the one safe next action
   recover <mission> --accept-reply --revision <n> [--new-url <chat>]
                                    Credit a complete reply ChatGPT already shows (read twice)
@@ -298,7 +298,13 @@ export async function main(argv=process.argv.slice(2)):Promise<void> {
       const browsers=await listBrowsers();
       result=browsers.map(b=>({id:b.id,browser:b.browser,activeTabs:b.activeTabs,playwriterVersion:b.playwriterVersion}));
     } else if (command==='recover'){
-      const id=uuid(argv[1],'Mission');
+      // A Mission UUID or its unique leading 8+ hex characters (as shown in
+      // Telegram), so the owner can act on a notification directly.
+      const ref=argv[1]??'';
+      const matches=/^[0-9a-f]{8,}$/i.test(ref)&&ref.length<36
+        ?store.list().filter(m=>m.id.toLowerCase().startsWith(ref.toLowerCase())):[];
+      if(matches.length>1)throw new Error('Mission prefix is ambiguous; give more characters or the UUID');
+      const id=matches.length===1?matches[0]!.id:uuid(ref,'Mission');
       const f=flags(rest);
       const modes=['--accept-reply','--retry','--abandon'].filter(k=>f[k]);
       if(modes.length===0){

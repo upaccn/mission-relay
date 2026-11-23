@@ -13,7 +13,7 @@ import {withReadOnlyDeadline} from '../core/read-only-deadline.js';
 import {drivePiAutopilot,pauseFailedPiPlanning,
   deferTransientPiBrowserRecovery} from '../core/pi-autopilot.js';
 import {SshPiPlanner,validateRemoteProjectPath,type PiPlanner} from '../core/pi-planner.js';
-import {GoalLedger} from '../core/goal-store.js';
+import {GoalLedger,activeWorkItem} from '../core/goal-store.js';
 import {goalContinuationAcceptance} from '../core/goal-prompts.js';
 import {hasIsolatedRepositoryGrant,declaredSourceMatchesScope} from '../core/build-scopes.js';
 import {telegramChatAnchor} from '../core/chat-anchor.js';
@@ -218,21 +218,25 @@ export function formatPiNotification(m:Mission,event:MissionEvent):string {
     typeof payload.reason==='string'?payload.reason:'No PI decision summary';
   const complete=action==='DONE';
   const label=complete?'All Done — Task finished':
-    action==='BLOCKED'||action==='INTERRUPTED'?'Needs attention — Task paused':
+    action==='INTERRUPTED'?'Needs attention — Task stopped by an error':
+    action==='BLOCKED'?'Needs attention — Task paused':
     'Task update';
   return [label,
     taskTitle(m),
     `Rounds completed: ${m.turnCount}`,
-    `Summary: ${compactTelegramText(summary,850)}`,
+    action==='INTERRUPTED'?`Reason: ${compactTelegramText(summary,850)}`:
+      `Summary: ${compactTelegramText(summary,850)}`,
     complete?'PI review finished. Independent release or external acceptance is separate.':
       action==='BLOCKED'||action==='INTERRUPTED'?
         'No new ChatGPT message will be sent until the issue is resolved.':'',
+    action==='INTERRUPTED'?`Recover: on the Worker host run  node dist/cli.js recover ${m.id.slice(0,8)}  (prints the one safe next step)`:'',
     'Details: /status'].filter(Boolean).join('\n').slice(0,1600);
 }
 function formatPiProgress(m:Mission,event:MissionEvent):string {
   const payload=event.payload && typeof event.payload==='object'
     ?event.payload as {action?:unknown;round?:unknown;summary?:unknown}:{};
-  return [`Progress — ${typeof payload.round==='number'?payload.round:m.turnCount} rounds completed`,
+  const round=typeof payload.round==='number'?payload.round:m.turnCount;
+  return [`PI approved round ${round} — sending round ${round+1} to ChatGPT`,
     taskTitle(m),
     compactTelegramText(typeof payload.summary==='string'?payload.summary:'',520),
     'Still working. No action needed; send /status for the latest update.'
@@ -279,7 +283,7 @@ export function formatBrowserResultNotification(m:Mission,event:MissionEvent):st
     `ChatGPT update — Round ${round}`,
     'Summary (not independently verified):',
     ...lines.map(redactTelegramText),
-    ...(finalMarker?[`Next step: ${finalMarker.includes('BLOCKED')?'Needs attention':finalMarker.includes('DONE')?'Review complete':'Continuing'}`]:[]),
+    ...(marker?[`ChatGPT reported ${marker}. PI review pending — the next round is sent only after PI approves it.`]:[]),
     'Details: /status'];
   return text.join('\n').slice(0,2900);
 }
@@ -1210,7 +1214,7 @@ export class TelegramBridge {
       const graph=new GoalLedger(this.store).graph(id);
       const approved=graph.plans.find(p=>p.status==='APPROVED');
       const items=approved?graph.items.filter(x=>x.planId===approved.id):[];
-      const active=items.find(x=>['IN_PROGRESS','REVIEW'].includes(x.status));
+      const active=activeWorkItem(graph);
       const verified=items.filter(x=>x.status==='PASSED').length;
       const done=new GoalLedger(this.store).goalCompletion(id);
       return [
@@ -1305,7 +1309,10 @@ export class TelegramBridge {
         ...(piLive?[`Current Chat: ${piLive.currentChatObservedTurns} of ${MAX_RELAY_CHAT_TURNS} messages`]:[]),
         ...(phase?[phase]:[]),
         ...(goal?[`Work packages reviewed as passed: ${items.filter(x=>x.status==='PASSED').length}/${items.length}`]:[]),
-        ...(m.lastError?[`Issue: ${compactTelegramText(m.lastError,170)}`]:[]),
+        ...(m.lastError?[`Issue: ${compactTelegramText(m.lastError,170)}`,
+          `Recover: on the Worker host run  node dist/cli.js recover ${m.id.slice(0,8)}`]:
+          m.state==='NEEDS_RECONCILIATION'?
+            [`Recover: on the Worker host run  node dist/cli.js recover ${m.id.slice(0,8)}`]:[]),
         ...(m.lastSummary?[`Latest result: ${compactTelegramText(m.lastSummary,460)}`]:[]),
         'Commands: /list · /pause · /help'].join('\n');
     }

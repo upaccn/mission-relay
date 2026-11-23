@@ -56,6 +56,9 @@ node dist/cli.js recover <mission> --abandon --revision <n>
   Mission and marks its Goal BLOCKED. Continue it from Telegram with
   `/goal-continue <n> <what changed>`.
 
+`<mission>` may be the 8-character prefix that Telegram shows in a
+"Task stopped by an error" notification and in `/status`.
+
 The Worker itself handles transient cases without an operator: any PI
 failure is retried with backoff (stops after 8); a failure before the Send
 click (page load, composer not fillable) releases the request and retries

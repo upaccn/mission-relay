@@ -95,6 +95,21 @@ const toAcceptance=(r:AcceptanceRow):GoalAcceptance=>({
   createdAt:r.created_at,updatedAt:r.updated_at,
 });
 
+/** The one executable work item of a Goal: an IN_PROGRESS/REVIEW item of the
+ * current APPROVED plan. Items left active in a SUPERSEDED plan (for example
+ * after /goal-continue) are history, never selectable. With no approved plan
+ * the Goal awaits PI plan approval and has no active work. */
+export function activeWorkItem(graph:GoalGraph):GoalWorkItem|null{
+  const approved=graph.plans.filter(p=>p.status==='APPROVED');
+  if(approved.length>1)throw new Error('Multiple approved Goal plans are unsafe');
+  const plan=approved[0];
+  if(!plan)return null;
+  const active=graph.items.filter(x=>x.planId===plan.id&&
+    (x.status==='IN_PROGRESS'||x.status==='REVIEW'));
+  if(active.length>1)throw new Error('Multiple active Goal work packages are unsafe');
+  return active[0]??null;
+}
+
 export class GoalLedger {
   constructor(private readonly store:Store){
     const schema=store.db.prepare('SELECT value FROM meta WHERE key=?').get('schema_version') as

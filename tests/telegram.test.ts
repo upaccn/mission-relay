@@ -85,6 +85,11 @@ test('Telegram completion UX says All Done only for verified terminal task decis
       assert.doesNotMatch(text,/All Done/);
       assert.doesNotMatch(text,new RegExp(m.id));
     }
+    const stopped=formatPiNotification(m,{...fake('x'),type:'pi.autopilot_interrupted',
+      payload:{reason:'Active work belongs to an unapproved plan'}} as unknown as MissionEvent);
+    assert.match(stopped,/^Needs attention — Task stopped by an error/);
+    assert.match(stopped,/Reason: Active work belongs to an unapproved plan/);
+    assert.ok(stopped.includes(`recover ${m.id.slice(0,8)}`),'the recovery entry is shown directly');
     assert.equal(telegramCallbackCommand('mr:status'),'/status');
     assert.equal(telegramCallbackCommand('mr:status-index:2'),'/status 2');
     assert.throws(()=>telegramCallbackCommand('mr:status-index:0'),/Unknown/);
@@ -638,7 +643,7 @@ test('Telegram reports a compact browser reply tail and real turn count without 
     const message=formatBrowserResultNotification(f.store.get(linked.id),event);
     assert.ok(message.includes('Round 1'));
     assert.ok(message.includes('Final action item 12'));
-    assert.ok(message.includes('Next step: Continuing'));
+    assert.ok(message.includes('ChatGPT reported NEXT. PI review pending'));
     assert.ok(!message.includes(linked.id));
     assert.ok(!message.includes('Top of a longer model response'));
     assert.ok(!message.includes('Final action item 1\n'));
@@ -682,7 +687,7 @@ test('Telegram multi-turn ChatGPT continuation delivers one final compact summar
     assert.equal(f.transport.sent.length,1);
     assert.match(f.transport.sent[0]!,/Progress: done/);
     assert.match(f.transport.sent[0]!,/Evidence: final receipt/);
-    assert.match(f.transport.sent[0]!,/Next step: Review complete/);
+    assert.match(f.transport.sent[0]!,/ChatGPT reported DONE\. PI review pending/);
     assert.doesNotMatch(f.transport.sent[0]!,/\[MISSION_RELAY:/);
     assert.doesNotMatch(f.transport.sent[0]!,/First interim status/);
     assert.ok(f.transport.sent[0]!.split('\n').length<=10);
@@ -704,7 +709,7 @@ test('Telegram single-turn capped NEXT still has one durable final notification'
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,1);
     assert.match(f.transport.sent[0]!,/Need operator to continue later/);
-    assert.match(f.transport.sent[0]!,/Next step: Continuing/);
+    assert.match(f.transport.sent[0]!,/ChatGPT reported NEXT\. PI review pending/);
   }finally{f.cleanup();}
 });
 
@@ -798,7 +803,7 @@ test('Telegram preferentially extracts the explicit decision summary, redacts pr
     assert.match(message,/Evidence: local SQLite/);
     assert.match(message,/Blocker: waiting/);
     assert.match(message,/Next: check status/);
-    assert.match(message,/Next step: Needs attention/);
+    assert.match(message,/ChatGPT reported BLOCKED\. PI review pending/);
     assert.doesNotMatch(message,/Earlier background|Technical detail|secret-tunnel-token/);
     assert.match(message,/\[PRIVATE LINK\]/);
     assert.ok(message.split('\n').length<=10);
@@ -841,7 +846,7 @@ test('Recovered complete reply produces a bounded correction notification while 
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,2);
     assert.match(f.transport.sent[1]!,/original request completed/);
-    assert.match(f.transport.sent[1]!,/Next step: Review complete/);
+    assert.match(f.transport.sent[1]!,/ChatGPT reported DONE\. PI review pending/);
     assert.equal(f.store.events(m.id).filter(x=>x.type==='chatgpt.browser_reserved').length,1);
     await f.bridge.pollOnce(0);
     assert.equal(f.transport.sent.length,2);

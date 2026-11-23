@@ -108,7 +108,7 @@ test('a legacy misbound Goal is blocked before recovery opens Chrome or reserves
   }finally{r.close();}
 });
 
-function multiRig(){
+function multiRig(customPlanner?:PiPlanner){
   const dir=mkdtempSync(join(tmpdir(),'relay-multi-goal-'));
   const file=join(dir,'missions.sqlite');
   const store=new Store(file);
@@ -167,7 +167,7 @@ function multiRig(){
     return page as Page;
   }
   const anchor=makePage(0,true);
-  const planner:PiPlanner={
+  const planner:PiPlanner=customPlanner??{
     decide:async()=>{throw new Error('Goal must not use legacy PI decision');},
     proposeGoalPlan:async()=>({
       summary:'One bounded implementation package',
@@ -602,4 +602,139 @@ test('/goal-continue reopens a BLOCKED Goal on the same graph with a fresh queue
     assert.ok(after.items.some(x=>x.planId===approved[0]!.id&&x.key==='implementation'));
     assert.equal(r.store.events(first.id).length,firstEvents,'Old Mission is still untouched');
   }finally{await r.idle();r.close();}
+});
+
+/** Production v1.4.0 incident: a Goal blocked while a package was still
+ * active (IN_PROGRESS or REVIEW) in its approved plan. /goal-continue
+ * supersedes that plan; the stale active item is history and must neither be
+ * selected nor block approval of the continuation plan. */
+function continuationRig(){
+  let plans=0,failPlanning=false;
+  let onReview:((key:string)=>void)|null=null;
+  const pkg=(key:string,priority:number,dependsOn:string[]=[])=>({key,
+    title:`Deliver ${key}`,description:`Implement ${key} in the approved repository`,
+    priority,dependsOn,acceptance:[`${key} verified`]});
+  const planner:PiPlanner={
+    decide:async()=>{throw new Error('Goal must not use legacy PI decision');},
+    proposeGoalPlan:async()=>{
+      if(failPlanning)throw new Error('Active work belongs to an unapproved plan');
+      plans++;
+      return plans===1
+        ?{summary:'Foundation then client',items:[pkg('foundation',100),pkg('v1-native-client',90,['foundation'])]}
+        :{summary:'Continue after the owner fixed the blocker',
+          items:[pkg('foundation',100),pkg('play-sandbox',95,['foundation']),pkg('v1-native-client',90,['play-sandbox'])]};},
+    reviewGoalWork:async x=>{onReview?.(x.workItem.key);
+      return {verdict:'PASS',summary:`${x.workItem.key} passed`,nextPrompt:'',handoff:false,
+        evidenceRefs:[`synthetic:${x.workItem.key}`]};},
+  };
+  return {r:multiRig(planner),plans:()=>plans,
+    failPlanning:(value:boolean)=>{failPlanning=value;},
+    onReview:(f:((key:string)=>void)|null)=>{onReview=f;}};
+}
+async function blockWithActiveItem(c:ReturnType<typeof continuationRig>,stale:'IN_PROGRESS'|'REVIEW'){
+  const {r}=c;
+  const recover=async()=>{
+    await (r.bridge as unknown as {recoverObservedPiCheckpoint:()=>Promise<void>}).recoverObservedPiCheckpoint();
+    await r.idle();
+  };
+  r.setUpdates([r.message(1101,`/goal-build --repo ${REPO_A} Goal C: ship the client`)]);
+  await r.bridge.pollOnce(0);
+  const ledger=new GoalLedger(r.store),goal=ledger.listGoals()[0]!;
+  const first=r.store.list().find(m=>m.goal===goal.objective)!;
+  // foundation PASSes; v1-native-client is sent, then its PI review fails, so
+  // the item stays active when the Goal is blocked (as in production).
+  c.onReview(key=>{if(key==='v1-native-client')throw new Error('PI unreachable');});
+  await recover();
+  c.onReview(null);
+  let item=ledger.graph(goal.id).items.find(x=>x.key==='v1-native-client')!;
+  assert.equal(item.status,'IN_PROGRESS');
+  if(stale==='REVIEW')item=ledger.setWorkStatus(goal.id,item.id,item.version,'REVIEW',[],'test-review');
+  // As `recover --abandon` does: end the Mission, Goal BLOCKED, item untouched.
+  r.store.update(first.id,r.store.get(first.id).version,{state:'CANCELLED'},'test.abandoned');
+  ledger.setGoalStatus(goal.id,ledger.getGoal(goal.id).version,'BLOCKED','test-blocked');
+  r.setUpdates([]);await r.bridge.pollOnce(0);r.replies.length=0;
+  return {recover,ledger,goal,first,staleId:item.id};
+}
+function dispatchedItems(r:ReturnType<typeof multiRig>,missionId:string):string[]{
+  return r.store.events(missionId).filter(e=>e.type==='chatgpt.browser_reserved')
+    .map(e=>String((e.payload as {workItemId?:unknown}).workItemId??'discovery'));
+}
+
+for(const stale of ['IN_PROGRESS','REVIEW'] as const){
+  test(`/goal-continue with a stale ${stale} item: discovery NEXT → PI approves a new plan → each package sent once`,async()=>{
+    const c=continuationRig(),{r}=c;
+    try{
+      const {recover,ledger,goal,staleId}=await blockWithActiveItem(c,stale);
+      const sendsBefore=r.sends.length;
+      r.setUpdates([r.message(1102,'/goal-continue 1 Owner fixed the external dependency')]);
+      await r.bridge.pollOnce(0);
+      const next=r.store.list().find(m=>m.requestKey==='telegram-goal-continue-1102')!;
+      await recover();
+      await recover();
+      const sent=r.sends.slice(sendsBefore);
+      assert.match(sent[0]!.prompt,/INITIAL READ-ONLY DISCOVERY/);
+      assert.equal(r.store.get(next.id).lastError,null,'PI planning is not refused by stale history');
+      assert.equal(c.plans(),2,'the continuation plan was proposed and approved');
+      assert.deepEqual(sent.slice(1).map(x=>x.prompt.match(/Work package: (\S+)/)?.[1]),
+        ['play-sandbox','v1-native-client'],'each new package is sent exactly once, in order');
+      const graph=ledger.graph(goal.id);
+      const stalePlanItem=graph.items.find(x=>x.id===staleId)!;
+      assert.equal(stalePlanItem.status,stale,'history is preserved, not rewritten');
+      assert.ok(!dispatchedItems(r,next.id).includes(staleId),'the stale item is never dispatched');
+      const plan=graph.plans.find(p=>p.id!==stalePlanItem.planId&&
+        graph.items.some(x=>x.planId===p.id&&x.key==='play-sandbox'))!;
+      assert.equal(graph.items.find(x=>x.planId===plan.id&&x.key==='foundation')?.status,'PASSED',
+        'earlier PASS is carried forward, not re-executed');
+      assert.equal(ledger.goalCompletion(goal.id)!==null,true);
+      r.setUpdates([]);await r.bridge.pollOnce(0);
+      assert.ok(r.replies.some(x=>/PI approved round 1 — sending round 2/.test(x)),
+        'PI approval is reported separately from the executor marker');
+    }finally{await c.r.idle();c.r.close();}
+  });
+}
+
+test('a continuation stuck at PAUSED + observed + no PI decision resumes from its round-1 receipt exactly once',async()=>{
+  const c=continuationRig(),{r}=c;
+  try{
+    const {recover,ledger,goal,staleId}=await blockWithActiveItem(c,'IN_PROGRESS');
+    r.setUpdates([r.message(1103,'/goal-continue 1 Owner fixed the external dependency')]);
+    await r.bridge.pollOnce(0);
+    const next=r.store.list().find(m=>m.requestKey==='telegram-goal-continue-1103')!;
+    // Reproduce the v1.4.0 checkpoint: discovery observed, PI planning refused.
+    c.failPlanning(true);
+    const sendsBefore=r.sends.length;
+    await recover();
+    assert.equal(r.sends.length,sendsBefore+1,'only the discovery Send');
+    for(const k of ['count','after','sha','request'])
+      r.store.db.prepare('DELETE FROM meta WHERE key=?').run(`pi.retry.${k}.${next.id}`);
+    const stuck=r.store.update(next.id,r.store.get(next.id).version,
+      {lastError:'Active work belongs to an unapproved plan'},'test.v140_interruption');
+    assert.equal(stuck.state,'PAUSED');
+    assert.equal(r.store.chatBrowserTurn(next.id)?.status,'observed');
+    assert.equal(r.store.piPlan(next.id),null);
+    c.failPlanning(false);
+    // An errored Mission is never picked up on its own.
+    await recover();
+    assert.equal(r.sends.length,sendsBefore+1);
+    // `recover --retry` (after two matching live reads) clears only the error.
+    const receipt=r.store.chatBrowserTurn(next.id)!;
+    r.store.clearSettledPiInterruption(next.id,stuck.version,
+      {requestPromptSha256:receipt.promptSha256,assistantSha256:receipt.assistantSha256!});
+    await recover();
+    await recover();
+    await recover();
+    const sent=r.sends.slice(sendsBefore);
+    assert.equal(sent.filter(x=>/INITIAL READ-ONLY DISCOVERY/.test(x.prompt)).length,1,
+      'the round-1 receipt is reused, discovery is never re-sent');
+    assert.deepEqual(sent.slice(1).map(x=>x.prompt.match(/Work package: (\S+)/)?.[1]),
+      ['play-sandbox','v1-native-client']);
+    const keys=r.store.events(next.id).filter(e=>e.type==='chatgpt.browser_reserved')
+      .map(e=>(e.payload as {requestKey:string}).requestKey);
+    assert.equal(new Set(keys).size,keys.length);
+    assert.ok(!dispatchedItems(r,next.id).includes(staleId));
+    const graph=ledger.graph(goal.id);
+    assert.equal(graph.items.filter(x=>x.key==='foundation'&&x.status==='PASSED').length>=2,true,
+      'historical PASS kept and carried forward');
+    assert.ok(ledger.goalCompletion(goal.id));
+  }finally{await c.r.idle();c.r.close();}
 });

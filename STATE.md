@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.4.0`.
+- Current source package version: `1.4.1`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -51,7 +51,10 @@
   A verified external blocker is scoped to its work item; the Goal becomes
   BLOCKED only when no independent work remains. `/goal-continue <n|id>
   <what changed>` binds a fresh queued Mission to the same Goal without
-  touching the old Mission or replaying anything.
+  touching the old Mission or replaying anything. The only executable work
+  item is an IN_PROGRESS/REVIEW item of the current APPROVED plan
+  (`activeWorkItem`); items left active in a superseded plan are history, so
+  a continuation's discovery round always goes to PI plan approval.
 - Each writable Goal requires an explicitly approved, non-overlapping
   `/goal-build --repo` path, rechecked at every reservation. PI inherits the
   operator-managed default model/provider/effort (including host-side

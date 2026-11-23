@@ -53,7 +53,8 @@ function recoverRig(){
     {kind:'uncertain',error:'Simulated relay disconnection'});
   db.close();
   const cli=(...args:string[])=>spawnSync(process.execPath,
-    ['--import','tsx','src/cli.ts','recover',base.id,...args],
+    ['--import','tsx','src/cli.ts','recover',...(args[0]==='--ref'?args.slice(1,2):[base.id]),
+      ...(args[0]==='--ref'?args.slice(2):args)],
     {cwd:process.cwd(),env,encoding:'utf8'});
   const open=()=>new Store(join(dir,'state','missions.sqlite'));
   return {id:base.id,revision:uncertain.version,cli,open,
@@ -68,6 +69,11 @@ test('recover diagnoses an uncertain request read-only and names the next action
     assert.equal(report.state,'NEEDS_RECONCILIATION');
     assert.equal(report.request.status,'uncertain');
     assert.match(report.nextAction,/recover --accept-reply.*recover --abandon/);
+    const short=r.cli('--ref',r.id.slice(0,8));
+    assert.equal(short.status,0,short.stderr);
+    assert.equal((JSON.parse(short.stdout) as {missionId:string}).missionId,r.id,
+      'the 8-character prefix shown in Telegram resolves the Mission');
+    assert.notEqual(r.cli('--ref','0000000a').status,0);
     const db=r.open();try{
       assert.equal(db.get(r.id).version,r.revision,'diagnosis never mutates SQLite');
     }finally{db.close();}

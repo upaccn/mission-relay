@@ -1,6 +1,6 @@
 import type {Store,PiPlan} from './store.js';
 import {createHash} from 'node:crypto';
-import {GoalLedger} from './goal-store.js';
+import {GoalLedger,activeWorkItem} from './goal-store.js';
 import {validateRemoteProjectPath} from './pi-planner.js';
 import {CI_EXECUTOR_POLICY} from './ci-policy.js';
 
@@ -76,9 +76,8 @@ export function goalWorkPrompt(store:Store,missionId:string,plan:PiPlan,
   const graph=ledger.graph(goalId);
   if(graph.goal.status!=='ACTIVE')
     throw new Error('Goal must be active before preparing a work package Send');
-  const active=graph.items.filter(x=>['IN_PROGRESS','REVIEW'].includes(x.status));
-  if(active.length!==1)throw new Error('Exactly one active Goal work package is required');
-  const item=active[0]!;
+  const item=activeWorkItem(graph);
+  if(!item)throw new Error('Exactly one active Goal work package of the approved plan is required');
   const approved=graph.plans.find(x=>x.id===item.planId);
   if(approved?.status!=='APPROVED')
     throw new Error('The active Goal work package must belong to the approved plan');

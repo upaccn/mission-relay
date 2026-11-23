@@ -47,7 +47,11 @@ compiler rejects unused locals and parameters, and every module is imported.
    Goal writes and Sends are refused. A ChatGPT DONE marker never completes a
    Goal.
 7. **Continue.** After the owner fixes a blocker, `/goal-continue` binds a
-   fresh queued Mission to the same Goal; nothing is replayed.
+   fresh queued Mission to the same Goal; nothing is replayed. The old plan
+   is superseded; its items (even ones still IN_PROGRESS/REVIEW) remain as
+   audit history and are never selectable. Only an item of the current
+   APPROVED plan can be active (`activeWorkItem`, shared by PI review, the
+   work prompt, the Send fence and `/goal-status`).
 
 One Mission serves its Goal for as long as it runs — there is no Mission turn
 ceiling and no successor chain. A ChatGPT conversation carries at most

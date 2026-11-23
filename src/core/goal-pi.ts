@@ -1,6 +1,6 @@
 import {createHash} from 'node:crypto';
 import type {Store,PiPlan,PiOwnerDirective} from './store.js';
-import {GoalLedger,type GoalGraph,type GoalWorkItem,type CreateGoalPlan,
+import {GoalLedger,activeWorkItem,type GoalGraph,type GoalWorkItem,type CreateGoalPlan,
   type PlannedWork} from './goal-store.js';
 import {PiInferenceError,inferPi,type PiPlanner} from './pi-planner.js';
 import {CI_PI_POLICY} from './ci-policy.js';
@@ -272,11 +272,6 @@ function workPrompt(graph:GoalGraph,item:GoalWorkItem):string{
   if(prompt.length>1500)throw new Error('Planned work package exceeds the 1500-character executor directive limit');
   return prompt;
 }
-function selectedWork(graph:GoalGraph):GoalWorkItem|null{
-  const selected=graph.items.filter(x=>x.status==='IN_PROGRESS'||x.status==='REVIEW');
-  if(selected.length>1)throw new Error('Multiple active Goal work packages are unsafe');
-  return selected[0]??null;
-}
 /** Stable acceptance obligation across a REPLAN which only renames the work
  * item. Exact normalized criterion text is the conservative identity; an
  * actually changed acceptance contract is handled through its new Plan. */
@@ -293,7 +288,7 @@ function selectNextWork(ledger:GoalLedger,goalId:string,planId:string,source:str
   action:'NEXT'|'BLOCKED'|'DONE';nextPrompt:string;summary:string;
 }{
   const graph=ledger.graph(goalId);
-  const active=selectedWork(graph);
+  const active=activeWorkItem(graph);
   if(active)throw new Error('Cannot select another work package while one is active');
   const plan=graph.plans.find(x=>x.id===planId);
   if(plan?.status!=='APPROVED'||graph.goal.status!=='ACTIVE')
@@ -381,7 +376,7 @@ export async function reviewGoalPiRound(input:{
   if(!goalId)throw new Error('Goal-bound PI mission has no Goal record');
   const baseline=ledger.graph(goalId);
   const approved=baseline.plans.find(x=>x.status==='APPROVED');
-  const active=selectedWork(baseline);
+  const active=activeWorkItem(baseline);
   if(active && active.planId!==approved?.id)throw new Error('Active work belongs to an unapproved plan');
   if(!approved && active)throw new Error('Unapproved Goal cannot have active work');
   const prior=store.piPlan(missionId);

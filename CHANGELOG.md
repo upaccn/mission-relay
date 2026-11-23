@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.4.1 — 2026-11-23
+
+- **`/goal-continue` no longer stalls on stale work.** A Goal blocked while a
+  package was still IN_PROGRESS/REVIEW kept that item after its plan was
+  superseded; the continuation's PI round then picked it from the Goal
+  history and refused to approve a new plan ("Active work belongs to an
+  unapproved plan"). One shared `activeWorkItem` now limits executable work
+  to the current APPROVED plan for PI review, plan selection, the work
+  prompt and `/goal-status`. With no approved plan the round goes to plan
+  approval. History, PASS carry-forward and the single-active-item check are
+  unchanged. A Mission already stopped this way resumes from its observed
+  round-1 receipt after `recover <mission> --retry`; nothing is re-sent.
+- **Notifications say who decided.** A ChatGPT reply reports its marker as
+  "PI review pending"; a PI decision reports "PI approved round N — sending
+  round N+1". A stopped task shows the reason and the recovery entry
+  (`node dist/cli.js recover <8-char prefix>`); `/status` shows it too, and
+  `recover` accepts that unique prefix.
+
 ## 1.4.0 — 2026-11-23
 
 Root-cause fixes from the first half-day of v1.3.1 production (one Goal ran
