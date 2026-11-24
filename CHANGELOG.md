@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.4.3 — 2026-11-24
+
+- **PI is steered to WAIT when the report gives no finish time.** The first
+  1.4.2 production review still chose REPLAN because the executor report
+  did not state when the running device session would end. The review
+  prompt now asks PI to estimate `resumeAt` from the reported start and
+  duration (or pick a 30–60 minute check), states that REPLAN is never a
+  way to wait, and shows the controller fact when the latest reviews of the
+  item were consecutive REPLANs that selected it again.
+
 ## 1.4.2 — 2026-11-24
 
 - **PI can wait instead of re-sending.** Production showed PI using REPLAN to

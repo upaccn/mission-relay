@@ -774,6 +774,11 @@ test('strict PI WAIT requires an offset resume time and an instruction; other ve
     workItem:{id:'1',goalId:'1',planId:'2',key:'k',title:'T',description:'D',priority:90,
       status:'IN_PROGRESS' as const,evidenceRefs:[],version:1,createdAt:'',updatedAt:''}};
   assert.match(goalReviewPrompt(input),/Never use REPLAN or PARTIAL to wait or poll/);
+  assert.match(goalReviewPrompt(input),/an approximate resumeAt is better than polling/);
+  assert.doesNotMatch(goalReviewPrompt(input),/Controller fact: the last/);
+  const streak=goalReviewPrompt({...input,priorWorkReviews:[{round:1,verdict:'PARTIAL'},
+    {round:2,verdict:'REPLAN'},{round:3,verdict:'REPLAN'},{round:4,verdict:'REPLAN'}]});
+  assert.match(streak,/Controller fact: the last 3 reviews of this item were REPLANs that selected it again/);
   assert.match(goalReviewPrompt(input),/Current controller time \(UTC\): 2026-11-23T21:40:00.000Z/);
 });
 

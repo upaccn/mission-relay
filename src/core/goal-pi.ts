@@ -230,6 +230,10 @@ export function goalPlanPrompt(input:GoalPlanContext):string{
 export function goalReviewPrompt(input:GoalReviewContext):string{
   const prior=input.priorWorkReviews??[];
   const nonPass=prior.filter(review=>review.verdict==='PARTIAL'||review.verdict==='FAIL').length;
+  // Controller fact: how many of the latest reviews of this key were REPLANs
+  // that put the same package straight back (the polling pattern WAIT replaces).
+  let replanStreak=0;
+  for(const review of [...prior].reverse()){if(review.verdict!=='REPLAN')break;replanStreak++;}
   return [
     'You are PI, the project manager and acceptance reviewer, not the executor.',
     'Review the ONE active work item against its acceptance criteria and the executor report.',
@@ -252,17 +256,25 @@ export function goalReviewPrompt(input:GoalReviewContext):string{
     'or re-prove something already concretely reported; a remaining nicety is not a blocker.',
     'FAIL when the report shows a real defect against a criterion; nextPrompt names the fix.',
     'REPLAN only when the plan itself is wrong (missing prerequisite, wrong scope). It keeps every',
-    'key and its history; it is not a way to restart or rename the current item.',
+    'key and its history; it is not a way to restart or rename the current item, and never a way',
+    'to wait: if this item would simply be selected again to check a still-running process, use WAIT.',
     'BLOCKED only for a concrete external or authorization barrier the approved tools cannot',
     'resolve; code, test, build or CI failures and transient outages are never BLOCKED.',
     'WAIT when the remaining evidence is being produced by an already running, time-bound process',
     '(a long device run, a scheduled job, a store review) and checking earlier cannot change it.',
     'resumeAt is when that result is expected (5 minutes to 12 hours ahead); no Send for this item',
     'happens before then, independent eligible work runs meanwhile. nextPrompt is the instruction',
-    'to collect the result at that time. Never use REPLAN or PARTIAL to wait or poll.',
+    'to collect the result at that time. If the exact completion time is not reported, estimate it',
+    'from the reported start and expected duration, otherwise choose a reasonable check time (for',
+    'example 30-60 minutes); an approximate resumeAt is better than polling.',
+    'Never use REPLAN or PARTIAL to wait or poll.',
     'For PARTIAL/FAIL/WAIT, nextPrompt is the one instruction. For PASS/REPLAN/BLOCKED, nextPrompt is empty.',
     'Review history of this work item (PI verdicts, oldest first):',
     ...(prior.length?prior.map(review=>`round ${review.round}: ${review.verdict}${review.summary?` — ${review.summary.slice(0,240)}`:''}`):['none']),
+    ...(replanStreak>=2?[
+      `Controller fact: the last ${replanStreak} reviews of this item were REPLANs that selected it again.`,
+      'If its remaining evidence depends on a process that is still running, choose WAIT now.',
+    ]:[]),
     ...(nonPass>=2?[
       `This item already received ${nonPass} PARTIAL/FAIL reviews. Decide on the merits now:`,
       'PASS if the criteria are substantively met; FAIL only with a specific defect; BLOCKED only',
