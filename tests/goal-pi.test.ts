@@ -738,18 +738,23 @@ test('PI WAIT is clamped to its window and a fenced checkpoint releases the brow
     await reviewGoalPiRound({...f.observe(3,'Still running, second sample'),
       planner:waitPlanner(iso(T0+30*24*60*60_000)),now:()=>T0});
     assert.equal(f.store.piDispatchNotBefore(f.mission.id),T0+12*60*60_000,'no indefinite parking');
+    const noTime:PiPlanner={...planner(),reviewGoalWork:async()=>({verdict:'WAIT',
+      summary:'Artifact delivery pending',nextPrompt:'Collect the delivered artifact',
+      evidenceRefs:[],handoff:false})};
+    await reviewGoalPiRound({...f.observe(4,'Artifact not delivered yet'),planner:noTime,now:()=>T0});
+    assert.equal(f.store.piDispatchNotBefore(f.mission.id),T0+30*60_000,'default check after 30 minutes');
     assert.equal(f.store.piHealth(T0).missions[0]?.phase,'pi_wait_scheduled_no_send');
     const untouched=new Proxy({},{get(){throw new Error('browser must not be touched while fenced');}}) as Page;
     await drivePiAutopilot({store:f.store,planner:planner(),missionId:f.mission.id,
       revision:f.store.get(f.mission.id).version,requestPrefix:'mission-one',
       page:untouched,url:URL,yieldAtGoalCheckpoint:true});
-    assert.equal(f.store.events(f.mission.id).filter(e=>e.type==='chatgpt.browser_reserved').length,3);
+    assert.equal(f.store.events(f.mission.id).filter(e=>e.type==='chatgpt.browser_reserved').length,4);
     // An owner note means "act now": PI revises the decision and the fence lifts.
     f.store.queuePiOwnerDirective(f.mission.id,'2402','The run ended early, check it now');
     const revised:PiPlanner={...planner(),decide:async()=>({action:'NEXT',
       summary:'Owner says the run ended',nextPrompt:'Collect the terminal record now'})};
     await reviewGoalPiRound({store:f.store,planner:revised,missionId:f.mission.id,
-      responseSha256:sha('Still running, second sample'),lastAssistant:'Still running, second sample',round:3,
+      responseSha256:sha('Artifact not delivered yet'),lastAssistant:'Artifact not delivered yet',round:4,
       replaceExisting:true,ownerDirectives:f.store.pendingPiOwnerDirectives(f.mission.id)});
     assert.equal(f.store.piDispatchNotBefore(f.mission.id),0);
   }finally{f.close();}
@@ -760,9 +765,9 @@ test('strict PI WAIT requires an offset resume time and an instruction; other ve
     evidenceRefs:[],handoff:false};
   assert.equal(parseGoalReview(JSON.stringify({...base,resumeAt:'2026-11-24T07:55:32+08:00'})).resumeAt,
     '2026-11-24T07:55:32+08:00');
-  assert.throws(()=>parseGoalReview(JSON.stringify({...base,resumeAt:'2026-11-24 07:55'})),/PI WAIT requires resumeAt/);
-  assert.throws(()=>parseGoalReview(JSON.stringify({...base,resumeAt:'2026-11-24T07:55:32'})),/PI WAIT requires resumeAt/);
-  assert.throws(()=>parseGoalReview(JSON.stringify(base)),/PI WAIT requires resumeAt/);
+  assert.throws(()=>parseGoalReview(JSON.stringify({...base,resumeAt:'2026-11-24 07:55'})),/PI WAIT resumeAt must be/);
+  assert.throws(()=>parseGoalReview(JSON.stringify({...base,resumeAt:'2026-11-24T07:55:32'})),/PI WAIT resumeAt must be/);
+  assert.equal(parseGoalReview(JSON.stringify(base)).resumeAt,undefined,'resumeAt is optional');
   assert.throws(()=>parseGoalReview(JSON.stringify({...base,nextPrompt:'',
     resumeAt:'2026-11-24T07:55:32Z'})),/Invalid PI work review/);
   assert.throws(()=>parseGoalReview(JSON.stringify({...base,verdict:'PARTIAL',
@@ -774,7 +779,7 @@ test('strict PI WAIT requires an offset resume time and an instruction; other ve
     workItem:{id:'1',goalId:'1',planId:'2',key:'k',title:'T',description:'D',priority:90,
       status:'IN_PROGRESS' as const,evidenceRefs:[],version:1,createdAt:'',updatedAt:''}};
   assert.match(goalReviewPrompt(input),/Never use REPLAN or PARTIAL to wait or poll/);
-  assert.match(goalReviewPrompt(input),/an approximate resumeAt is better than polling/);
+  assert.match(goalReviewPrompt(input),/WAIT is the only way to hold this package's next Send/);
   assert.doesNotMatch(goalReviewPrompt(input),/Controller fact: the last/);
   const streak=goalReviewPrompt({...input,priorWorkReviews:[{round:1,verdict:'PARTIAL'},
     {round:2,verdict:'REPLAN'},{round:3,verdict:'REPLAN'},{round:4,verdict:'REPLAN'}]});

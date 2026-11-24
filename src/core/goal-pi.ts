@@ -16,8 +16,9 @@ export interface GoalBlocker {
 export interface GoalReview {
   verdict:'PASS'|'PARTIAL'|'FAIL'|'REPLAN'|'BLOCKED'|'WAIT';
   summary:string;nextPrompt:string;evidenceRefs:string[];handoff:boolean;
-  /** WAIT only: ISO-8601 time (with offset) before which the package must not
-   * be dispatched again. The controller clamps it to its WAIT window. */
+  /** WAIT only, optional: ISO-8601 time (with offset) before which the package
+   * must not be dispatched again (default DEFAULT_WORK_WAIT_MS). The
+   * controller clamps it to its WAIT window. */
   resumeAt?:string;
   /** Required only for a terminal BLOCKED verdict. PI claims do not attest
    * that the cited external condition was independently checked. */
@@ -50,7 +51,8 @@ export interface GoalReviewContext extends GoalPlanContext {
 /** A PI WAIT defers re-dispatch of its package by at least this long and at
  * most this long; anything else is clamped, so WAIT can neither spin nor
  * park a Goal indefinitely (it is reviewed again when the window ends). */
-export const MIN_WORK_WAIT_MS=5*60_000,MAX_WORK_WAIT_MS=12*60*60_000;
+export const MIN_WORK_WAIT_MS=5*60_000,MAX_WORK_WAIT_MS=12*60*60_000,
+  DEFAULT_WORK_WAIT_MS=30*60_000;
 /** Durable per-Mission dispatch fence (read by Store.piDispatchNotBefore). */
 const piDispatchAfterKey=(missionId:string)=>`pi.dispatch.after.${missionId}`;
 const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
@@ -156,10 +158,11 @@ export function parseGoalReview(source:string):GoalReview{
     (['REPLAN','BLOCKED'].includes(String(raw.verdict))&&raw.nextPrompt.trim()))
     throw new Error('Invalid PI work review');
   const resumeAt=raw.resumeAt;
-  if(raw.verdict==='WAIT'&&(typeof resumeAt!=='string'||resumeAt.length>40||
+  if(raw.verdict==='WAIT'&&resumeAt!==undefined&&resumeAt!==null&&
+    (typeof resumeAt!=='string'||resumeAt.length>40||
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(resumeAt)||
     !Number.isFinite(Date.parse(resumeAt))))
-    throw new Error('PI WAIT requires resumeAt as an ISO-8601 time with a UTC offset');
+    throw new Error('PI WAIT resumeAt must be an ISO-8601 time with a UTC offset');
   if(raw.verdict!=='WAIT'&&resumeAt!==undefined&&resumeAt!==null)
     throw new Error('Only a PI WAIT may declare resumeAt');
   const blocker=raw.blocker;
@@ -171,7 +174,7 @@ export function parseGoalReview(source:string):GoalReview{
     nextPrompt:raw.nextPrompt.trim(),evidenceRefs:raw.evidenceRefs as string[],
     handoff:raw.handoff,
     ...(raw.verdict==='BLOCKED'?{blocker:blocker as GoalBlocker}:{}),
-    ...(raw.verdict==='WAIT'?{resumeAt:resumeAt as string}:{})};
+    ...(raw.verdict==='WAIT'&&typeof resumeAt==='string'?{resumeAt}:{})};
 }
 function validGoalBlocker(value:unknown):value is GoalBlocker {
   if(!value||typeof value!=='object'||Array.isArray(value))return false;
@@ -216,6 +219,7 @@ export function goalPlanPrompt(input:GoalPlanContext):string{
     'of baselines, cost gates or features that already passed.',
     ...(input.currentPlan?.length?[
       'REVISION OF THE CURRENT PLAN. Change only what the latest result requires.',
+      'The selected item is sent to the executor at once: a plan cannot hold or delay dispatch.',
       'Keep the exact key of every item whose obligation continues (including the unfinished',
       'active item); a key is its identity across plans. Never rename an item to restart it.',
       'Add new keys only for genuinely new work; drop items that are no longer needed.',
@@ -243,7 +247,7 @@ export function goalReviewPrompt(input:GoalReviewContext):string{
     '"blocker":null}. For BLOCKED only, replace blocker with',
     '{"kind":"external_permission|unrecoverable_evidence|external_dependency",',
     '"evidence":"concrete observed fact or citation","releaseCondition":"specific prerequisite"}.',
-    'For WAIT only, add "resumeAt":"<ISO-8601 time with UTC offset>".',
+    'For WAIT you may add "resumeAt":"<ISO-8601 time with UTC offset>".',
     'EVIDENCE STANDARD. You have no tools, so the executor report is the evidence available.',
     'Accept a criterion as met when the report gives concrete, specific, mutually consistent facts',
     'for it (commit SHA, file or command, test counts, device and build identity, observed result)',
@@ -260,14 +264,15 @@ export function goalReviewPrompt(input:GoalReviewContext):string{
     'to wait: if this item would simply be selected again to check a still-running process, use WAIT.',
     'BLOCKED only for a concrete external or authorization barrier the approved tools cannot',
     'resolve; code, test, build or CI failures and transient outages are never BLOCKED.',
-    'WAIT when the remaining evidence is being produced by an already running, time-bound process',
-    '(a long device run, a scheduled job, a store review) and checking earlier cannot change it.',
-    'resumeAt is when that result is expected (5 minutes to 12 hours ahead); no Send for this item',
-    'happens before then, independent eligible work runs meanwhile. nextPrompt is the instruction',
-    'to collect the result at that time. If the exact completion time is not reported, estimate it',
-    'from the reported start and expected duration, otherwise choose a reasonable check time (for',
-    'example 30-60 minutes); an approximate resumeAt is better than polling.',
-    'Never use REPLAN or PARTIAL to wait or poll.',
+    'DISPATCH FACT: the controller sends the next work prompt as soon as a PASS, PARTIAL, FAIL or',
+    'REPLAN decision is committed. Writing "wait" or "do not dispatch" into a plan, description or',
+    'nextPrompt has NO effect. WAIT is the only way to hold this package\'s next Send.',
+    'WAIT when the remaining evidence is being produced by something already under way (a long',
+    'device run, a scheduled job, an artifact delivery, a store review) and checking now cannot',
+    'change it. Optional resumeAt is when to check (5 minutes to 12 hours ahead; estimate it from',
+    'the reported start and expected duration); without it the controller checks after 30 minutes.',
+    'No Send for this item happens before then; independent eligible work runs meanwhile.',
+    'nextPrompt is the instruction to collect the result. Never use REPLAN or PARTIAL to wait or poll.',
     'For PARTIAL/FAIL/WAIT, nextPrompt is the one instruction. For PASS/REPLAN/BLOCKED, nextPrompt is empty.',
     'Review history of this work item (PI verdicts, oldest first):',
     ...(prior.length?prior.map(review=>`round ${review.round}: ${review.verdict}${review.summary?` — ${review.summary.slice(0,240)}`:''}`):['none']),
@@ -580,7 +585,7 @@ export async function reviewGoalPiRound(input:{
         // Waiting for a running process is not a defect, a new plan or a
         // blocker: keep the item and its history, free the active slot, and
         // fence its re-dispatch until the clamped resume time.
-        const asked=Date.parse(reviewed.resumeAt!);
+        const asked=reviewed.resumeAt?Date.parse(reviewed.resumeAt):nowMs+DEFAULT_WORK_WAIT_MS;
         const notBefore=Math.min(nowMs+MAX_WORK_WAIT_MS,Math.max(nowMs+MIN_WORK_WAIT_MS,asked));
         ledger.deferWork(goalId,active.id,active.version,new Date(notBefore).toISOString(),
           reviewed.nextPrompt,round,`${eventKey}:wait`);

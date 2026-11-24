@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.4 — 2026-11-24
+
+- **PI knows that only WAIT holds a dispatch.** Under 1.4.3 PI kept choosing
+  REPLAN and wrote "wait for the artifact, do not dispatch" into the revised
+  work item, believing the controller would gate on it; each such REPLAN was
+  sent again two minutes later. The review prompt now states the dispatch
+  fact (PASS, PARTIAL, FAIL and REPLAN are sent at once; text in a plan has
+  no effect), the plan-revision prompt says a plan cannot delay dispatch,
+  and `resumeAt` is optional for WAIT (the controller checks again after 30
+  minutes) so an unknown finish time is no reason to avoid WAIT.
+
 ## 1.4.3 — 2026-11-24
 
 - **PI is steered to WAIT when the report gives no finish time.** The first

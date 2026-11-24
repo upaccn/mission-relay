@@ -43,8 +43,9 @@ compiler rejects unused locals and parameters, and every module is imported.
    needs an external cause and a release condition and is scoped to its
    package while independent work remains. WAIT means the missing evidence
    is still being produced by an already running, time-bound process (a long
-   device run, a scheduled job): the package returns to READY with a
-   `resumeAt` (clamped to 5 min–12 h) and its resume instruction, independent
+   device run, a scheduled job): the package returns to READY with an
+   optional `resumeAt` (default 30 min, clamped to 5 min–12 h) and its resume
+   instruction, independent
    eligible work runs first, and when only waiting work remains the selected
    package is fenced (`pi.dispatch.after.<mission>`) so the Worker releases
    the browser and sends nothing before that time. An owner note lifts the

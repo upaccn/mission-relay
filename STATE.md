@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.4.3`.
+- Current source package version: `1.4.4`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -68,8 +68,9 @@
   REPLAN or a rename: after two non-pass reviews PI is told to decide on the
   merits. Plan keys are normalized (`[a-z0-9._:-]`, ≤64) and deduped.
 - **Waiting is not replanning.** When the remaining evidence comes from an
-  already running, time-bound process, PI returns WAIT with `resumeAt`
-  (clamped to 5 min–12 h) and the instruction to collect the result. The
+  already running process or delivery, PI returns WAIT with an optional
+  `resumeAt` (default 30 min, clamped to 5 min–12 h) and the instruction to
+  collect the result; PI is told that only WAIT holds a dispatch. The
   package keeps its key and history and returns to READY; independent work
   runs first. If only waiting work remains, the decision is fenced: no Send
   before `resumeAt` (`pi-health` phase `pi_wait_scheduled_no_send`). An
