@@ -10,7 +10,8 @@ import {Store} from '../src/core/store.js';
 import {GoalLedger} from '../src/core/goal-store.js';
 import {parseGoalPlanProposal,parseGoalReview,goalPlanPrompt,goalReviewPrompt,
   reviewGoalPiRound,type GoalPlanContext,type GoalReviewContext} from '../src/core/goal-pi.js';
-import {drivePiAutopilot} from '../src/core/pi-autopilot.js';
+import {drivePiAutopilot,pauseFailedPiPlanning} from '../src/core/pi-autopilot.js';
+import {MAINTENANCE_SEND_REFUSED} from '../src/core/store.js';
 import {goalWorkPrompt} from '../src/core/goal-prompts.js';
 import type {PiPlanner} from '../src/core/pi-planner.js';
 
@@ -774,4 +775,28 @@ test('strict PI WAIT requires an offset resume time and an instruction; other ve
       status:'IN_PROGRESS' as const,evidenceRefs:[],version:1,createdAt:'',updatedAt:''}};
   assert.match(goalReviewPrompt(input),/Never use REPLAN or PARTIAL to wait or poll/);
   assert.match(goalReviewPrompt(input),/Current controller time \(UTC\): 2026-11-23T21:40:00.000Z/);
+});
+
+test('a maintenance drain taken during PI review stops at the settled checkpoint without interrupting the Goal',async()=>{
+  const f=fixture();
+  try{
+    await reviewGoalPiRound({...f.observe(1,'Plan'),planner:planner()});
+    const before=f.store.get(f.mission.id);
+    const drain=f.store.requestChannelDrain('telegram');
+    const untouched=new Proxy({},{get(){throw new Error('browser must not be touched during a drain');}}) as Page;
+    await drivePiAutopilot({store:f.store,planner:planner(),missionId:f.mission.id,
+      revision:before.version,requestPrefix:'mission-one',page:untouched,url:URL});
+    // The race where the drain lands just before the reservation: refused
+    // atomically, nothing reserved, so the PI decision is kept, not interrupted.
+    pauseFailedPiPlanning(f.store,f.mission.id,new Error(MAINTENANCE_SEND_REFUSED));
+    const after=f.store.get(f.mission.id);
+    assert.equal(after.lastError,null);
+    assert.equal(after.version,before.version);
+    assert.equal(f.store.piPlan(f.mission.id)?.action,'NEXT');
+    assert.equal(f.store.events(f.mission.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
+    f.store.releaseChannelDrain('telegram',drain);
+    // Without a drain the same message is a real interruption and stays visible.
+    pauseFailedPiPlanning(f.store,f.mission.id,new Error(MAINTENANCE_SEND_REFUSED));
+    assert.match(f.store.get(f.mission.id).lastError??'',/maintenance drain/);
+  }finally{f.close();}
 });

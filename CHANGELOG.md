@@ -14,6 +14,12 @@
   to REPLAN or PARTIAL to poll. An owner note lifts the fence; the fence does
   not block maintenance. `pi-health` reports `pi_wait_scheduled_no_send` and
   `dispatchNotBefore`.
+- **An upgrade no longer interrupts a continuously running Goal.** A
+  maintenance drain may be taken while PI reviews a settled answer. The Goal
+  loop now stops at that checkpoint before any browser read, and a
+  reservation refused by the drain (nothing reserved or sent) keeps the
+  committed PI decision instead of recording a Goal interruption that needed
+  `recover --retry` after the upgrade.
 
 ## 1.4.1 — 2026-11-23
 

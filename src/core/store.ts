@@ -52,6 +52,7 @@ export interface PiOwnerDirective {
 export type PiPlanAction='NEXT'|'DONE'|'BLOCKED'|'HANDOFF';
 /** The live Chat no longer matches the last durable receipt. Only an explicit
  * double-read (`recover --retry`) may clear it; nothing is ever resent. */
+export const MAINTENANCE_SEND_REFUSED='Telegram maintenance drain active; new browser Sends are refused';
 export const PI_CHECKPOINT_MISMATCH=
   'PI recovery refused: current Chrome user/assistant turns differ from the last durable receipt';
 /** The pre-Send history check found a changed Chat; no request was reserved. */
@@ -1211,7 +1212,7 @@ export class Store {
       throw new Error('Goal work prompt snapshot and versioned Goal binding must be recorded together');
     return this.transaction(()=>{
       if(this.channelDrainRequested('telegram'))
-        throw new Error('Telegram maintenance drain active; new browser Sends are refused');
+        throw new Error(MAINTENANCE_SEND_REFUSED);
       const m=this.get(id);
       const url=this.chatLink(id);
       if(!url) throw new Error('Mission has no linked ChatGPT conversation');

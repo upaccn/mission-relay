@@ -1,7 +1,7 @@
 import type {Page} from 'playwriter';
 import {createHash} from 'node:crypto';
 import type {Store,PiPlan} from './store.js';
-import {PI_NEXT_SOURCE_PREFLIGHT_ERROR} from './store.js';
+import {PI_NEXT_SOURCE_PREFLIGHT_ERROR,MAINTENANCE_SEND_REFUSED} from './store.js';
 import {PiInferenceError,SshPiPlanner,type PiPlanner} from './pi-planner.js';
 import {PreSendError,inspectChatPage,lastVisibleUserPromptSha256} from '../plugins/chatgpt-browser.js';
 import {executeBrowserTurn,executeBrowserRollover,browserGoalPlanningPrompt,
@@ -112,6 +112,9 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
       // PI WAIT: the selected package is waiting for a running process. Release
       // the browser at this settled checkpoint; the Worker resumes after it.
       if(store.piDispatchNotBefore(missionId)>Date.now())return;
+      // A maintenance drain taken while PI was reviewing: stop at this settled
+      // checkpoint. The committed decision resumes after the upgrade.
+      if(store.channelDrainRequested('telegram'))return;
       // Refuse to append to a conversation someone else changed meanwhile.
       const previous=store.chatBrowserTurn(missionId);
       const snapshot=await withReadOnlyDeadline(inspectChatPage(page,url));
@@ -193,6 +196,11 @@ export function pauseFailedPiPlanning(store:Store,id:string,reason:string|Error)
   // stop limit (Store.abortUnsentBrowserTurn); nothing more to record.
   if(reason instanceof PreSendError)return;
   const current=store.get(id);
+  // The drain refused the reservation inside its own transaction, so nothing
+  // was reserved or sent: keep the committed PI decision for the next Worker
+  // instead of interrupting the Goal for a routine upgrade.
+  if(message.startsWith(MAINTENANCE_SEND_REFUSED)&&store.channelDrainRequested('telegram')&&
+    current.state==='PAUSED'&&store.chatBrowserTurn(id)?.status!=='reserved')return;
   if(current.state==='PAUSED'&&!current.stopRequested &&
     !(store.piPlan(id)?.round===current.turnCount&&
       ['DONE','BLOCKED'].includes(store.piPlan(id)?.action??''))){
