@@ -12,6 +12,7 @@ import {parseGoalPlanProposal,parseGoalReview,goalPlanPrompt,goalReviewPrompt,
   reviewGoalPiRound,type GoalPlanContext,type GoalReviewContext} from '../src/core/goal-pi.js';
 import {drivePiAutopilot,pauseFailedPiPlanning} from '../src/core/pi-autopilot.js';
 import {MAINTENANCE_SEND_REFUSED} from '../src/core/store.js';
+import {piWaitUntil} from '../src/plugins/telegram.js';
 import {goalWorkPrompt} from '../src/core/goal-prompts.js';
 import type {PiPlanner} from '../src/core/pi-planner.js';
 
@@ -708,7 +709,7 @@ test('PI WAIT for a running process runs independent work now and never re-sends
     const t1=T0+10*60_000;
     const fenced=await reviewGoalPiRound({...f.observe(3,'Listing saved'),planner:planner(),now:()=>t1});
     assert.equal(fenced.action,'NEXT');
-    assert.equal(fenced.summary,`PI WAIT: no other eligible work; endurance resumes after ${iso(DUE)}`);
+    assert.equal(fenced.summary,`PI WAIT until ${iso(DUE)}: no other eligible work; endurance resumes then`);
     assert.equal(fenced.nextPrompt,'Collect the terminal record of the running 720p session; do not restart it');
     assert.equal(work(f,'endurance').status,'IN_PROGRESS');
     assert.equal(f.store.piDispatchNotBefore(f.mission.id),DUE);
@@ -809,4 +810,61 @@ test('a maintenance drain taken during PI review stops at the settled checkpoint
     pauseFailedPiPlanning(f.store,f.mission.id,new Error(MAINTENANCE_SEND_REFUSED));
     assert.match(f.store.get(f.mission.id).lastError??'',/maintenance drain/);
   }finally{f.close();}
+});
+
+test('a REPLAN in the same Mission keeps a PI-blocked package blocked until the owner says something changed',async()=>{
+  const f=fixture();
+  try{
+    const plan={summary:'Store access and an independent build lane',items:[
+      {key:'console',title:'Save Play Console forms',priority:100,description:'Needs console access',
+        dependsOn:[],acceptance:['Forms saved and read back']},
+      {key:'build',title:'Build candidate',priority:90,description:'Build and test',
+        dependsOn:[],acceptance:['Signed candidate built']},
+    ]};
+    const current=(key:string)=>{
+      const g=f.ledger.graph(f.goal.id),approved=g.plans.find(p=>p.status==='APPROVED')!;
+      return g.items.find(x=>x.planId===approved.id&&x.key===key)!;
+    };
+    await review(f,1,'Plan',planner({plan}));
+    const blocked=await review(f,2,'Console write control unavailable',planner({verdict:'BLOCKED'}));
+    assert.match(blocked.summary,/Deferred blocked console/);
+    const replanned=await review(f,3,'Build needs a different approach',planner({verdict:'REPLAN',plan}));
+    assert.equal(f.ledger.graph(f.goal.id).plans.length,2);
+    assert.equal(current('console').status,'BLOCKED','not resurrected and re-sent');
+    assert.equal(current('build').status,'IN_PROGRESS');
+    assert.match(replanned.summary,/still BLOCKED: console/);
+    assert.match(replanned.nextPrompt,/build/);
+    // Only blocked work left after the next REPLAN: the Goal is BLOCKED for the owner.
+    const onlyConsole={summary:'Console only',items:[plan.items[0]!]};
+    const stop=await review(f,4,'Build moved elsewhere',planner({verdict:'REPLAN',plan:onlyConsole}));
+    assert.equal(stop.action,'BLOCKED');
+    assert.equal(f.ledger.getGoal(f.goal.id).status,'BLOCKED');
+  }finally{f.close();}
+});
+
+test('an owner note after the blocking review lets a REPLAN schedule the package again',async()=>{
+  const f=fixture();
+  try{
+    const plan={summary:'Two lanes',items:[
+      {key:'console',title:'Save Play Console forms',priority:100,description:'Needs access',
+        dependsOn:[],acceptance:['Forms saved']},
+      {key:'build',title:'Build candidate',priority:90,description:'Build',dependsOn:[],
+        acceptance:['Candidate built']},
+    ]};
+    await review(f,1,'Plan',planner({plan}));
+    await review(f,2,'Console write control unavailable',planner({verdict:'BLOCKED'}));
+    f.store.queuePiOwnerDirective(f.mission.id,'2501','I granted console access');
+    f.store.db.prepare('UPDATE pi_owner_directives SET consumed_round=2 WHERE mission_id=?').run(f.mission.id);
+    const next=await review(f,3,'Build needs a different approach',planner({verdict:'REPLAN',plan}));
+    assert.match(next.nextPrompt,/console/,'released by the owner note');
+    assert.doesNotMatch(next.summary,/still BLOCKED/);
+  }finally{f.close();}
+});
+
+test('a fenced PI WAIT decision is recognisable for owner notifications',()=>{
+  assert.equal(piWaitUntil('PI WAIT until 2026-11-24T05:22:00.000Z: no other eligible work; x resumes then'),
+    '2026-11-24T05:22:00.000Z');
+  assert.equal(piWaitUntil('PI WAIT until 2026-11-24T05:22:00.000Z for x: run in progress'),'2026-11-24T05:22:00.000Z');
+  assert.equal(piWaitUntil('PI WAIT for x until 2026-11-24T05:22:00.000Z; PI selected y'),null,'not holding the Goal');
+  assert.equal(piWaitUntil('PI selected y; 3 planned work items'),null);
 });

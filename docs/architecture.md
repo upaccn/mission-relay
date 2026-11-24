@@ -49,7 +49,10 @@ compiler rejects unused locals and parameters, and every module is imported.
    eligible work runs first, and when only waiting work remains the selected
    package is fenced (`pi.dispatch.after.<mission>`) so the Worker releases
    the browser and sends nothing before that time. An owner note lifts the
-   fence. WAIT never replaces REPLAN, PARTIAL or BLOCKED semantics.
+   fence. WAIT never replaces REPLAN, PARTIAL or BLOCKED semantics. A REPLAN
+   keeps a key PI found BLOCKED in the same Mission BLOCKED (an owner note
+   since, or a later review of that key, releases it), so the revised plan
+   does not re-send work only to block it again.
 6. **Done.** PASS of the final package (the review is told this completes the
    Goal) writes one immutable `goal_completions` row and PI action DONE; later
    Goal writes and Sends are refused. A ChatGPT DONE marker never completes a

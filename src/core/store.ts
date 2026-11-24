@@ -1663,6 +1663,11 @@ export class Store {
       return result.changes===1;
     });
   }
+  /** True when the owner sent this Mission a note at or after `iso`. */
+  piOwnerDirectiveSince(id:string,iso:string):boolean {
+    return Boolean(this.db.prepare(
+      'SELECT 1 FROM pi_owner_directives WHERE mission_id=? AND received_at>=? LIMIT 1').get(id,iso));
+  }
   pendingPiOwnerDirectives(id:string):PiOwnerDirective[] {
     this.raw(id);
     return this.db.prepare(`SELECT id,external_id AS externalId,text

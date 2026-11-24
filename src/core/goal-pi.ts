@@ -374,7 +374,7 @@ function selectNextWork(ledger:GoalLedger,goalId:string,planId:string,source:str
   if(!ready.length){
     const notBefore=deferrals.get(item.key)!.notBefore;
     return {action:'NEXT',nextPrompt:prompt,notBefore,
-      summary:`PI WAIT: no other eligible work; ${item.key} resumes after ${new Date(notBefore).toISOString()}`};
+      summary:`PI WAIT until ${new Date(notBefore).toISOString()}: no other eligible work; ${item.key} resumes then`};
   }
   return {action:'NEXT',nextPrompt:prompt,summary:`PI selected ${item.key}; ${items.length} planned work items`};
 }
@@ -402,6 +402,36 @@ function carryForwardPassedWork(ledger:GoalLedger,goalId:string,planId:string,
         `pi:${source.slice(0,36)}:${item.id.slice(0,24)}:carry`);
       carried.push(item.key);progressed=true;break;
     }
+  }
+  return carried;
+}
+/** A REPLAN produces a fresh PENDING graph, which used to resurrect every
+ * package PI had just found externally BLOCKED: each was re-sent once, only
+ * for PI to block it again (16 such rounds in one production Mission). In the
+ * SAME Mission, with no owner note since that verdict, the barrier cannot have
+ * been lifted by the controller, so the key stays BLOCKED in the new plan.
+ * An owner note, /goal-continue (a new Mission) or any later non-BLOCKED
+ * review of that key releases it. */
+function carryForwardBlockedWork(store:Store,ledger:GoalLedger,goalId:string,
+  planId:string,missionId:string,source:string):string[]{
+  const graph=ledger.graph(goalId),keyOf=new Map(graph.items.map(x=>[x.id,x.key]));
+  const blockedAt=new Map<string,string>();
+  for(const event of graph.events){
+    if(event.type!=='goal.pi_review')continue;
+    const key=keyOf.get(String(event.payload.itemId));
+    if(!key)continue;
+    if(event.payload.verdict==='BLOCKED'&&event.payload.missionId===missionId)
+      blockedAt.set(key,event.createdAt);
+    // Any later review of the key means it was worked on again, not blocked.
+    else blockedAt.delete(key);
+  }
+  const carried:string[]=[];
+  for(const item of graph.items.filter(x=>x.planId===planId&&x.status==='PENDING')){
+    const at=blockedAt.get(item.key);
+    if(!at||store.piOwnerDirectiveSince(missionId,at))continue;
+    ledger.setWorkStatus(goalId,item.id,item.version,'BLOCKED',[],
+      `pi:${source.slice(0,36)}:${item.id.slice(0,24)}:keep-blocked`);
+    carried.push(item.key);
   }
   return carried;
 }
@@ -591,7 +621,7 @@ export async function reviewGoalPiRound(input:{
           reviewed.nextPrompt,round,`${eventKey}:wait`);
         const continuation=selectNextWork(ledger,goalId,approved.id,responseSha256,nowMs);
         next={...continuation,summary:(continuation.notBefore!==undefined
-          ?`PI WAIT for ${active.key} until ${new Date(notBefore).toISOString()}: ${reviewed.summary}`
+          ?`PI WAIT until ${new Date(continuation.notBefore).toISOString()} for ${active.key}: ${reviewed.summary}`
           :`PI WAIT for ${active.key} until ${new Date(notBefore).toISOString()}; ${continuation.summary}`).slice(0,1000)};
       }else if(reviewed.verdict==='REPLAN'){
         // Superseded, not blocked: the new plan continues this key's obligation.
@@ -610,9 +640,17 @@ export async function reviewGoalPiRound(input:{
           `${eventKey}:plan-review`);
         chosen=ledger.getPlan(goalId,newPlan.id);
         const carried=carryForwardPassedWork(ledger,goalId,newPlan.id,responseSha256);
+        const stillBlocked=ownerDirectives.length?[]:
+          carryForwardBlockedWork(store,ledger,goalId,newPlan.id,missionId,responseSha256);
         next=selectNextWork(ledger,goalId,newPlan.id,responseSha256,nowMs);
+        if(next.action==='BLOCKED'&&stillBlocked.length){
+          const goal=ledger.getGoal(goalId);
+          ledger.setGoalStatus(goalId,goal.version,'BLOCKED',`${eventKey}:replan-blocked`);
+        }
         if(carried.length)next={...next,
           summary:`${next.summary}; carried forward PASSED: ${carried.join(', ')}`.slice(0,1000)};
+        if(stillBlocked.length)next={...next,
+          summary:`${next.summary}; still BLOCKED: ${stillBlocked.join(', ')}`.slice(0,1000)};
       }else{
         ledger.setWorkStatus(goalId,active.id,active.version,'BLOCKED',[],
           `${eventKey}:blocked`);

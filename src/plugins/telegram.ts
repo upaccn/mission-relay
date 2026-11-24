@@ -232,10 +232,21 @@ export function formatPiNotification(m:Mission,event:MissionEvent):string {
     action==='INTERRUPTED'?`Recover: on the Worker host run  node dist/cli.js recover ${m.id.slice(0,8)}  (prints the one safe next step)`:'',
     'Details: /status'].filter(Boolean).join('\n').slice(0,1600);
 }
+/** A committed PI decision that holds the next Send (PI WAIT fence). */
+export function piWaitUntil(summary:unknown):string|null {
+  const match=typeof summary==='string'?/^PI WAIT until (\S+?):? /.exec(summary):null;
+  return match&&Number.isFinite(Date.parse(match[1]!))?match[1]!:null;
+}
 function formatPiProgress(m:Mission,event:MissionEvent):string {
   const payload=event.payload && typeof event.payload==='object'
     ?event.payload as {action?:unknown;round?:unknown;summary?:unknown}:{};
   const round=typeof payload.round==='number'?payload.round:m.turnCount;
+  const until=piWaitUntil(payload.summary);
+  if(until)return [`PI is waiting until ${until.slice(0,16).replace('T',' ')} UTC — no ChatGPT message before then`,
+    taskTitle(m),
+    compactTelegramText(String(payload.summary),520),
+    'The Goal resumes automatically. A note from you resumes it now.'
+  ].join('\n').slice(0,1250);
   return [`PI approved round ${round} — sending round ${round+1} to ChatGPT`,
     taskTitle(m),
     compactTelegramText(typeof payload.summary==='string'?payload.summary:'',520),
@@ -927,7 +938,9 @@ export class TelegramBridge {
         if(event.type==='pi.decision' &&
           (!['NEXT','HANDOFF'].includes(String((event.payload as {action?:unknown})?.action))||
             (Number((event.payload as {round?:unknown})?.round)!==1&&
-              Number((event.payload as {round?:unknown})?.round)%5!==0))){
+              Number((event.payload as {round?:unknown})?.round)%5!==0&&
+              // A WAIT that holds the Goal is always reported: it looks like a stop.
+              !piWaitUntil((event.payload as {summary?:unknown})?.summary)))){
           cursor=event.id;
           this.store.setMeta('telegram.notifications_cursor',String(cursor));
           continue;
@@ -1160,6 +1173,9 @@ export class TelegramBridge {
       return 'Needs attention — blocked on an external condition (/goal-continue after fixing it)';
     if(m.id===this.activeMission)return 'Running';
     if(m.state==='READY')return 'Queued';
+    const waitUntil=this.store.piDispatchNotBefore(m.id);
+    if(m.state==='PAUSED'&&!m.lastError&&waitUntil>Date.now())
+      return `Waiting until ${new Date(waitUntil).toISOString().slice(0,16).replace('T',' ')} UTC (PI WAIT; resumes automatically, a note resumes it now)`;
     if(m.state==='PAUSED'&&!m.lastError&&
       ['NEXT','HANDOFF'].includes(this.store.piPlan(m.id)?.action??''))
       return 'Queued — checkpoint ready';

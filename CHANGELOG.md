@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.4.5 — 2026-11-24
+
+- **A REPLAN no longer re-sends packages PI just blocked.** A REPLAN builds
+  a fresh PENDING plan, so every externally BLOCKED package came back: in
+  one production Mission 16 rounds (a ChatGPT Send and a PI review each)
+  only re-confirmed an unchanged blocker. Within the same Mission, a key PI
+  found BLOCKED now stays BLOCKED in the revised plan unless the owner sent
+  a note since or the key was reviewed again; `/goal-continue` starts a new
+  Mission and re-checks every blocker. If only blocked work remains, the
+  Goal becomes BLOCKED so the owner is asked to act.
+- **A Goal held by PI WAIT is reported, not silent.** When only waiting
+  work is left, the decision that fences the next Send is always notified
+  ("PI is waiting until … UTC") and `/status` shows the wait, instead of the
+  Goal appearing to have stopped.
+
 ## 1.4.4 — 2026-11-24
 
 - **PI knows that only WAIT holds a dispatch.** Under 1.4.3 PI kept choosing

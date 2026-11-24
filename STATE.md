@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.4.4`.
+- Current source package version: `1.4.5`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -74,7 +74,12 @@
   package keeps its key and history and returns to READY; independent work
   runs first. If only waiting work remains, the decision is fenced: no Send
   before `resumeAt` (`pi-health` phase `pi_wait_scheduled_no_send`). An
-  owner note lifts the fence; the fence never blocks maintenance.
+  owner note lifts the fence; the fence never blocks maintenance. A fenced
+  decision is always notified on Telegram and `/status` shows the wait.
+- **A REPLAN does not resurrect a blocked package.** A key PI found BLOCKED
+  in the same Mission stays BLOCKED in the revised plan unless the owner
+  sent a note since or the key was reviewed again; if only blocked work is
+  left, the Goal becomes BLOCKED for `/goal-continue`.
 - **Every PI failure is retried.** Any failure of PI itself (unreachable,
   timeout, quota, unusable output) happens before a Send; the Worker retries
   it with SHA-bound backoff (1 → 15 min) and stops visibly after 8 attempts.
