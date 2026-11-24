@@ -12,7 +12,7 @@ whole loop safe, resumable and auditable.
 ```text
 Telegram /goal ──► Goal plan (PI) ──► work package ──► ChatGPT executes
       ▲                                                     │
-      └──── result / blocker ◄── PI review: PASS · PARTIAL · REPLAN · BLOCKED
+      └──── result / blocker ◄── PI review: PASS · PARTIAL · REPLAN · BLOCKED · WAIT
 ```
 
 - **Goal-first.** Every task is a Goal with a durable plan, work packages and

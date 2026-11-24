@@ -645,6 +645,7 @@ export class Store {
             ?'pi_browser_read_retry_deferred_no_send':'pi_inference_retry_deferred_no_send':
         receipt&&['observed','reconciled'].includes(receipt.status)&&
         plan?.round!==m.turnCount?'awaiting_pi_review':
+        m.state==='PAUSED'&&this.piDispatchNotBefore(m.id)>now?'pi_wait_scheduled_no_send':
         m.state==='PAUSED'?'pi_checkpoint_ready':
         'controller_active_browser_progress_unverified';
       return {id:m.id,state:m.state,turnCount:m.turnCount,
@@ -657,6 +658,8 @@ export class Store {
         receiptHasFullAnswerHash:!!receipt?.assistantSha256&&/^[0-9a-f]{64}$/.test(receipt.assistantSha256),
         lastEvent:last?.type??null,lastEventAt:last?.createdAt??null,
         pendingOwnerNotes:this.pendingPiOwnerDirectives(m.id).length,
+        dispatchNotBefore:this.piDispatchNotBefore(m.id)>now?
+          new Date(this.piDispatchNotBefore(m.id)).toISOString():null,
         ownerProcessMatchesPoller:channel.pollerPresent&&m.ownerPid!==null&&
           m.ownerPid===channel.pollerPid,
         phase};
@@ -1177,6 +1180,17 @@ export class Store {
         attempt:aborts,noSend:true,stopped:exhausted});
       return this.get(id);
     });
+  }
+  /** PI WAIT fence: no Send for this Mission before the returned epoch ms.
+   * It applies only to the exact committed PI round and answer it was
+   * written with; any later decision or an owner note (notBefore 0) lifts it. */
+  piDispatchNotBefore(id:string):number {
+    const plan=this.piPlan(id),mission=this.get(id);
+    let fence:{round?:unknown;responseSha256?:unknown;notBefore?:unknown};
+    try{fence=JSON.parse(this.getMeta(`pi.dispatch.after.${id}`)??'null')??{};}catch{return 0;}
+    if(!plan||plan.round!==mission.turnCount||fence.round!==plan.round||
+      fence.responseSha256!==plan.responseSha256||!['NEXT','HANDOFF'].includes(plan.action))return 0;
+    return typeof fence.notBefore==='number'&&Number.isFinite(fence.notBefore)?fence.notBefore:0;
   }
   /** Earliest time the Worker may retry after an unsent attempt. */
   browserPresendRetryAfter(id:string):number {

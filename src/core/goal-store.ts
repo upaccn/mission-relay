@@ -286,7 +286,7 @@ export class GoalLedger {
   }
   /** PI review is an attributable decision, not independent evidence proof. */
   recordPiReview(goalId:string,missionId:string,itemId:string,round:number,
-    answerSha256:string,verdict:'PASS'|'PARTIAL'|'FAIL'|'REPLAN'|'BLOCKED',
+    answerSha256:string,verdict:'PASS'|'PARTIAL'|'FAIL'|'REPLAN'|'BLOCKED'|'WAIT',
     evidenceRefs:string[],summary:string,operationKey:string):void {
     if(!/^[a-f0-9]{64}$/.test(answerSha256)||!Number.isInteger(round)||round<0)
       throw new Error('PI Goal review requires a verified browser answer SHA and round');
@@ -541,6 +541,28 @@ export class GoalLedger {
       return this.getWork(goalId,itemId);
     });
   }
+  /** PI WAIT: the active package is waiting for a time-bound process it
+   * already started (a long device run, a scheduled job). It returns to READY
+   * with a not-before time, so the single active slot is free for independent
+   * work and nothing re-dispatches it early. Not a review verdict on its own. */
+  deferWork(goalId:string,itemId:string,expectedVersion:number,notBefore:string,
+    resumePrompt:string,round:number,operationKey:string):GoalWorkItem{
+    if(!Number.isFinite(Date.parse(notBefore))||!Number.isInteger(round)||round<0)
+      throw new Error('Work deferral requires a valid time and round');
+    const prompt=content(resumePrompt,1500,'work deferral resume instruction');
+    return this.once(goalId,operationKey,{itemId,expectedVersion,notBefore,prompt,round},()=>{
+      const item=this.getWork(goalId,itemId);
+      requireVersion(item.version,expectedVersion);
+      if(item.status!=='IN_PROGRESS')throw new Error('Only the active work item can be deferred');
+      if(this.getPlan(goalId,item.planId).status!=='APPROVED')
+        throw new Error('Work item cannot be deferred outside its approved plan');
+      this.store.db.prepare(`UPDATE goal_work_items SET status='READY',version=version+1,
+        updated_at=? WHERE id=?`).run(now(),itemId);
+      this.event(goalId,'goal.work_deferred',{itemId,planId:item.planId,key:item.key,round,
+        notBefore,resumePrompt:prompt,previousVersion:item.version,newVersion:item.version+1});
+      return this.getWork(goalId,itemId);
+    });
+  }
   graph(goalId:string):GoalGraph{
     const goal=this.getGoal(goalId),db=this.store.db;
     const plans=(db.prepare('SELECT * FROM goal_plans WHERE goal_id=? ORDER BY ordinal')
@@ -559,4 +581,20 @@ export class GoalLedger {
         payload:JSON.parse(e.payload_json) as Record<string,unknown>}));
     return {goal,plans,items,dependencies,acceptance,events};
   }
+}
+
+/** Open PI WAIT deferrals by stable work key: the latest `goal.work_deferred`
+ * of a key that no later PI review of the same key has consumed. */
+export function openWorkDeferrals(graph:GoalGraph):Map<string,{notBefore:number;resumePrompt:string}>{
+  const keyOf=new Map(graph.items.map(x=>[x.id,x.key]));
+  const open=new Map<string,{notBefore:number;resumePrompt:string}>();
+  for(const event of graph.events){
+    const key=keyOf.get(String(event.payload.itemId));
+    if(!key)continue;
+    if(event.type==='goal.work_deferred')open.set(key,{
+      notBefore:Date.parse(String(event.payload.notBefore)),
+      resumePrompt:String(event.payload.resumePrompt??'')});
+    else if(event.type==='goal.pi_review'&&event.payload.verdict!=='WAIT')open.delete(key);
+  }
+  return open;
 }

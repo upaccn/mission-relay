@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.4.2 — 2026-11-24
+
+- **PI can wait instead of re-sending.** Production showed PI using REPLAN to
+  "wait" for a two-hour device run owned by an existing job: about 25
+  consecutive REPLAN rounds, each a new plan, two PI calls and one ChatGPT
+  Send roughly every two minutes, with no new evidence. PI review now has a
+  WAIT verdict with a bounded `resumeAt` (5 min–12 h) and a resume
+  instruction. The package keeps its key and history and returns to READY,
+  independent eligible work runs meanwhile, and when only waiting work is
+  left the committed decision is fenced: the Worker releases the browser and
+  sends nothing before that time. PI is told the controller clock and never
+  to REPLAN or PARTIAL to poll. An owner note lifts the fence; the fence does
+  not block maintenance. `pi-health` reports `pi_wait_scheduled_no_send` and
+  `dispatchNotBefore`.
+
 ## 1.4.1 — 2026-11-23
 
 - **`/goal-continue` no longer stalls on stale work.** A Goal blocked while a

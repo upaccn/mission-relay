@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.4.1`.
+- Current source package version: `1.4.2`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -67,6 +67,13 @@
   FAILED, not BLOCKED. There is no controller repair budget that forces a
   REPLAN or a rename: after two non-pass reviews PI is told to decide on the
   merits. Plan keys are normalized (`[a-z0-9._:-]`, ≤64) and deduped.
+- **Waiting is not replanning.** When the remaining evidence comes from an
+  already running, time-bound process, PI returns WAIT with `resumeAt`
+  (clamped to 5 min–12 h) and the instruction to collect the result. The
+  package keeps its key and history and returns to READY; independent work
+  runs first. If only waiting work remains, the decision is fenced: no Send
+  before `resumeAt` (`pi-health` phase `pi_wait_scheduled_no_send`). An
+  owner note lifts the fence; the fence never blocks maintenance.
 - **Every PI failure is retried.** Any failure of PI itself (unreachable,
   timeout, quota, unusable output) happens before a Send; the Worker retries
   it with SHA-bound backoff (1 → 15 min) and stops visibly after 8 attempts.

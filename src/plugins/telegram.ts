@@ -782,6 +782,10 @@ export class TelegramBridge {
         Number.isFinite(retryAfter)&&retryAfter>Date.now())return false;
       // An unsent (aborted) browser reservation backs off before retrying.
       if(this.store.browserPresendRetryAfter(m.id)>Date.now())return false;
+      // A PI WAIT holds its next Send until the fence, unless an owner note
+      // arrived (PI reviews it first, and the note lifts the fence).
+      if(this.store.piDispatchNotBefore(m.id)>Date.now()&&
+        !this.store.pendingPiOwnerDirectives(m.id).length)return false;
       return this.store.getMeta(`pi.autopilot.enabled.${m.id}`)==='1' &&
       !m.stopRequested&&!m.lastError&&
       ledger.missionGoalId(m.id)!==null&&

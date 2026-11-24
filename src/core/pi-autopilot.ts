@@ -109,6 +109,9 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
       }
       if(store.pendingPiOwnerDirectives(missionId).length)
         throw new Error('PI owner updates changed repeatedly; no browser Send is authorized');
+      // PI WAIT: the selected package is waiting for a running process. Release
+      // the browser at this settled checkpoint; the Worker resumes after it.
+      if(store.piDispatchNotBefore(missionId)>Date.now())return;
       // Refuse to append to a conversation someone else changed meanwhile.
       const previous=store.chatBrowserTurn(missionId);
       const snapshot=await withReadOnlyDeadline(inspectChatPage(page,url));
@@ -165,6 +168,7 @@ export async function drivePiAutopilot(input:PiAutopilotArgs):Promise<void> {
         const receipt=store.chatBrowserTurn(other.id),pi=store.piPlan(other.id);
         if(receipt&&['reserved','uncertain'].includes(receipt.status))return false;
         if(other.state==='READY'&&other.turnCount===0)return true;
+        if(store.piDispatchNotBefore(other.id)>Date.now())return false;
         return other.state==='PAUSED'&&receipt?.assistantSha256&&
           store.hasVerifiedPiBrowserCheckpoint(other.id)&&
           (pi?.round!==other.turnCount||['NEXT','HANDOFF'].includes(pi.action));

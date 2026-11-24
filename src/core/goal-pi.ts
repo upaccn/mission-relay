@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto';
 import type {Store,PiPlan,PiOwnerDirective} from './store.js';
-import {GoalLedger,activeWorkItem,type GoalGraph,type GoalWorkItem,type CreateGoalPlan,
-  type PlannedWork} from './goal-store.js';
+import {GoalLedger,activeWorkItem,openWorkDeferrals,type GoalGraph,type GoalWorkItem,
+  type CreateGoalPlan,type PlannedWork} from './goal-store.js';
 import {PiInferenceError,inferPi,type PiPlanner} from './pi-planner.js';
 import {CI_PI_POLICY} from './ci-policy.js';
 
@@ -14,8 +14,11 @@ export interface GoalBlocker {
   evidence:string;releaseCondition:string;
 }
 export interface GoalReview {
-  verdict:'PASS'|'PARTIAL'|'FAIL'|'REPLAN'|'BLOCKED';
+  verdict:'PASS'|'PARTIAL'|'FAIL'|'REPLAN'|'BLOCKED'|'WAIT';
   summary:string;nextPrompt:string;evidenceRefs:string[];handoff:boolean;
+  /** WAIT only: ISO-8601 time (with offset) before which the package must not
+   * be dispatched again. The controller clamps it to its WAIT window. */
+  resumeAt?:string;
   /** Required only for a terminal BLOCKED verdict. PI claims do not attest
    * that the cited external condition was independently checked. */
   blocker?:GoalBlocker;
@@ -41,7 +44,15 @@ export interface GoalReviewContext extends GoalPlanContext {
   priorWorkReviews?:Array<{round:number;verdict:GoalReview['verdict'];summary?:string}>;
   /** True when every other package of the approved plan already PASSED. */
   finalWorkItem?:boolean;
+  /** Controller wall clock (UTC ISO) when the review prompt was built. */
+  controllerTime?:string;
 }
+/** A PI WAIT defers re-dispatch of its package by at least this long and at
+ * most this long; anything else is clamped, so WAIT can neither spin nor
+ * park a Goal indefinitely (it is reviewed again when the window ends). */
+export const MIN_WORK_WAIT_MS=5*60_000,MAX_WORK_WAIT_MS=12*60*60_000;
+/** Durable per-Mission dispatch fence (read by Store.piDispatchNotBefore). */
+const piDispatchAfterKey=(missionId:string)=>`pi.dispatch.after.${missionId}`;
 const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
 const limitAnswer=(answer:string)=>answer.length<=100_000?answer:
   answer.slice(0,50_000)+'\n[MIDDLE OMITTED: not verified]\n'+answer.slice(-50_000);
@@ -134,16 +145,23 @@ export function parseGoalPlanProposal(source:string):GoalPlanProposal{
 }
 export function parseGoalReview(source:string):GoalReview{
   const raw=jsonObject(source);
-  if(!['PASS','PARTIAL','FAIL','REPLAN','BLOCKED'].includes(String(raw.verdict))||
+  if(!['PASS','PARTIAL','FAIL','REPLAN','BLOCKED','WAIT'].includes(String(raw.verdict))||
     typeof raw.summary!=='string'||!raw.summary.trim()||raw.summary.length>1000||
     typeof raw.nextPrompt!=='string'||raw.nextPrompt.length>1500||
     typeof raw.handoff!=='boolean'||!Array.isArray(raw.evidenceRefs)||
     raw.evidenceRefs.length>30||
     raw.evidenceRefs.some(x=>typeof x!=='string'||!x.trim()||x.length>512)||
     (raw.verdict==='PASS'&&raw.evidenceRefs.length===0)||
-    (['PARTIAL','FAIL'].includes(String(raw.verdict))&&!raw.nextPrompt.trim())||
+    (['PARTIAL','FAIL','WAIT'].includes(String(raw.verdict))&&!raw.nextPrompt.trim())||
     (['REPLAN','BLOCKED'].includes(String(raw.verdict))&&raw.nextPrompt.trim()))
     throw new Error('Invalid PI work review');
+  const resumeAt=raw.resumeAt;
+  if(raw.verdict==='WAIT'&&(typeof resumeAt!=='string'||resumeAt.length>40||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/.test(resumeAt)||
+    !Number.isFinite(Date.parse(resumeAt))))
+    throw new Error('PI WAIT requires resumeAt as an ISO-8601 time with a UTC offset');
+  if(raw.verdict!=='WAIT'&&resumeAt!==undefined&&resumeAt!==null)
+    throw new Error('Only a PI WAIT may declare resumeAt');
   const blocker=raw.blocker;
   if(raw.verdict==='BLOCKED'&&!validGoalBlocker(blocker))
     throw new Error('PI BLOCKED requires a concrete external barrier, evidence and release condition');
@@ -152,7 +170,8 @@ export function parseGoalReview(source:string):GoalReview{
   return {verdict:raw.verdict as GoalReview['verdict'],summary:raw.summary.trim(),
     nextPrompt:raw.nextPrompt.trim(),evidenceRefs:raw.evidenceRefs as string[],
     handoff:raw.handoff,
-    ...(raw.verdict==='BLOCKED'?{blocker:blocker as GoalBlocker}:{})};
+    ...(raw.verdict==='BLOCKED'?{blocker:blocker as GoalBlocker}:{}),
+    ...(raw.verdict==='WAIT'?{resumeAt:resumeAt as string}:{})};
 }
 function validGoalBlocker(value:unknown):value is GoalBlocker {
   if(!value||typeof value!=='object'||Array.isArray(value))return false;
@@ -215,11 +234,12 @@ export function goalReviewPrompt(input:GoalReviewContext):string{
     'You are PI, the project manager and acceptance reviewer, not the executor.',
     'Review the ONE active work item against its acceptance criteria and the executor report.',
     ...CI_PI_POLICY,
-    'Return strict JSON: {"verdict":"PASS|PARTIAL|FAIL|REPLAN|BLOCKED",',
+    'Return strict JSON: {"verdict":"PASS|PARTIAL|FAIL|REPLAN|BLOCKED|WAIT",',
     '"summary":"...","nextPrompt":"...","evidenceRefs":["reported reference"],"handoff":false,',
     '"blocker":null}. For BLOCKED only, replace blocker with',
     '{"kind":"external_permission|unrecoverable_evidence|external_dependency",',
     '"evidence":"concrete observed fact or citation","releaseCondition":"specific prerequisite"}.',
+    'For WAIT only, add "resumeAt":"<ISO-8601 time with UTC offset>".',
     'EVIDENCE STANDARD. You have no tools, so the executor report is the evidence available.',
     'Accept a criterion as met when the report gives concrete, specific, mutually consistent facts',
     'for it (commit SHA, file or command, test counts, device and build identity, observed result)',
@@ -235,7 +255,12 @@ export function goalReviewPrompt(input:GoalReviewContext):string{
     'key and its history; it is not a way to restart or rename the current item.',
     'BLOCKED only for a concrete external or authorization barrier the approved tools cannot',
     'resolve; code, test, build or CI failures and transient outages are never BLOCKED.',
-    'For PARTIAL/FAIL, nextPrompt is the one instruction. For PASS/REPLAN/BLOCKED, nextPrompt is empty.',
+    'WAIT when the remaining evidence is being produced by an already running, time-bound process',
+    '(a long device run, a scheduled job, a store review) and checking earlier cannot change it.',
+    'resumeAt is when that result is expected (5 minutes to 12 hours ahead); no Send for this item',
+    'happens before then, independent eligible work runs meanwhile. nextPrompt is the instruction',
+    'to collect the result at that time. Never use REPLAN or PARTIAL to wait or poll.',
+    'For PARTIAL/FAIL/WAIT, nextPrompt is the one instruction. For PASS/REPLAN/BLOCKED, nextPrompt is empty.',
     'Review history of this work item (PI verdicts, oldest first):',
     ...(prior.length?prior.map(review=>`round ${review.round}: ${review.verdict}${review.summary?` — ${review.summary.slice(0,240)}`:''}`):['none']),
     ...(nonPass>=2?[
@@ -248,6 +273,7 @@ export function goalReviewPrompt(input:GoalReviewContext):string{
       'Choose PASS only if the owner Goal and its acceptance requirements are achieved as a whole;',
       'if anything required is still missing, choose REPLAN so the missing work is planned (passed work is kept).',
     ]:[]),
+    ...(input.controllerTime?[`Current controller time (UTC): ${input.controllerTime}`]:[]),
     `Owner Goal: ${input.objective}`,
     'Original owner acceptance requirements:',...input.ownerAcceptance,
     `Approved plan: ${input.planSummary}`,
@@ -284,9 +310,13 @@ function workObligationKey(graph:GoalGraph,item:GoalWorkItem):string{
     .map(x=>x.criterion);
   return criteriaObligationKey(criteria);
 }
-function selectNextWork(ledger:GoalLedger,goalId:string,planId:string,source:string):{
+interface WorkSelection {
   action:'NEXT'|'BLOCKED'|'DONE';nextPrompt:string;summary:string;
-}{
+  /** Set when only PI-WAIT-deferred work remains: no Send before this time. */
+  notBefore?:number;
+}
+function selectNextWork(ledger:GoalLedger,goalId:string,planId:string,source:string,
+  nowMs:number):WorkSelection{
   const graph=ledger.graph(goalId);
   const active=activeWorkItem(graph);
   if(active)throw new Error('Cannot select another work package while one is active');
@@ -298,7 +328,16 @@ function selectNextWork(ledger:GoalLedger,goalId:string,planId:string,source:str
     .filter(x=>graph.dependencies.filter(d=>d.itemId===x.id)
       .every(dep=>graph.items.find(w=>w.id===dep.dependsOnId)?.status==='PASSED'))
     .sort((a,b)=>b.priority-a.priority||a.key.localeCompare(b.key));
-  if(!available.length){
+  // A PI WAIT keeps its package out of rotation until its time; independent
+  // eligible work goes first, otherwise the earliest waiting package is
+  // selected with a dispatch fence instead of being re-sent at once.
+  const deferrals=openWorkDeferrals(graph);
+  const waiting=(x:GoalWorkItem)=>(deferrals.get(x.key)?.notBefore??0)>nowMs;
+  const ready=available.filter(x=>!waiting(x));
+  const deferred=available.filter(waiting)
+    .sort((a,b)=>deferrals.get(a.key)!.notBefore-deferrals.get(b.key)!.notBefore);
+  const pick=ready[0]??deferred[0];
+  if(!pick){
     // Every package of the approved plan passed PI review, and the final
     // review was told that PASS completes the Goal: the Goal is DONE.
     if(items.every(x=>x.status==='PASSED'))
@@ -307,13 +346,19 @@ function selectNextWork(ledger:GoalLedger,goalId:string,planId:string,source:str
     return {action:'BLOCKED',nextPrompt:'',
       summary:'No eligible work item: unresolved dependencies, blocked work or unapproved planning'};
   }
-  const item=available[0]!;
-  const prompt=workPrompt(graph,item);
+  const item=pick;
+  const resume=deferrals.get(item.key)?.resumePrompt;
+  const prompt=resume||workPrompt(graph,item);
   const prefix=`pi:${source.slice(0,36)}:${item.id.slice(0,24)}`;
   let current=item;
   if(current.status==='PENDING')
     current=ledger.setWorkStatus(goalId,item.id,current.version,'READY',[],`${prefix}:ready`);
   ledger.setWorkStatus(goalId,item.id,current.version,'IN_PROGRESS',[],`${prefix}:start`);
+  if(!ready.length){
+    const notBefore=deferrals.get(item.key)!.notBefore;
+    return {action:'NEXT',nextPrompt:prompt,notBefore,
+      summary:`PI WAIT: no other eligible work; ${item.key} resumes after ${new Date(notBefore).toISOString()}`};
+  }
   return {action:'NEXT',nextPrompt:prompt,summary:`PI selected ${item.key}; ${items.length} planned work items`};
 }
 /** A REPLAN produces a fresh PENDING graph. Without this step every
@@ -368,8 +413,11 @@ export async function reviewGoalPiRound(input:{
   store:Store;planner:PiPlanner;missionId:string;responseSha256:string;
   lastAssistant:string;round:number;replaceExisting:boolean;
   ownerDirectives:PiOwnerDirective[];
+  /** Injectable clock for tests; production uses wall time. */
+  now?:()=>number;
 }):Promise<PiPlan>{
   const {store,planner,missionId,responseSha256,round,ownerDirectives}=input;
+  const clock=input.now??Date.now;
   if(sha(input.lastAssistant)!==responseSha256)
     throw new Error('Goal PI review must match the full observed browser SHA');
   const ledger=new GoalLedger(store),goalId=ledger.missionGoalId(missionId);
@@ -404,6 +452,8 @@ export async function reviewGoalPiRound(input:{
       if(JSON.stringify(current)!==JSON.stringify(baseline)||
         observed?.assistantSha256!==responseSha256)
         throw new Error('Goal or observed browser checkpoint changed during owner revision');
+      // An owner note is an explicit request to act now: it lifts a PI WAIT fence.
+      store.setMeta(piDispatchAfterKey(missionId),JSON.stringify({round,responseSha256,notBefore:0}));
       return store.commitPiPlan(missionId,responseSha256,ownerDirectives.map(x=>x.id),
         change,true);
     });
@@ -424,14 +474,14 @@ export async function reviewGoalPiRound(input:{
   const previousReviews=baseline.events.filter(event=>
     event.type==='goal.pi_review'&&sameKey.has(String(event.payload.itemId))&&
     typeof event.payload.round==='number'&&
-    ['PASS','PARTIAL','FAIL','REPLAN','BLOCKED'].includes(String(event.payload.verdict)))
+    ['PASS','PARTIAL','FAIL','REPLAN','BLOCKED','WAIT'].includes(String(event.payload.verdict)))
     .map(event=>({round:event.payload.round as number,
       verdict:event.payload.verdict as GoalReview['verdict'],
       summary:String(event.payload.summary??'')})).slice(-6);
   const reviewed=approved&&active?await inferPi(()=>planner.reviewGoalWork!({
     ...context,planSummary:approved.summary,workItem:active,
     acceptance:baseline.acceptance.filter(x=>x.itemId===active.id).map(x=>x.criterion),
-    priorWorkReviews:previousReviews,
+    priorWorkReviews:previousReviews,controllerTime:new Date(clock()).toISOString(),
     finalWorkItem:baseline.items.filter(x=>x.planId===approved.id&&x.id!==active.id)
       .every(x=>x.status==='PASSED'),
   })):null;
@@ -467,7 +517,8 @@ export async function reviewGoalPiRound(input:{
       JSON.stringify(graph.acceptance)!==JSON.stringify(baseline.acceptance))
       throw new Error('Goal graph changed during PI inference; no Send authorized');
     let chosen=approved;
-    let next:{action:'NEXT'|'BLOCKED'|'DONE';nextPrompt:string;summary:string}|undefined;
+    const nowMs=clock();
+    let next:WorkSelection|undefined;
     if(proposed){
       const plan=ledger.createPlan(goalId,graph.goal.version,{
         requestKey:`pi-${responseSha256.slice(0,45)}`,...proposed,
@@ -479,7 +530,7 @@ export async function reviewGoalPiRound(input:{
       ledger.setGoalStatus(goalId,goal.version,'ACTIVE',`pi:${responseSha256}:activate`);
       chosen=ledger.getPlan(goalId,plan.id);
       carryForwardPassedWork(ledger,goalId,plan.id,responseSha256);
-      next=selectNextWork(ledger,goalId,plan.id,responseSha256);
+      next=selectNextWork(ledger,goalId,plan.id,responseSha256,nowMs);
     }else if(reviewed&&active&&approved){
       const eventKey=`pi:${missionId.slice(0,18)}:${round}:${responseSha256.slice(0,26)}`;
       const blockedDetail=reviewed.verdict==='BLOCKED'
@@ -496,7 +547,7 @@ export async function reviewGoalPiRound(input:{
           'PASS',[evidenceRef],`${eventKey}:criterion:${check.id}`);
         ledger.setWorkStatus(goalId,active.id,inReview.version,'PASSED',[evidenceRef],
           `${eventKey}:passed`);
-        next=selectNextWork(ledger,goalId,approved.id,responseSha256);
+        next=selectNextWork(ledger,goalId,approved.id,responseSha256,nowMs);
         if(next.action==='BLOCKED'&&ledger.graph(goalId).items.some(item=>
           item.planId===approved.id&&item.status==='BLOCKED')){
           const goal=ledger.getGoal(goalId);
@@ -513,6 +564,18 @@ export async function reviewGoalPiRound(input:{
         }
         next={action:'NEXT',nextPrompt:reviewed.nextPrompt,
           summary:`PI ${reviewed.verdict} for ${active.key}: ${reviewed.summary}`};
+      }else if(reviewed.verdict==='WAIT'){
+        // Waiting for a running process is not a defect, a new plan or a
+        // blocker: keep the item and its history, free the active slot, and
+        // fence its re-dispatch until the clamped resume time.
+        const asked=Date.parse(reviewed.resumeAt!);
+        const notBefore=Math.min(nowMs+MAX_WORK_WAIT_MS,Math.max(nowMs+MIN_WORK_WAIT_MS,asked));
+        ledger.deferWork(goalId,active.id,active.version,new Date(notBefore).toISOString(),
+          reviewed.nextPrompt,round,`${eventKey}:wait`);
+        const continuation=selectNextWork(ledger,goalId,approved.id,responseSha256,nowMs);
+        next={...continuation,summary:(continuation.notBefore!==undefined
+          ?`PI WAIT for ${active.key} until ${new Date(notBefore).toISOString()}: ${reviewed.summary}`
+          :`PI WAIT for ${active.key} until ${new Date(notBefore).toISOString()}; ${continuation.summary}`).slice(0,1000)};
       }else if(reviewed.verdict==='REPLAN'){
         // Superseded, not blocked: the new plan continues this key's obligation.
         const was=ledger.setWorkStatus(goalId,active.id,active.version,'FAILED',[],
@@ -530,7 +593,7 @@ export async function reviewGoalPiRound(input:{
           `${eventKey}:plan-review`);
         chosen=ledger.getPlan(goalId,newPlan.id);
         const carried=carryForwardPassedWork(ledger,goalId,newPlan.id,responseSha256);
-        next=selectNextWork(ledger,goalId,newPlan.id,responseSha256);
+        next=selectNextWork(ledger,goalId,newPlan.id,responseSha256,nowMs);
         if(carried.length)next={...next,
           summary:`${next.summary}; carried forward PASSED: ${carried.join(', ')}`.slice(0,1000)};
       }else{
@@ -540,7 +603,7 @@ export async function reviewGoalPiRound(input:{
         // abandon unrelated implementation, device QA or commercial work.
         // Keep the blocked obligation in SQLite and advance only truly eligible
         // independent items. The Goal remains unshippable until it is resolved.
-        const continuation=selectNextWork(ledger,goalId,approved.id,responseSha256);
+        const continuation=selectNextWork(ledger,goalId,approved.id,responseSha256,nowMs);
         if(continuation.action==='NEXT'){
           next={...continuation,
             summary:`Deferred blocked ${active.key}: ${blockedDetail}; ${continuation.summary}`.slice(0,1000)};
@@ -551,7 +614,7 @@ export async function reviewGoalPiRound(input:{
         }
       }
     }else if(approved&&!active){
-      next=selectNextWork(ledger,goalId,approved.id,responseSha256);
+      next=selectNextWork(ledger,goalId,approved.id,responseSha256,nowMs);
     }
     if(!next||!chosen)throw new Error('PI Goal planning did not produce an eligible work decision');
     // Goal DONE comes only from the controller: every approved package passed
@@ -564,6 +627,9 @@ export async function reviewGoalPiRound(input:{
     const result=store.commitPiPlan(missionId,responseSha256,ownerDirectives.map(x=>x.id),
       {action:reviewed?.handoff&&next.action==='NEXT'?'HANDOFF':next.action,
         nextPrompt:next.nextPrompt,summary:next.summary},input.replaceExisting);
+    // Bound to this exact round and answer, so a later decision is never fenced.
+    store.setMeta(piDispatchAfterKey(missionId),JSON.stringify({round,responseSha256,
+      notBefore:next.action==='NEXT'&&next.notBefore&&next.notBefore>nowMs?next.notBefore:0}));
     return result;
   });
 }

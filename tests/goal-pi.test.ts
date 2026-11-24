@@ -668,3 +668,110 @@ test('failure to make a safe work prompt atomically rolls back first approval an
     assert.equal(f.store.chatBrowserTurn(f.mission.id)?.status,'observed');
   }finally{f.close();}
 });
+
+// The Worker gates on wall time, so WAIT tests are anchored to it.
+const T0=Math.floor(Date.now()/1000)*1000,DUE=T0+2*60*60_000;
+const iso=(ms:number)=>new Date(ms).toISOString();
+const waitPlanner=(resumeAt:string,onReview?:(x:GoalReviewContext)=>void):PiPlanner=>({
+  ...planner(),
+  reviewGoalWork:async x=>{onReview?.(x);return {verdict:'WAIT',
+    summary:'The 2 h device run is still recording; its result is due at 23:55 UTC',
+    nextPrompt:'Collect the terminal record of the running 720p session; do not restart it',
+    evidenceRefs:[],handoff:false,resumeAt};},
+});
+const lanes={summary:'Long device run and an independent store lane',items:[
+  {key:'endurance',title:'Two-hour device run',priority:100,description:'Run the long session',
+    dependsOn:[],acceptance:['Receiver decodes 7200 s']},
+  {key:'store',title:'Store listing',priority:90,description:'Save listing text',
+    dependsOn:[],acceptance:['Listing saved and read back']},
+]};
+
+test('PI WAIT for a running process runs independent work now and never re-sends the waiting package early',async()=>{
+  const f=fixture();
+  try{
+    await reviewGoalPiRound({...f.observe(1,'Plan'),planner:planner({plan:lanes}),now:()=>T0});
+    assert.equal(work(f,'endurance').status,'IN_PROGRESS');
+    const seen:string[]=[];
+    const waited=await reviewGoalPiRound({...f.observe(2,'Run started, 1363/7200 s so far'),
+      planner:waitPlanner(iso(DUE),x=>seen.push(x.controllerTime??'')),now:()=>T0});
+    assert.equal(seen[0],new Date(T0).toISOString(),'PI is told the controller clock');
+    assert.equal(waited.action,'NEXT');
+    assert.equal(waited.summary.startsWith(`PI WAIT for endurance until ${iso(DUE)}; PI selected store`),true);
+    assert.match(waited.nextPrompt,/store/);
+    assert.equal(work(f,'endurance').status,'READY');
+    assert.equal(work(f,'store').status,'IN_PROGRESS');
+    assert.equal(f.store.piDispatchNotBefore(f.mission.id),0,'independent work is not fenced');
+    assert.equal(f.ledger.graph(f.goal.id).plans.length,1,'WAIT is not a REPLAN');
+    // Independent work passes before the run ends: only the waiting package
+    // remains, so it is selected with its resume instruction behind a fence.
+    const t1=T0+10*60_000;
+    const fenced=await reviewGoalPiRound({...f.observe(3,'Listing saved'),planner:planner(),now:()=>t1});
+    assert.equal(fenced.action,'NEXT');
+    assert.equal(fenced.summary,`PI WAIT: no other eligible work; endurance resumes after ${iso(DUE)}`);
+    assert.equal(fenced.nextPrompt,'Collect the terminal record of the running 720p session; do not restart it');
+    assert.equal(work(f,'endurance').status,'IN_PROGRESS');
+    assert.equal(f.store.piDispatchNotBefore(f.mission.id),DUE);
+    assert.match(goalWorkPrompt(f.store,f.mission.id,fenced,null,false).prompt,
+      /Current instruction:\nCollect the terminal record/);
+    assert.equal(f.store.events(f.mission.id).filter(e=>e.type==='chatgpt.browser_reserved').length,3);
+    // The resumed answer is reviewed normally; PASS consumes the deferral.
+    const history:GoalReviewContext['priorWorkReviews']=[];
+    const done=await reviewGoalPiRound({...f.observe(4,'7204 s decoded, normal stop'),
+      planner:planner({onReview:x=>history.push(...x.priorWorkReviews??[])}),
+      now:()=>DUE+60_000});
+    assert.ok(history.some(x=>x.verdict==='WAIT'),'PI sees its earlier WAIT');
+    assert.equal(done.action,'DONE');
+    assert.equal(f.store.piDispatchNotBefore(f.mission.id),0);
+  }finally{f.close();}
+});
+
+test('PI WAIT is clamped to its window and a fenced checkpoint releases the browser without a Send',async()=>{
+  const f=fixture();
+  try{
+    await reviewGoalPiRound({...f.observe(1,'Plan'),planner:planner(),now:()=>T0});
+    const soon=await reviewGoalPiRound({...f.observe(2,'Still running'),
+      planner:waitPlanner(iso(T0+30_000)),now:()=>T0});
+    assert.equal(soon.action,'NEXT');
+    assert.equal(work(f,'foundation').status,'IN_PROGRESS');
+    assert.equal(f.store.piDispatchNotBefore(f.mission.id),T0+5*60_000,'no 30-second polling');
+    await reviewGoalPiRound({...f.observe(3,'Still running, second sample'),
+      planner:waitPlanner(iso(T0+30*24*60*60_000)),now:()=>T0});
+    assert.equal(f.store.piDispatchNotBefore(f.mission.id),T0+12*60*60_000,'no indefinite parking');
+    assert.equal(f.store.piHealth(T0).missions[0]?.phase,'pi_wait_scheduled_no_send');
+    const untouched=new Proxy({},{get(){throw new Error('browser must not be touched while fenced');}}) as Page;
+    await drivePiAutopilot({store:f.store,planner:planner(),missionId:f.mission.id,
+      revision:f.store.get(f.mission.id).version,requestPrefix:'mission-one',
+      page:untouched,url:URL,yieldAtGoalCheckpoint:true});
+    assert.equal(f.store.events(f.mission.id).filter(e=>e.type==='chatgpt.browser_reserved').length,3);
+    // An owner note means "act now": PI revises the decision and the fence lifts.
+    f.store.queuePiOwnerDirective(f.mission.id,'2402','The run ended early, check it now');
+    const revised:PiPlanner={...planner(),decide:async()=>({action:'NEXT',
+      summary:'Owner says the run ended',nextPrompt:'Collect the terminal record now'})};
+    await reviewGoalPiRound({store:f.store,planner:revised,missionId:f.mission.id,
+      responseSha256:sha('Still running, second sample'),lastAssistant:'Still running, second sample',round:3,
+      replaceExisting:true,ownerDirectives:f.store.pendingPiOwnerDirectives(f.mission.id)});
+    assert.equal(f.store.piDispatchNotBefore(f.mission.id),0);
+  }finally{f.close();}
+});
+
+test('strict PI WAIT requires an offset resume time and an instruction; other verdicts cannot carry one',()=>{
+  const base={verdict:'WAIT',summary:'Run in progress',nextPrompt:'Collect the result',
+    evidenceRefs:[],handoff:false};
+  assert.equal(parseGoalReview(JSON.stringify({...base,resumeAt:'2026-11-24T07:55:32+08:00'})).resumeAt,
+    '2026-11-24T07:55:32+08:00');
+  assert.throws(()=>parseGoalReview(JSON.stringify({...base,resumeAt:'2026-11-24 07:55'})),/PI WAIT requires resumeAt/);
+  assert.throws(()=>parseGoalReview(JSON.stringify({...base,resumeAt:'2026-11-24T07:55:32'})),/PI WAIT requires resumeAt/);
+  assert.throws(()=>parseGoalReview(JSON.stringify(base)),/PI WAIT requires resumeAt/);
+  assert.throws(()=>parseGoalReview(JSON.stringify({...base,nextPrompt:'',
+    resumeAt:'2026-11-24T07:55:32Z'})),/Invalid PI work review/);
+  assert.throws(()=>parseGoalReview(JSON.stringify({...base,verdict:'PARTIAL',
+    resumeAt:'2026-11-24T07:55:32Z'})),/Only a PI WAIT/);
+  assert.equal(parseGoalReview(JSON.stringify({...base,verdict:'PARTIAL',resumeAt:null})).verdict,'PARTIAL');
+  const input={objective:goalText,browserAnswer:'Candidate',responseSha256:sha('Candidate'),
+    ownerDirectives:[],ownerAcceptance:[],planSummary:'Plan',acceptance:['Check'],
+    controllerTime:'2026-11-23T21:40:00.000Z',
+    workItem:{id:'1',goalId:'1',planId:'2',key:'k',title:'T',description:'D',priority:90,
+      status:'IN_PROGRESS' as const,evidenceRefs:[],version:1,createdAt:'',updatedAt:''}};
+  assert.match(goalReviewPrompt(input),/Never use REPLAN or PARTIAL to wait or poll/);
+  assert.match(goalReviewPrompt(input),/Current controller time \(UTC\): 2026-11-23T21:40:00.000Z/);
+});

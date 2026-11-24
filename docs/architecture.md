@@ -41,7 +41,14 @@ compiler rejects unused locals and parameters, and every module is imported.
    PI judges the executor report by an explicit evidence standard and there
    is no controller repair budget; BLOCKED
    needs an external cause and a release condition and is scoped to its
-   package while independent work remains.
+   package while independent work remains. WAIT means the missing evidence
+   is still being produced by an already running, time-bound process (a long
+   device run, a scheduled job): the package returns to READY with a
+   `resumeAt` (clamped to 5 min–12 h) and its resume instruction, independent
+   eligible work runs first, and when only waiting work remains the selected
+   package is fenced (`pi.dispatch.after.<mission>`) so the Worker releases
+   the browser and sends nothing before that time. An owner note lifts the
+   fence. WAIT never replaces REPLAN, PARTIAL or BLOCKED semantics.
 6. **Done.** PASS of the final package (the review is told this completes the
    Goal) writes one immutable `goal_completions` row and PI action DONE; later
    Goal writes and Sends are refused. A ChatGPT DONE marker never completes a
