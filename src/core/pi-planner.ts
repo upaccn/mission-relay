@@ -69,6 +69,10 @@ export async function inferPi<T>(call:()=>Promise<T>):Promise<T>{
   }
 }
 
+/** Keep the parser's reason: a bare "format invalid" hid which field failed. */
+const formatError=(what:string,error:unknown)=>new Error(
+  `${what} format invalid: ${(error instanceof Error?error.message:String(error)).slice(0,200)}; retry the settled checkpoint only`);
+
 export class SshPiPlanner implements PiPlanner {
   private readonly remote:PictlRemoteConfig;
   constructor(config:PictlRemoteConfig) {
@@ -98,7 +102,7 @@ export class SshPiPlanner implements PiPlanner {
     if(parsed.ok!==true||typeof parsed.result!=='string')
       throw new Error('PI controller returned an unsuccessful or malformed inference result');
     try{return parsePiDecision(parsed.result);}
-    catch{throw new Error('PI decision format invalid; retry the settled checkpoint only');}
+    catch(error){throw formatError('PI decision',error);}
   }
   private async inferGoal(prompt:string):Promise<string>{
     const output=await sshPictlInfer(prompt,this.remote);
@@ -112,12 +116,12 @@ export class SshPiPlanner implements PiPlanner {
   async proposeGoalPlan(input:GoalPlanContext):Promise<GoalPlanProposal>{
     const answer=await this.inferGoal(goalPlanPrompt(input));
     try{return parseGoalPlanProposal(answer);}
-    catch{throw new Error('PI Goal plan format invalid; retry the settled checkpoint only');}
+    catch(error){throw formatError('PI Goal plan',error);}
   }
   async reviewGoalWork(input:GoalReviewContext):Promise<GoalReview>{
     const answer=await this.inferGoal(goalReviewPrompt(input));
     try{return parseGoalReview(answer);}
-    catch{throw new Error('PI Goal review format invalid; retry the settled checkpoint only');}
+    catch(error){throw formatError('PI Goal review',error);}
   }
 }
 

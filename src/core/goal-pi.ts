@@ -55,6 +55,9 @@ export const MIN_WORK_WAIT_MS=5*60_000,MAX_WORK_WAIT_MS=12*60*60_000,
   DEFAULT_WORK_WAIT_MS=30*60_000;
 /** Durable per-Mission dispatch fence (read by Store.piDispatchNotBefore). */
 const piDispatchAfterKey=(missionId:string)=>`pi.dispatch.after.${missionId}`;
+/** BLOCKED evidence/releaseCondition limit. It is stated in the review prompt:
+ * an unstated 240 cap once rejected the same valid BLOCKED review 8 times. */
+export const BLOCKER_FIELD_CHARS=400;
 const sha=(value:string)=>createHash('sha256').update(value).digest('hex');
 const limitAnswer=(answer:string)=>answer.length<=100_000?answer:
   answer.slice(0,50_000)+'\n[MIDDLE OMITTED: not verified]\n'+answer.slice(-50_000);
@@ -181,9 +184,10 @@ function validGoalBlocker(value:unknown):value is GoalBlocker {
   const blocker=value as Record<string,unknown>;
   return ['external_permission','unrecoverable_evidence','external_dependency']
     .includes(String(blocker.kind))&&
-    typeof blocker.evidence==='string'&&!!blocker.evidence.trim()&&blocker.evidence.length<=240&&
+    typeof blocker.evidence==='string'&&!!blocker.evidence.trim()&&
+    blocker.evidence.length<=BLOCKER_FIELD_CHARS&&
     typeof blocker.releaseCondition==='string'&&
-    !!blocker.releaseCondition.trim()&&blocker.releaseCondition.length<=240;
+    !!blocker.releaseCondition.trim()&&blocker.releaseCondition.length<=BLOCKER_FIELD_CHARS;
 }
 export function goalPlanPrompt(input:GoalPlanContext):string{
   return [
@@ -248,6 +252,8 @@ export function goalReviewPrompt(input:GoalReviewContext):string{
     '{"kind":"external_permission|unrecoverable_evidence|external_dependency",',
     '"evidence":"concrete observed fact or citation","releaseCondition":"specific prerequisite"}.',
     'For WAIT you may add "resumeAt":"<ISO-8601 time with UTC offset>".',
+    `Limits (characters): summary 1000, nextPrompt 1500, each evidenceRefs entry 512 (at most 30),`,
+    `blocker evidence ${BLOCKER_FIELD_CHARS}, blocker releaseCondition ${BLOCKER_FIELD_CHARS}. Longer output is rejected.`,
     'EVIDENCE STANDARD. You have no tools, so the executor report is the evidence available.',
     'Accept a criterion as met when the report gives concrete, specific, mutually consistent facts',
     'for it (commit SHA, file or command, test counts, device and build identity, observed result)',

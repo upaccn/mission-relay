@@ -333,3 +333,15 @@ test('Goal PI refuses to send into a ChatGPT conversation changed while PI was p
     assert.equal(f.store.events(f.mission.id).filter(e=>e.type==='chatgpt.browser_reserved').length,1);
   }finally{f.cleanup();}
 });
+
+test('SSH PI planner keeps the parser reason in a format failure',async()=>{
+  const planner=new SshPiPlanner({sshHost:'operator',project:'/srv/projects/mission-relay'});
+  (planner as unknown as {inferGoal:()=>Promise<string>}).inferGoal=async()=>JSON.stringify({
+    verdict:'BLOCKED',summary:'denied',nextPrompt:'',evidenceRefs:['ops'],handoff:false,
+    blocker:{kind:'external_permission',evidence:'denied',releaseCondition:'x'.repeat(401)}});
+  await assert.rejects(planner.reviewGoalWork({objective:'Goal',ownerAcceptance:[],
+    browserAnswer:'Report',responseSha256:'a'.repeat(64),ownerDirectives:[],planSummary:'Plan',
+    workItem:{id:'id',goalId:'goal',planId:'plan',key:'k',title:'T',description:'D',priority:50,
+      status:'IN_PROGRESS',evidenceRefs:[],version:1,createdAt:'',updatedAt:''},acceptance:['A']}),
+    /PI Goal review format invalid: PI BLOCKED requires .*retry the settled checkpoint only/);
+});

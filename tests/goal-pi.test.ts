@@ -9,7 +9,7 @@ import type {Page} from 'playwriter';
 import {Store} from '../src/core/store.js';
 import {GoalLedger} from '../src/core/goal-store.js';
 import {parseGoalPlanProposal,parseGoalReview,goalPlanPrompt,goalReviewPrompt,
-  reviewGoalPiRound,type GoalPlanContext,type GoalReviewContext} from '../src/core/goal-pi.js';
+  reviewGoalPiRound,BLOCKER_FIELD_CHARS,type GoalPlanContext,type GoalReviewContext} from '../src/core/goal-pi.js';
 import {drivePiAutopilot,pauseFailedPiPlanning} from '../src/core/pi-autopilot.js';
 import {MAINTENANCE_SEND_REFUSED} from '../src/core/store.js';
 import {piWaitUntil} from '../src/plugins/telegram.js';
@@ -428,6 +428,7 @@ test('PI planning and review explicitly reject report churn while retaining rele
     acceptance:['Real purchase works'],priorWorkReviews:[]});
   assert.match(reviewPrompt,/Never ask to re-document, re-summarize, re-run unchanged tests/);
   assert.match(reviewPrompt,/it is not a way to restart or rename the current item/);
+  assert.match(reviewPrompt,new RegExp(`blocker releaseCondition ${BLOCKER_FIELD_CHARS}`));
   assert.match(reviewPrompt,/transient outages are never BLOCKED/);
 });
 
@@ -632,6 +633,18 @@ test('strict Goal PI JSON rejects non-JSON, ungrounded PASS and bad response sha
     blocker:{kind:'external_permission',evidence:'SSH access denied',
       releaseCondition:'Owner grants read-only SSH source access'}}));
   assert.equal(blocked.blocker?.releaseCondition,'Owner grants read-only SSH source access');
+  // Production: a valid BLOCKED review with a ~290-character release
+  // condition was rejected 8 times by an unstated 240 cap.
+  const longRelease='为 GMK Chrome 开通仅限本应用的 Play Console 和 RevenueCat 实际操作权限，或由授权管理员提供后台回执。'.repeat(5);
+  assert.ok(longRelease.length>240&&longRelease.length<=BLOCKER_FIELD_CHARS);
+  assert.equal(parseGoalReview(JSON.stringify({verdict:'BLOCKED',summary:'access denied',
+    nextPrompt:'',evidenceRefs:['ops:denied'],handoff:false,
+    blocker:{kind:'external_permission',evidence:'后台访问阻断仍在',releaseCondition:longRelease}}))
+    .blocker?.releaseCondition,longRelease);
+  assert.throws(()=>parseGoalReview(JSON.stringify({verdict:'BLOCKED',summary:'access denied',
+    nextPrompt:'',evidenceRefs:['ops:denied'],handoff:false,
+    blocker:{kind:'external_permission',evidence:'denied',
+      releaseCondition:'x'.repeat(BLOCKER_FIELD_CHARS+1)}})),/PI BLOCKED requires/);
   assert.throws(()=>parseGoalReview(JSON.stringify({verdict:'PARTIAL',summary:'code test failed',
     nextPrompt:'Fix the test',evidenceRefs:[],handoff:false,
     blocker:{kind:'external_dependency',evidence:'none',releaseCondition:'later'}})),

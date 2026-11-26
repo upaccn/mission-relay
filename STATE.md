@@ -2,7 +2,7 @@
 
 ## Release and verification boundaries
 
-- Current source package version: `1.4.5`.
+- Current source package version: `1.4.6`.
 - The canonical authoring checkout and GitHub `main` own source history.
   GitHub Releases are immutable release targets; only exact-main-SHA,
   completed, independently qualified CI can establish a software release.
@@ -83,6 +83,8 @@
 - **Every PI failure is retried.** Any failure of PI itself (unreachable,
   timeout, quota, unusable output) happens before a Send; the Worker retries
   it with SHA-bound backoff (1 → 15 min) and stops visibly after 8 attempts.
+  A rejected PI output records the parser's reason (which field failed), and
+  the review prompt states every field length limit the parser enforces.
   Closed-page browser reads use the same backoff. Integrity, permission and
   changed-Chat failures still stop at once. No Send is ever replayed.
 - **A Send that was never attempted is not uncertain.** A failure before the

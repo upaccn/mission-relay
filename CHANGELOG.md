@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.4.6 — 2026-11-26
+
+- **A long BLOCKED release condition no longer stalls a Goal.** PI's blocker
+  `evidence` and `releaseCondition` were capped at an unstated 240
+  characters. In production a valid BLOCKED review (a ~290-character Chinese
+  release condition) was rejected on all 8 retries of the same settled
+  answer, interrupting the Mission. The cap is now 400 and the review prompt
+  states every field limit the parser enforces.
+- **PI format failures say what failed.** `PI … format invalid` now carries
+  the parser's reason, so the retry events show the rejected field.
+
 ## 1.4.5 — 2026-11-24
 
 - **A REPLAN no longer re-sends packages PI just blocked.** A REPLAN builds
