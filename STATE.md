@@ -1,5 +1,13 @@
 # Mission Relay — current public source state
 
+> **RETIRED 2026-11-26** (AIOS decision 0010). The GMK Worker was drained and the
+> `MissionRelay-Telegram` scheduled task disabled with zero outstanding Sends and
+> seven PAUSED Goals; private state is archived on GMK under
+> `AIOS/system/backups/retired-assets/mission-relay-state-20261126.tar.gz`.
+> Do not re-enable, deploy or extend. Unfinished product work continues from each
+> product's own `STATE.md`. Runtime and checkout removal follow the first accepted
+> Antigravity batch (see AIOS `config/retired-assets.yaml`).
+
 ## Release and verification boundaries
 
 - Current source package version: `1.4.6`.
